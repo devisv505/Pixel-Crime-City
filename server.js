@@ -38,7 +38,10 @@ const NPC_RADIUS = 6;
 const TRAFFIC_COUNT = 78;
 const COP_COUNT = 10;
 const COP_OFFICER_COUNT = 12;
+const AMBULANCE_COUNT = 1;
 const MAX_NAME_LENGTH = 16;
+const POLICE_WITNESS_RADIUS = 190;
+const BLOOD_STAIN_LIFETIME = 240;
 
 const clients = new Map();
 const players = new Map();
@@ -46,6 +49,7 @@ const cars = new Map();
 const npcs = new Map();
 const cops = new Map();
 const cashDrops = new Map();
+const bloodStains = new Map();
 
 let nextId = 1;
 let nextEventId = 1;
@@ -66,6 +70,17 @@ const SHOPS = [
   { id: 'shop_mid', name: 'Midtown Arms', x: BLOCK_PX * 6 + 232, y: BLOCK_PX * 6 + 236, radius: 34 },
   { id: 'shop_dock', name: 'Dock Arms', x: BLOCK_PX * 10 + 232, y: BLOCK_PX * 10 + 232, radius: 34 },
 ];
+const HOSPITAL = {
+  id: 'hospital_central',
+  name: 'City Hospital',
+  x: BLOCK_PX * 5 + 228,
+  y: BLOCK_PX * 0 + 228,
+  radius: 42,
+  dropX: BLOCK_PX * 5 + LANE_B,
+  dropY: BLOCK_PX * 0 + ROAD_END + 16,
+  releaseX: BLOCK_PX * 5 + 214,
+  releaseY: BLOCK_PX * 0 + ROAD_END + 24,
+};
 const WEAPONS = {
   fist: {
     cooldown: 0.42,
@@ -326,6 +341,29 @@ function makeCashDrop(x, y, amount) {
   return drop;
 }
 
+function makeBloodStain(x, y) {
+  const id = makeId('blood');
+  const stain = {
+    id,
+    x,
+    y,
+    ttl: BLOOD_STAIN_LIFETIME,
+  };
+  bloodStains.set(id, stain);
+  return stain;
+}
+
+function hospitalReleaseSpawn() {
+  const jitterX = randRange(-14, 14);
+  const jitterY = randRange(-10, 10);
+  const x = clamp(HOSPITAL.releaseX + jitterX, 24, WORLD.width - 24);
+  const y = clamp(HOSPITAL.releaseY + jitterY, 24, WORLD.height - 24);
+  if (!isSolidForPed(x, y)) {
+    return { x, y };
+  }
+  return randomPedSpawn();
+}
+
 function randomCurbSpawn() {
   const spawn = randomRoadSpawn();
   const side = Math.random() < 0.5 ? -1 : 1;
@@ -342,6 +380,29 @@ function addStars(player, amount, cooldown = 22) {
   player.stars = clamp(Math.ceil(player.starHeat - 0.001), 0, 5);
 }
 
+function policeWitnessNear(x, y, radius = POLICE_WITNESS_RADIUS) {
+  const r2 = radius * radius;
+
+  for (const cop of cops.values()) {
+    const dx = cop.x - x;
+    const dy = cop.y - y;
+    if (dx * dx + dy * dy <= r2) {
+      return true;
+    }
+  }
+
+  for (const car of cars.values()) {
+    if (car.type !== 'cop') continue;
+    const dx = car.x - x;
+    const dy = car.y - y;
+    if (dx * dx + dy * dy <= r2) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function releaseCarDriver(car) {
   if (!car.driverId) return;
   const player = players.get(car.driverId);
@@ -354,15 +415,17 @@ function releaseCarDriver(car) {
 
 function makeCar(type = 'civilian') {
   const spawn = randomRoadSpawn();
+  const isCop = type === 'cop';
+  const isAmbulance = type === 'ambulance';
   const car = {
     id: makeId('car'),
     type,
     x: spawn.x,
     y: spawn.y,
     angle: spawn.angle,
-    speed: type === 'cop' ? 75 : 55,
-    maxSpeed: type === 'cop' ? 190 : 145,
-    turnSpeed: type === 'cop' ? 3.1 : 2.2,
+    speed: isCop ? 75 : isAmbulance ? 60 : 55,
+    maxSpeed: isCop ? 190 : isAmbulance ? 165 : 145,
+    turnSpeed: isCop ? 3.1 : isAmbulance ? 2.6 : 2.2,
     width: 24,
     height: 14,
     driverId: null,
@@ -370,7 +433,10 @@ function makeCar(type = 'civilian') {
     abandonTimer: 0,
     aiCooldown: randRange(0.35, 1.35),
     hornCooldown: randRange(0, 1),
-    color: type === 'cop' ? '#5ca1ff' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
+    bodyHitCooldown: 0,
+    ambulanceMode: 'idle',
+    ambulanceTargetNpcId: null,
+    color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
   };
   cars.set(car.id, car);
   return car;
@@ -390,6 +456,10 @@ function makeNpc() {
     health: 100,
     alive: true,
     respawnTimer: 0,
+    corpseState: 'none',
+    bodyClaimedBy: null,
+    bodyCarriedBy: null,
+    reviveTimer: 0,
     skinColor: NPC_PALETTE[randInt(0, NPC_PALETTE.length)],
     shirtColor: NPC_SHIRT_PALETTE[randInt(0, NPC_SHIRT_PALETTE.length)],
   };
@@ -397,8 +467,8 @@ function makeNpc() {
   return npc;
 }
 
-function respawnNpc(npc) {
-  const spawn = randomPedSpawn();
+function respawnNpc(npc, spawnOverride = null) {
+  const spawn = spawnOverride || randomPedSpawn();
   npc.x = spawn.x;
   npc.y = spawn.y;
   npc.dir = randRange(-Math.PI, Math.PI);
@@ -409,6 +479,10 @@ function respawnNpc(npc) {
   npc.health = 100;
   npc.alive = true;
   npc.respawnTimer = 0;
+  npc.corpseState = 'none';
+  npc.bodyClaimedBy = null;
+  npc.bodyCarriedBy = null;
+  npc.reviveTimer = 0;
 }
 
 function makeCopUnit() {
@@ -432,7 +506,13 @@ function awardNpcKill(killerId, x, y) {
   if (!killer || killer.health <= 0 || killer.insideShopId) return;
 
   const reward = randInt(2, 11);
-  addStars(killer, 1.0, 28);
+  if (policeWitnessNear(x, y)) {
+    addStars(killer, 5, 38);
+    killer.starHeat = 5;
+    killer.stars = 5;
+  } else {
+    addStars(killer, 1.0, 28);
+  }
   const drop = makeCashDrop(x, y, reward);
   emitEvent('cashDrop', {
     dropId: drop.id,
@@ -445,10 +525,27 @@ function awardNpcKill(killerId, x, y) {
 function killNpc(npc, killerId = null) {
   if (!npc.alive) return;
 
+  const leaveCorpse = !!killerId;
+
   npc.alive = false;
   npc.health = 0;
-  npc.respawnTimer = randRange(6, 12);
+  npc.respawnTimer = 0;
   npc.panicTimer = 0;
+
+  if (!leaveCorpse) {
+    npc.corpseState = 'none';
+    npc.bodyClaimedBy = null;
+    npc.bodyCarriedBy = null;
+    npc.reviveTimer = 0;
+    respawnNpc(npc);
+    return;
+  }
+
+  npc.corpseState = 'down';
+  npc.bodyClaimedBy = null;
+  npc.bodyCarriedBy = null;
+  npc.reviveTimer = 0;
+  makeBloodStain(npc.x, npc.y);
 
   emitEvent('npcDown', {
     npcId: npc.id,
@@ -459,6 +556,7 @@ function killNpc(npc, killerId = null) {
 
   if (killerId) {
     awardNpcKill(killerId, npc.x, npc.y);
+    dispatchAmbulanceForNpc(npc);
   }
 }
 
@@ -759,16 +857,47 @@ function carCollidesSolid(car) {
   return false;
 }
 
-function enforceCarCollisions(car) {
+function enforceCarCollisions(car, prevX = car.x, prevY = car.y) {
   car.x = clamp(car.x, 12, WORLD.width - 12);
   car.y = clamp(car.y, 12, WORLD.height - 12);
 
   if (carCollidesSolid(car)) {
-    car.speed *= -0.35;
-    car.angle = snapToRightAngle(car.angle + Math.PI * 0.5 * (Math.random() < 0.5 ? -1 : 1));
-    const retreat = 7;
-    car.x = clamp(car.x + Math.cos(car.angle + Math.PI) * retreat, 12, WORLD.width - 12);
-    car.y = clamp(car.y + Math.sin(car.angle + Math.PI) * retreat, 12, WORLD.height - 12);
+    let resolved = false;
+
+    if (Number.isFinite(prevX) && Number.isFinite(prevY)) {
+      const cx = car.x;
+      const cy = car.y;
+      for (let i = 1; i <= 8; i++) {
+        const t = i / 8;
+        car.x = clamp(lerp(cx, prevX, t), 12, WORLD.width - 12);
+        car.y = clamp(lerp(cy, prevY, t), 12, WORLD.height - 12);
+        if (!carCollidesSolid(car)) {
+          resolved = true;
+          break;
+        }
+      }
+    }
+
+    if (!resolved) {
+      const retreatSteps = [6, 10, 14, 18];
+      for (const retreat of retreatSteps) {
+        const tx = clamp(car.x + Math.cos(car.angle + Math.PI) * retreat, 12, WORLD.width - 12);
+        const ty = clamp(car.y + Math.sin(car.angle + Math.PI) * retreat, 12, WORLD.height - 12);
+        car.x = tx;
+        car.y = ty;
+        if (!carCollidesSolid(car)) {
+          resolved = true;
+          break;
+        }
+      }
+    }
+
+    if (!resolved) {
+      car.x = clamp(prevX, 12, WORLD.width - 12);
+      car.y = clamp(prevY, 12, WORLD.height - 12);
+    }
+
+    car.speed *= -0.24;
     emitEvent('impact', { x: car.x, y: car.y });
   }
 }
@@ -798,9 +927,11 @@ function stepDrivenCar(car, input, dt) {
     car.angle += steer * car.turnSpeed * steeringStrength * dt * reverseFactor;
   }
 
+  const prevX = car.x;
+  const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
-  enforceCarCollisions(car);
+  enforceCarCollisions(car, prevX, prevY);
 }
 
 function stepTrafficCar(car, dt) {
@@ -830,6 +961,8 @@ function stepTrafficCar(car, dt) {
   }
 
   car.speed = approach(car.speed, 78, dt * 58);
+  const prevX = car.x;
+  const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
 
@@ -840,7 +973,7 @@ function stepTrafficCar(car, dt) {
     car.angle = snapToRightAngle(-car.angle);
   }
 
-  enforceCarCollisions(car);
+  enforceCarCollisions(car, prevX, prevY);
 }
 
 function stepAbandonedCar(car, dt) {
@@ -850,9 +983,11 @@ function stepAbandonedCar(car, dt) {
     return;
   }
 
+  const prevX = car.x;
+  const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
-  enforceCarCollisions(car);
+  enforceCarCollisions(car, prevX, prevY);
 }
 
 function nearestFiveStarPlayer(x, y) {
@@ -888,9 +1023,172 @@ function stepCopCar(car, dt) {
   car.speed = approach(car.speed, desiredSpeed, dt * 88);
   car.speed = clamp(car.speed, -60, 150);
 
+  const prevX = car.x;
+  const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
-  enforceCarCollisions(car);
+  enforceCarCollisions(car, prevX, prevY);
+}
+
+function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
+  let best = null;
+  const bestStart = Number.isFinite(maxDistance) ? maxDistance * maxDistance : Infinity;
+  let bestDistSq = bestStart;
+
+  for (const npc of npcs.values()) {
+    if (npc.alive) continue;
+    if (npc.corpseState !== 'down') continue;
+    if (npc.bodyClaimedBy) continue;
+    const dx = npc.x - x;
+    const dy = npc.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      best = npc;
+      bestDistSq = d2;
+    }
+  }
+
+  return best;
+}
+
+function driveAiToward(car, targetX, targetY, dt, farSpeed = 98, nearSpeed = 34) {
+  const desired = Math.atan2(targetY - car.y, targetX - car.x);
+  car.angle = angleApproach(car.angle, desired, dt * 2.7);
+  const dist = Math.hypot(targetX - car.x, targetY - car.y);
+  const desiredSpeed = dist > 120 ? farSpeed : nearSpeed;
+  car.speed = approach(car.speed, desiredSpeed, dt * 84);
+  car.speed = clamp(car.speed, -50, farSpeed + 20);
+
+  const prevX = car.x;
+  const prevY = car.y;
+  car.x += Math.cos(car.angle) * car.speed * dt;
+  car.y += Math.sin(car.angle) * car.speed * dt;
+  enforceCarCollisions(car, prevX, prevY);
+  return dist;
+}
+
+function resetAmbulanceTask(car) {
+  const npc = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+  if (npc && npc.bodyClaimedBy === car.id && npc.corpseState === 'down') {
+    npc.bodyClaimedBy = null;
+  }
+  car.ambulanceMode = 'idle';
+  car.ambulanceTargetNpcId = null;
+}
+
+function assignAmbulanceTarget(car, npc) {
+  if (!car || !npc || npc.alive || npc.corpseState !== 'down') return;
+
+  if (car.ambulanceTargetNpcId && car.ambulanceTargetNpcId !== npc.id) {
+    const previous = npcs.get(car.ambulanceTargetNpcId);
+    if (previous && previous.corpseState === 'down' && previous.bodyClaimedBy === car.id) {
+      previous.bodyClaimedBy = null;
+    }
+  }
+
+  npc.bodyClaimedBy = car.id;
+  car.ambulanceTargetNpcId = npc.id;
+  car.ambulanceMode = 'to_body';
+  car.aiCooldown = 0;
+}
+
+function dispatchAmbulanceForNpc(npc) {
+  if (!npc || npc.alive || npc.corpseState !== 'down') return;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const car of cars.values()) {
+    if (car.type !== 'ambulance' || car.driverId || !car.npcDriver) continue;
+    if (car.ambulanceMode === 'to_hospital') continue;
+    const dx = car.x - npc.x;
+    const dy = car.y - npc.y;
+    const d2 = dx * dx + dy * dy;
+    const modePenalty = car.ambulanceMode === 'idle' ? 0 : 700000;
+    const score = d2 + modePenalty;
+    if (score < bestScore) {
+      best = car;
+      bestScore = score;
+    }
+  }
+
+  if (!best) {
+    best = makeCar('ambulance');
+  }
+  assignAmbulanceTarget(best, npc);
+}
+
+function stepAmbulanceCar(car, dt) {
+  let target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+
+  if (car.ambulanceMode === 'idle') {
+    if (!target || target.alive || target.corpseState !== 'down') {
+      target = nearestAvailableCorpse(car.x, car.y);
+      if (target) {
+        assignAmbulanceTarget(car, target);
+      }
+    } else {
+      car.ambulanceMode = 'to_body';
+    }
+  }
+
+  if (car.ambulanceMode === 'to_body') {
+    target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+    if (
+      !target ||
+      target.alive ||
+      target.corpseState !== 'down' ||
+      (target.bodyClaimedBy && target.bodyClaimedBy !== car.id)
+    ) {
+      resetAmbulanceTask(car);
+      stepTrafficCar(car, dt);
+      car.speed = clamp(car.speed, -60, 95);
+      return;
+    }
+
+    target.bodyClaimedBy = car.id;
+    const dist = driveAiToward(car, target.x, target.y, dt, 105, 34);
+    if (dist < 18) {
+      target.corpseState = 'carried';
+      target.bodyCarriedBy = car.id;
+      target.bodyClaimedBy = car.id;
+      car.ambulanceMode = 'to_hospital';
+      emitEvent('npcPickup', { npcId: target.id, x: target.x, y: target.y, carId: car.id });
+    }
+    return;
+  }
+
+  if (car.ambulanceMode === 'to_hospital') {
+    target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+    if (!target || target.alive || target.corpseState !== 'carried' || target.bodyCarriedBy !== car.id) {
+      resetAmbulanceTask(car);
+      stepTrafficCar(car, dt);
+      car.speed = clamp(car.speed, -60, 95);
+      return;
+    }
+
+    target.x = car.x;
+    target.y = car.y;
+    target.dir = car.angle;
+
+    const dist = driveAiToward(car, HOSPITAL.dropX, HOSPITAL.dropY, dt, 96, 30);
+    if (dist < 24) {
+      target.corpseState = 'reviving';
+      target.bodyCarriedBy = null;
+      target.bodyClaimedBy = null;
+      target.reviveTimer = randRange(3.5, 5.2);
+      target.x = HOSPITAL.releaseX;
+      target.y = HOSPITAL.releaseY;
+      target.dir = Math.PI * 0.5;
+      emitEvent('npcHospital', { npcId: target.id, x: target.x, y: target.y });
+      car.ambulanceMode = 'idle';
+      car.ambulanceTargetNpcId = null;
+    }
+    return;
+  }
+
+  stepTrafficCar(car, dt);
+  car.speed = clamp(car.speed, -60, 95);
 }
 
 function pointToSegmentDistanceSq(px, py, x1, y1, x2, y2) {
@@ -1106,12 +1404,25 @@ function stepPlayers(dt) {
 function stepCars(dt) {
   for (const car of cars.values()) {
     car.hornCooldown -= dt;
+    car.bodyHitCooldown = Math.max(0, (car.bodyHitCooldown || 0) - dt);
 
     if (car.driverId) {
       const driver = players.get(car.driverId);
       if (!driver || driver.health <= 0 || driver.inCarId !== car.id) {
         releaseCarDriver(car);
       } else {
+        if (car.type === 'ambulance' && car.ambulanceMode !== 'idle') {
+          const taskNpc = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+          if (taskNpc && taskNpc.corpseState === 'carried' && taskNpc.bodyCarriedBy === car.id) {
+            taskNpc.corpseState = 'down';
+            taskNpc.bodyCarriedBy = null;
+            taskNpc.bodyClaimedBy = null;
+            taskNpc.x = car.x;
+            taskNpc.y = car.y;
+          }
+          resetAmbulanceTask(car);
+        }
+
         stepDrivenCar(car, driver.input, dt);
 
         driver.x = car.x;
@@ -1129,6 +1440,8 @@ function stepCars(dt) {
     if (car.npcDriver) {
       if (car.type === 'cop') {
         stepCopCar(car, dt);
+      } else if (car.type === 'ambulance') {
+        stepAmbulanceCar(car, dt);
       } else {
         stepTrafficCar(car, dt);
       }
@@ -1142,6 +1455,65 @@ function stepCars(dt) {
       car.abandonTimer = 0;
       car.aiCooldown = randRange(0.3, 1.3);
       car.speed = Math.max(car.speed, 40);
+    }
+  }
+}
+
+function stepCarHitsByCars() {
+  const list = Array.from(cars.values());
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j];
+
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const minDist = (a.width + b.width) * 0.42;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > minDist * minDist) continue;
+
+      const dist = Math.max(0.0001, Math.sqrt(distSq));
+      const nx = dx / dist;
+      const ny = dy / dist;
+      const penetration = Math.max(0, minDist - dist);
+
+      if (penetration > 0) {
+        const push = penetration * 0.55;
+        const aPrevX = a.x;
+        const aPrevY = a.y;
+        const bPrevX = b.x;
+        const bPrevY = b.y;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+        enforceCarCollisions(a, aPrevX, aPrevY);
+        enforceCarCollisions(b, bPrevX, bPrevY);
+      }
+
+      const avx = Math.cos(a.angle) * a.speed;
+      const avy = Math.sin(a.angle) * a.speed;
+      const bvx = Math.cos(b.angle) * b.speed;
+      const bvy = Math.sin(b.angle) * b.speed;
+      const relAlong = (bvx - avx) * nx + (bvy - avy) * ny;
+      if (relAlong >= -6 && penetration < 0.6) continue;
+
+      const hit = Math.abs(relAlong);
+      const transfer = clamp(0.26 + hit / 210, 0.26, 0.52);
+      const aOldSpeed = a.speed;
+      const bOldSpeed = b.speed;
+      a.speed = clamp((aOldSpeed * (1 - transfer) + bOldSpeed * transfer) * 0.82, -92, a.maxSpeed);
+      b.speed = clamp((bOldSpeed * (1 - transfer) + aOldSpeed * transfer) * 0.82, -92, b.maxSpeed);
+
+      const turn = 0.1 + transfer * 0.18;
+      a.angle = angleApproach(a.angle, Math.atan2(-ny, -nx), turn);
+      b.angle = angleApproach(b.angle, Math.atan2(ny, nx), turn);
+
+      if (hit > 18 && a.bodyHitCooldown <= 0 && b.bodyHitCooldown <= 0) {
+        a.bodyHitCooldown = 0.16;
+        b.bodyHitCooldown = 0.16;
+        emitEvent('impact', { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 });
+      }
     }
   }
 }
@@ -1226,9 +1598,22 @@ function stepNpcs(dt) {
 
   for (const npc of npcs.values()) {
     if (!npc.alive) {
-      npc.respawnTimer -= dt;
-      if (npc.respawnTimer <= 0) {
-        respawnNpc(npc);
+      if (npc.corpseState === 'carried') {
+        const carrier = npc.bodyCarriedBy ? cars.get(npc.bodyCarriedBy) : null;
+        if (carrier && carrier.type === 'ambulance') {
+          npc.x = carrier.x;
+          npc.y = carrier.y;
+          npc.dir = carrier.angle;
+        } else {
+          npc.corpseState = 'down';
+          npc.bodyCarriedBy = null;
+          npc.bodyClaimedBy = null;
+        }
+      } else if (npc.corpseState === 'reviving') {
+        npc.reviveTimer -= dt;
+        if (npc.reviveTimer <= 0) {
+          respawnNpc(npc, hospitalReleaseSpawn());
+        }
       }
       continue;
     }
@@ -1238,23 +1623,6 @@ function stepNpcs(dt) {
     }
     if (npc.crossingTimer > 0) {
       npc.crossingTimer -= dt;
-    }
-
-    let threat = null;
-    let threatDistSq = 38 * 38;
-    for (const player of players.values()) {
-      if (player.health <= 0 || player.insideShopId) continue;
-      const dx = npc.x - player.x;
-      const dy = npc.y - player.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < threatDistSq) {
-        threat = player;
-        threatDistSq = d2;
-      }
-    }
-    if (threat) {
-      npc.panicTimer = Math.max(npc.panicTimer, 1.4);
-      npc.dir = Math.atan2(npc.y - threat.y, npc.x - threat.x);
     }
 
     npc.wanderTimer -= dt;
@@ -1369,12 +1737,14 @@ function stepNpcHitsByCars() {
       const dy = car.y - npc.y;
       if (dx * dx + dy * dy > 13 * 13) continue;
 
-      if (car.driverId) {
-        killNpc(npc, car.driverId);
-      } else {
-        killNpc(npc, null);
+      if (!car.driverId) {
+        npc.panicTimer = Math.max(npc.panicTimer, 1.8);
+        npc.dir = Math.atan2(npc.y - car.y, npc.x - car.x);
+        emitEvent('impact', { x: npc.x, y: npc.y });
+        break;
       }
 
+      killNpc(npc, car.driverId);
       emitEvent('impact', { x: npc.x, y: npc.y });
       break;
     }
@@ -1421,12 +1791,44 @@ function stepCashDrops(dt) {
   }
 }
 
+function stepBloodStains(dt) {
+  for (const stain of bloodStains.values()) {
+    stain.ttl -= dt;
+    if (stain.ttl <= 0) {
+      bloodStains.delete(stain.id);
+    }
+  }
+}
+
+function resetAmbientSceneWhenEmpty() {
+  if (players.size > 0) return;
+
+  for (const npc of npcs.values()) {
+    if (!npc.alive) {
+      respawnNpc(npc);
+    }
+  }
+
+  if (bloodStains.size > 0) {
+    bloodStains.clear();
+  }
+
+  for (const car of cars.values()) {
+    if (car.type === 'ambulance' && (car.ambulanceMode !== 'idle' || car.ambulanceTargetNpcId)) {
+      resetAmbulanceTask(car);
+    }
+  }
+}
+
 function ensureCarPopulation() {
   let civilian = 0;
   let cop = 0;
+  let ambulance = 0;
   for (const car of cars.values()) {
     if (car.type === 'cop') {
       cop += 1;
+    } else if (car.type === 'ambulance') {
+      ambulance += 1;
     } else {
       civilian += 1;
     }
@@ -1439,6 +1841,10 @@ function ensureCarPopulation() {
   while (cop < COP_COUNT) {
     makeCar('cop');
     cop += 1;
+  }
+  while (ambulance < AMBULANCE_COUNT) {
+    makeCar('ambulance');
+    ambulance += 1;
   }
 }
 
@@ -1498,6 +1904,7 @@ function serializeSnapshot() {
       y: Math.round(npc.y * 100) / 100,
       dir: Math.round(npc.dir * 1000) / 1000,
       alive: npc.alive,
+      corpseState: npc.corpseState,
       skinColor: npc.skinColor,
       shirtColor: npc.shirtColor,
     });
@@ -1525,6 +1932,16 @@ function serializeSnapshot() {
     });
   }
 
+  const bloodPayload = [];
+  for (const stain of bloodStains.values()) {
+    bloodPayload.push({
+      id: stain.id,
+      x: Math.round(stain.x * 100) / 100,
+      y: Math.round(stain.y * 100) / 100,
+      ttl: Math.round(stain.ttl * 100) / 100,
+    });
+  }
+
   return {
     type: 'snapshot',
     serverTime: Date.now(),
@@ -1545,12 +1962,20 @@ function serializeSnapshot() {
         radius: shop.radius,
         stock: SHOP_STOCK,
       })),
+      hospital: {
+        id: HOSPITAL.id,
+        name: HOSPITAL.name,
+        x: HOSPITAL.x,
+        y: HOSPITAL.y,
+        radius: HOSPITAL.radius,
+      },
     },
     players: playersPayload,
     cars: carsPayload,
     npcs: npcsPayload,
     cops: copsPayload,
     drops: dropsPayload,
+    blood: bloodPayload,
     events: pendingEvents,
   };
 }
@@ -1669,6 +2094,13 @@ function handleJoin(ws, data) {
           radius: shop.radius,
           stock: SHOP_STOCK,
         })),
+        hospital: {
+          id: HOSPITAL.id,
+          name: HOSPITAL.name,
+          x: HOSPITAL.x,
+          y: HOSPITAL.y,
+          radius: HOSPITAL.radius,
+        },
       },
     })
   );
@@ -1789,6 +2221,9 @@ for (let i = 0; i < TRAFFIC_COUNT; i++) {
 for (let i = 0; i < COP_COUNT; i++) {
   makeCar('cop');
 }
+for (let i = 0; i < AMBULANCE_COUNT; i++) {
+  makeCar('ambulance');
+}
 for (let i = 0; i < NPC_COUNT; i++) {
   makeNpc();
 }
@@ -1799,11 +2234,14 @@ for (let i = 0; i < COP_OFFICER_COUNT; i++) {
 setInterval(() => {
   stepPlayers(DT);
   stepCars(DT);
+  stepCarHitsByCars();
   stepCops(DT);
   stepNpcs(DT);
   stepPlayerHits();
   stepNpcHitsByCars();
   stepCashDrops(DT);
+  stepBloodStains(DT);
+  resetAmbientSceneWhenEmpty();
   ensureCarPopulation();
   ensureNpcPopulation();
   ensureCopPopulation();

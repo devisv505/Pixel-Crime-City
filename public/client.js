@@ -628,6 +628,7 @@ function interpolateSnapshot(targetServerTime) {
       npcs: single.npcs || [],
       cops: single.cops || [],
       drops: single.drops || [],
+      blood: single.blood || [],
       playersById: new Map((single.players || []).map((p) => [p.id, p])),
       carsById: new Map((single.cars || []).map((c) => [c.id, c])),
       localPlayer: (single.players || []).find((p) => p.id === playerId) || null,
@@ -655,6 +656,7 @@ function interpolateSnapshot(targetServerTime) {
   const olderNpcs = new Map((older.npcs || []).map((n) => [n.id, n]));
   const olderCops = new Map((older.cops || []).map((c) => [c.id, c]));
   const olderDrops = new Map((older.drops || []).map((d) => [d.id, d]));
+  const olderBlood = new Map((older.blood || []).map((b) => [b.id, b]));
 
   const players = (newer.players || []).map((next) => {
     const prev = olderPlayers.get(next.id) || next;
@@ -709,6 +711,15 @@ function interpolateSnapshot(targetServerTime) {
     };
   });
 
+  const blood = (newer.blood || []).map((next) => {
+    const prev = olderBlood.get(next.id) || next;
+    return {
+      ...next,
+      x: lerp(prev.x, next.x, t),
+      y: lerp(prev.y, next.y, t),
+    };
+  });
+
   const playersById = new Map(players.map((p) => [p.id, p]));
   const carsById = new Map(cars.map((c) => [c.id, c]));
 
@@ -719,6 +730,7 @@ function interpolateSnapshot(targetServerTime) {
     npcs,
     cops,
     drops,
+    blood,
     playersById,
     carsById,
     localPlayer: playersById.get(playerId) || null,
@@ -856,6 +868,35 @@ function drawShopMarkers(state, worldLeft, worldTop) {
   }
 }
 
+function drawHospitalMarker(state, worldLeft, worldTop) {
+  const hospital = state.world?.hospital;
+  if (!hospital) return;
+
+  const sx = Math.round(hospital.x - worldLeft);
+  const sy = Math.round(hospital.y - worldTop);
+  if (sx < -50 || sy < -50 || sx > canvas.width + 50 || sy > canvas.height + 50) {
+    return;
+  }
+
+  ctx.fillStyle = '#d9dce3';
+  ctx.fillRect(sx - 18, sy - 15, 36, 25);
+  ctx.fillStyle = '#aeb4bf';
+  ctx.fillRect(sx - 16, sy - 13, 32, 5);
+  ctx.fillStyle = '#232730';
+  ctx.fillRect(sx - 5, sy - 2, 10, 12);
+  ctx.fillStyle = '#b72f36';
+  ctx.fillRect(sx - 13, sy - 24, 26, 7);
+  ctx.fillStyle = '#ffe5ea';
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  const label = 'HOSP';
+  const w = ctx.measureText(label).width;
+  ctx.fillText(label, sx - w * 0.5, sy - 19);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(sx - 2, sy - 11, 4, 10);
+  ctx.fillRect(sx - 6, sy - 7, 12, 4);
+}
+
 function nearbyShopForPlayer(state, player, maxDistance = 34) {
   const shops = state.world?.shops || [];
   const maxSq = maxDistance * maxDistance;
@@ -883,6 +924,22 @@ function drawDrops(state, worldLeft, worldTop) {
     ctx.fillRect(sx - 3, sy - 2, 6, 4);
     ctx.fillStyle = '#0a2c0f';
     ctx.fillRect(sx - 1, sy - 2, 2, 4);
+  }
+}
+
+function drawBloodStains(state, worldLeft, worldTop) {
+  for (const stain of state.blood || []) {
+    const sx = Math.round(stain.x - worldLeft);
+    const sy = Math.round(stain.y - worldTop);
+    if (sx < -18 || sy < -18 || sx > canvas.width + 18 || sy > canvas.height + 18) {
+      continue;
+    }
+
+    ctx.fillStyle = '#6d1a1d';
+    ctx.fillRect(sx - 4, sy - 2, 8, 4);
+    ctx.fillRect(sx - 2, sy - 4, 4, 8);
+    ctx.fillRect(sx - 6, sy - 1, 2, 2);
+    ctx.fillRect(sx + 4, sy + 1, 2, 2);
   }
 }
 
@@ -1222,6 +1279,18 @@ function drawCar(car, worldLeft, worldTop) {
 
   ctx.drawImage(sprite, -halfW, -halfH);
 
+  if (car.type === 'ambulance') {
+    ctx.fillStyle = '#e6ebf7';
+    ctx.fillRect(-6, -1, 12, 2);
+    ctx.fillStyle = '#c8343e';
+    ctx.fillRect(-1, -4, 2, 8);
+    ctx.fillRect(-4, -1, 8, 2);
+    ctx.fillStyle = '#5ea7ff';
+    ctx.fillRect(-3, -halfH + 1, 3, 2);
+    ctx.fillStyle = '#ef4f5a';
+    ctx.fillRect(0, -halfH + 1, 3, 2);
+  }
+
   if (car.npcDriver && !car.driverId) {
     ctx.fillStyle = '#f0c39a';
     ctx.fillRect(-1, -1, 2, 2);
@@ -1323,11 +1392,20 @@ function drawPixelPlayer(player, worldLeft, worldTop) {
 }
 
 function drawNpc(npc, worldLeft, worldTop) {
-  if (!npc.alive) return;
-
   const x = Math.round(npc.x - worldLeft);
   const y = Math.round(npc.y - worldTop);
   if (x < -20 || y < -20 || x > canvas.width + 20 || y > canvas.height + 20) {
+    return;
+  }
+
+  if (!npc.alive) {
+    if (npc.corpseState === 'carried') return;
+    ctx.fillStyle = '#2a3342';
+    ctx.fillRect(x - 6, y - 2, 12, 4);
+    ctx.fillStyle = npc.shirtColor || '#8092a6';
+    ctx.fillRect(x - 5, y - 1, 10, 2);
+    ctx.fillStyle = npc.skinColor || '#f0c39a';
+    ctx.fillRect(x + 3, y - 1, 3, 2);
     return;
   }
 
@@ -1496,6 +1574,8 @@ function renderState(state, dt) {
 
   drawWorld();
   drawShopMarkers(state, worldLeft, worldTop);
+  drawHospitalMarker(state, worldLeft, worldTop);
+  drawBloodStains(state, worldLeft, worldTop);
   drawDrops(state, worldLeft, worldTop);
 
   const drawList = [];
@@ -1503,7 +1583,7 @@ function renderState(state, dt) {
     drawList.push({ kind: 'car', y: car.y, item: car });
   }
   for (const npc of state.npcs) {
-    if (!npc.alive) continue;
+    if (!npc.alive && npc.corpseState === 'carried') continue;
     drawList.push({ kind: 'npc', y: npc.y + 4, item: npc });
   }
   for (const cop of state.cops || []) {
