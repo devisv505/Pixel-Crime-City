@@ -47,7 +47,7 @@ const INPUT = {
   enter: false,
   horn: false,
   shootSeq: 0,
-  weaponSlot: 2,
+  weaponSlot: 1,
 };
 
 const POINTER = {
@@ -419,7 +419,7 @@ function resetSessionState() {
   INPUT.right = false;
   INPUT.enter = false;
   INPUT.horn = false;
-  INPUT.weaponSlot = 2;
+  INPUT.weaponSlot = 1;
   statusNotice = '';
   statusNoticeUntil = 0;
   latestState = null;
@@ -556,6 +556,15 @@ function processEvents(events) {
         speed: ev.weapon === 'shotgun' ? 3.6 : 4.8,
         ttl: 0.18,
       });
+    } else if (ev.type === 'melee') {
+      pushEffect({
+        type: 'melee',
+        x: ev.x,
+        y: ev.y,
+        toX: ev.toX ?? ev.x,
+        toY: ev.toY ?? ev.y,
+        ttl: 0.12,
+      });
     } else if (ev.type === 'npcThrown') {
       audio.playImpact(distance);
       pushEffect({
@@ -588,6 +597,17 @@ function processEvents(events) {
     } else if (ev.type === 'purchase' && ev.playerId === playerId) {
       statusNotice = `Bought ${ev.item}`;
       statusNoticeUntil = performance.now() + 2200;
+    } else if (ev.type === 'pvpKill') {
+      if (ev.killerId === playerId) {
+        statusNotice = 'You eliminated a player';
+      } else if (ev.victimId === playerId) {
+        statusNotice = 'You were eliminated';
+      } else {
+        statusNotice = '';
+      }
+      if (statusNotice) {
+        statusNoticeUntil = performance.now() + 2200;
+      }
     }
   }
 
@@ -606,6 +626,7 @@ function interpolateSnapshot(targetServerTime) {
       players: single.players || [],
       cars: single.cars || [],
       npcs: single.npcs || [],
+      cops: single.cops || [],
       drops: single.drops || [],
       playersById: new Map((single.players || []).map((p) => [p.id, p])),
       carsById: new Map((single.cars || []).map((c) => [c.id, c])),
@@ -632,6 +653,7 @@ function interpolateSnapshot(targetServerTime) {
   const olderPlayers = new Map((older.players || []).map((p) => [p.id, p]));
   const olderCars = new Map((older.cars || []).map((c) => [c.id, c]));
   const olderNpcs = new Map((older.npcs || []).map((n) => [n.id, n]));
+  const olderCops = new Map((older.cops || []).map((c) => [c.id, c]));
   const olderDrops = new Map((older.drops || []).map((d) => [d.id, d]));
 
   const players = (newer.players || []).map((next) => {
@@ -677,6 +699,16 @@ function interpolateSnapshot(targetServerTime) {
     };
   });
 
+  const cops = (newer.cops || []).map((next) => {
+    const prev = olderCops.get(next.id) || next;
+    return {
+      ...next,
+      x: lerp(prev.x, next.x, t),
+      y: lerp(prev.y, next.y, t),
+      dir: angleLerp(prev.dir || 0, next.dir || 0, t),
+    };
+  });
+
   const playersById = new Map(players.map((p) => [p.id, p]));
   const carsById = new Map(cars.map((c) => [c.id, c]));
 
@@ -685,6 +717,7 @@ function interpolateSnapshot(targetServerTime) {
     players,
     cars,
     npcs,
+    cops,
     drops,
     playersById,
     carsById,
@@ -731,15 +764,24 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
   }
 
   if (type === 'building') {
-    ctx.fillStyle = '#4f565e';
+    ctx.fillStyle = '#4a4f56';
     ctx.fillRect(sx, sy, tile, tile);
 
     const blockX = Math.floor(worldX / tile);
     const blockY = Math.floor(worldY / tile);
-    if (hash2D(blockX, blockY) > 0.7) {
-      ctx.fillStyle = '#8fa4b8';
-      ctx.fillRect(sx + 4, sy + 4, 3, 3);
-      ctx.fillRect(sx + tile - 7, sy + 4, 3, 3);
+    const seed = hash2D(blockX, blockY);
+    ctx.fillStyle = seed > 0.5 ? '#59616b' : '#424850';
+    ctx.fillRect(sx, sy, tile, 2);
+    ctx.fillRect(sx, sy + tile - 2, tile, 2);
+    if (seed > 0.28) {
+      ctx.fillStyle = '#90a5b8';
+      ctx.fillRect(sx + 3, sy + 4, 2, 2);
+      ctx.fillRect(sx + 7, sy + 4, 2, 2);
+      ctx.fillRect(sx + 11, sy + 4, 2, 2);
+    }
+    if (seed > 0.74) {
+      ctx.fillStyle = '#343942';
+      ctx.fillRect(sx + 6, sy + 8, 4, 4);
     }
     return;
   }
@@ -798,17 +840,19 @@ function drawShopMarkers(state, worldLeft, worldTop) {
       continue;
     }
 
-    ctx.fillStyle = '#1e1212';
-    ctx.fillRect(sx - 12, sy - 18, 24, 12);
-    ctx.fillStyle = '#ff9f59';
-    ctx.fillRect(sx - 10, sy - 16, 20, 8);
-    ctx.fillStyle = '#101010';
-    ctx.fillRect(sx - 7, sy - 4, 14, 6);
-    ctx.fillStyle = '#fff1d6';
+    ctx.fillStyle = '#2f3238';
+    ctx.fillRect(sx - 16, sy - 16, 32, 24);
+    ctx.fillStyle = '#505863';
+    ctx.fillRect(sx - 14, sy - 14, 28, 5);
+    ctx.fillStyle = '#1a1d22';
+    ctx.fillRect(sx - 4, sy - 3, 8, 10);
+    ctx.fillStyle = '#2d1d15';
+    ctx.fillRect(sx - 13, sy - 23, 26, 7);
+    ctx.fillStyle = '#ffb768';
     ctx.font = '6px "Lucida Console", Monaco, monospace';
-    const label = 'GUN';
+    const label = 'GUN SHOP';
     const w = ctx.measureText(label).width;
-    ctx.fillText(label, sx - w * 0.5, sy - 10);
+    ctx.fillText(label, sx - w * 0.5, sy - 18);
   }
 }
 
@@ -875,18 +919,287 @@ function drawShopInterior(state) {
 
   const pistolOwned = !!local.ownedPistol;
   const shotgunOwned = !!local.ownedShotgun;
-  const weaponLabel =
-    local.weapon === 'shotgun' ? 'equipped' : local.weapon === 'pistol' ? 'equipped' : 'holstered';
+  const weaponLabel = local.weapon || 'fist';
 
+  ctx.fillStyle = '#d8d8d8';
+  ctx.fillText('3) Fists (always available)', panelX + 18, panelY + 62);
   ctx.fillStyle = pistolOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`1) Pistol  $${pistolPrice}  ${pistolOwned ? '(owned)' : ''}`, panelX + 18, panelY + 74);
+  ctx.fillText(`1) Buy Pistol  $${pistolPrice}  ${pistolOwned ? '(owned)' : ''}`, panelX + 18, panelY + 82);
   ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`2) Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 92);
+  ctx.fillText(`2) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
 
   ctx.fillStyle = '#bfc8d6';
-  ctx.fillText(`Current: ${local.weapon} (${weaponLabel})`, panelX + 18, panelY + 118);
+  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 124);
   ctx.fillStyle = '#e8e8e8';
-  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 140);
+  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 146);
+}
+
+const CAR_SPRITE_TEMPLATE_FALLBACK = [
+  '..11111....11..12.......',
+  '..233331111331123111111.',
+  '.28444333343333331343592',
+  '142235333433333312245393',
+  '332244444444443222235443',
+  '332145555555543222225543',
+  '332145555555543222225543',
+  '332145555555543222225543',
+  '331145555555543222225543',
+  '331144444444443222235443',
+  '132135333433333412245393',
+  '.28444333343333331433591',
+  '..233331111331113111111.',
+  '..11111....11..12.......',
+];
+const CAR_TEMPLATE_WIDTH = 24;
+const CAR_TEMPLATE_HEIGHT = 14;
+const CUSTOM_CAR_SPRITE_PATH = 'assets/cars/car.png';
+const carSpriteCache = new Map();
+let customCarTemplate = null;
+let customCarTemplateState = 'idle';
+
+function classifyCarTemplateCell(avgA, r, g, b) {
+  if (avgA < 20) return '.';
+
+  if (r > 190 && g > 185 && b > 160) return '7';
+  if (r > 130 && r > g * 1.25 && r > b * 1.35) return '8';
+
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  if (b > g + 18 && b > r + 18) {
+    if (lum < 78) return '3';
+    if (lum < 108) return '4';
+    return '5';
+  }
+
+  if (lum < 38) return '1';
+  if (lum < 68) return '2';
+  if (lum < 110) return '6';
+  return '9';
+}
+
+function extractCarTemplateFromImage(img) {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) return null;
+
+  const scan = document.createElement('canvas');
+  scan.width = w;
+  scan.height = h;
+  const gx = scan.getContext('2d');
+  gx.imageSmoothingEnabled = false;
+  gx.drawImage(img, 0, 0);
+
+  const pixels = gx.getImageData(0, 0, w, h).data;
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = (y * w + x) * 4;
+      if (pixels[i + 3] < 24) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return null;
+  }
+
+  const bw = maxX - minX + 1;
+  const bh = maxY - minY + 1;
+  let nonEmpty = 0;
+  const rows = [];
+
+  for (let by = 0; by < CAR_TEMPLATE_HEIGHT; by += 1) {
+    let row = '';
+    const py0 = minY + Math.floor((by * bh) / CAR_TEMPLATE_HEIGHT);
+    const py1 = minY + Math.max(py0 - minY + 1, Math.floor(((by + 1) * bh) / CAR_TEMPLATE_HEIGHT));
+
+    for (let bx = 0; bx < CAR_TEMPLATE_WIDTH; bx += 1) {
+      const px0 = minX + Math.floor((bx * bw) / CAR_TEMPLATE_WIDTH);
+      const px1 = minX + Math.max(px0 - minX + 1, Math.floor(((bx + 1) * bw) / CAR_TEMPLATE_WIDTH));
+
+      let sumA = 0;
+      let sumR = 0;
+      let sumG = 0;
+      let sumB = 0;
+      let count = 0;
+
+      for (let py = py0; py < py1; py += 1) {
+        for (let px = px0; px < px1; px += 1) {
+          const i = (py * w + px) * 4;
+          const a = pixels[i + 3];
+          const aw = a / 255;
+          sumA += a;
+          sumR += pixels[i] * aw;
+          sumG += pixels[i + 1] * aw;
+          sumB += pixels[i + 2] * aw;
+          count += 1;
+        }
+      }
+
+      const avgA = count > 0 ? sumA / count : 0;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (sumA > 0) {
+        const norm = sumA / 255;
+        r = sumR / norm;
+        g = sumG / norm;
+        b = sumB / norm;
+      }
+
+      const token = classifyCarTemplateCell(avgA, r, g, b);
+      if (token !== '.') nonEmpty += 1;
+      row += token;
+    }
+
+    rows.push(row);
+  }
+
+  return nonEmpty >= 56 ? rows : null;
+}
+
+function ensureCustomCarTemplate() {
+  if (customCarTemplateState !== 'idle') return;
+  customCarTemplateState = 'loading';
+  const img = new Image();
+  img.onload = () => {
+    const extracted = extractCarTemplateFromImage(img);
+    if (extracted) {
+      customCarTemplate = extracted;
+      customCarTemplateState = 'ready';
+    } else {
+      customCarTemplate = null;
+      customCarTemplateState = 'missing';
+    }
+    carSpriteCache.clear();
+  };
+  img.onerror = () => {
+    customCarTemplate = null;
+    customCarTemplateState = 'missing';
+    carSpriteCache.clear();
+  };
+  img.src = `${CUSTOM_CAR_SPRITE_PATH}?v=${Date.now()}`;
+}
+
+function normalizeHexColor(value, fallback = '#5ca1ff') {
+  if (typeof value !== 'string') return fallback;
+  const text = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(text)) {
+    return text.toLowerCase();
+  }
+  if (/^#[0-9a-fA-F]{3}$/.test(text)) {
+    const r = text[1];
+    const g = text[2];
+    const b = text[3];
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return fallback;
+}
+
+function hexToRgb(hex) {
+  const safe = normalizeHexColor(hex);
+  return {
+    r: Number.parseInt(safe.slice(1, 3), 16),
+    g: Number.parseInt(safe.slice(3, 5), 16),
+    b: Number.parseInt(safe.slice(5, 7), 16),
+  };
+}
+
+function rgbToHex(r, g, b) {
+  const rr = clamp(Math.round(r), 0, 255).toString(16).padStart(2, '0');
+  const gg = clamp(Math.round(g), 0, 255).toString(16).padStart(2, '0');
+  const bb = clamp(Math.round(b), 0, 255).toString(16).padStart(2, '0');
+  return `#${rr}${gg}${bb}`;
+}
+
+function shadeHex(hex, multiplier) {
+  const c = hexToRgb(hex);
+  return rgbToHex(c.r * multiplier, c.g * multiplier, c.b * multiplier);
+}
+
+function mixHex(a, b, ratio) {
+  const ca = hexToRgb(a);
+  const cb = hexToRgb(b);
+  const t = clamp(ratio, 0, 1);
+  return rgbToHex(lerp(ca.r, cb.r, t), lerp(ca.g, cb.g, t), lerp(ca.b, cb.b, t));
+}
+
+function getCarSpritePalette(type, bodyColor) {
+  const fallback = type === 'cop' ? '#4878c6' : '#4f9dff';
+  const base = normalizeHexColor(type === 'cop' ? '#4878c6' : bodyColor, fallback);
+  const shadow = shadeHex(base, 0.56);
+  const body = shadeHex(base, 0.78);
+  const light = shadeHex(base, 1.06);
+  const highlight = mixHex(base, '#ffffff', 0.3);
+
+  return {
+    '1': '#0c1118',
+    '2': shadow,
+    '3': body,
+    '4': light,
+    '5': '#1c2736',
+    '6': type === 'cop' ? '#3f5b78' : '#567291',
+    '7': '#fff2c8',
+    '8': '#ff5061',
+    '9': type === 'cop' ? '#f0f5ff' : highlight,
+  };
+}
+
+function buildCarSprite(type, bodyColor) {
+  const template = customCarTemplateState === 'ready' && customCarTemplate ? customCarTemplate : CAR_SPRITE_TEMPLATE_FALLBACK;
+  const width = template[0].length;
+  const height = template.length;
+  const sprite = document.createElement('canvas');
+  sprite.width = width;
+  sprite.height = height;
+  const g = sprite.getContext('2d');
+  const palette = getCarSpritePalette(type, bodyColor);
+  g.imageSmoothingEnabled = false;
+
+  for (let y = 0; y < height; y += 1) {
+    const row = template[y];
+    for (let x = 0; x < width; x += 1) {
+      const token = row[x];
+      if (token === '.') continue;
+      const color = palette[token];
+      if (!color) continue;
+      g.fillStyle = color;
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+
+  if (type === 'cop') {
+    g.fillStyle = '#e7edf8';
+    g.fillRect(6, Math.floor(height * 0.5) - 1, width - 12, 2);
+    const cx = Math.floor(width * 0.5);
+    g.fillStyle = '#e9f3ff';
+    g.fillRect(cx - 2, 5, 4, 2);
+    g.fillStyle = '#ef4f5a';
+    g.fillRect(cx - 2, 4, 2, 2);
+    g.fillStyle = '#5ea7ff';
+    g.fillRect(cx, 4, 2, 2);
+  }
+
+  return sprite;
+}
+
+function getCarSprite(type, bodyColor) {
+  ensureCustomCarTemplate();
+  const fallback = type === 'cop' ? '#5ca1ff' : '#4f9dff';
+  const safeColor = normalizeHexColor(bodyColor, fallback);
+  const sourceKey = customCarTemplateState === 'ready' ? 'custom' : 'fallback';
+  const key = `${sourceKey}|${type}|${safeColor}`;
+  const cached = carSpriteCache.get(key);
+  if (cached) return cached;
+  const sprite = buildCarSprite(type, safeColor);
+  carSpriteCache.set(key, sprite);
+  return sprite;
 }
 
 function drawCar(car, worldLeft, worldTop) {
@@ -901,38 +1214,17 @@ function drawCar(car, worldLeft, worldTop) {
   ctx.translate(sx, sy);
   ctx.rotate(car.angle);
 
+  const sprite = getCarSprite(car.type, car.color);
+  const halfW = Math.floor(sprite.width * 0.5);
+  const halfH = Math.floor(sprite.height * 0.5);
   ctx.fillStyle = 'rgba(0, 0, 0, 0.33)';
-  ctx.fillRect(-11, 8, 22, 4);
+  ctx.fillRect(-Math.floor(sprite.width * 0.46), halfH - 1, Math.floor(sprite.width * 0.92), 3);
 
-  ctx.fillStyle = '#121820';
-  ctx.fillRect(-12, -7, 24, 14);
-
-  ctx.fillStyle = car.color;
-  ctx.fillRect(-10, -6, 20, 12);
-
-  ctx.fillStyle = '#0b1017';
-  ctx.fillRect(-6, -4, 12, 8);
-
-  ctx.fillStyle = '#a4c6df';
-  ctx.fillRect(-5, -3, 4, 3);
-  ctx.fillRect(1, -3, 4, 3);
-
-  ctx.fillStyle = '#0c1014';
-  ctx.fillRect(-11, -8, 4, 2);
-  ctx.fillRect(7, -8, 4, 2);
-  ctx.fillRect(-11, 6, 4, 2);
-  ctx.fillRect(7, 6, 4, 2);
+  ctx.drawImage(sprite, -halfW, -halfH);
 
   if (car.npcDriver && !car.driverId) {
     ctx.fillStyle = '#f0c39a';
-    ctx.fillRect(-1, -2, 2, 2);
-  }
-
-  if (car.type === 'cop') {
-    ctx.fillStyle = '#ef4f5a';
-    ctx.fillRect(-2, -7, 2, 2);
-    ctx.fillStyle = '#5ea7ff';
-    ctx.fillRect(0, -7, 2, 2);
+    ctx.fillRect(-1, -1, 2, 2);
   }
 
   ctx.restore();
@@ -1042,6 +1334,16 @@ function drawNpc(npc, worldLeft, worldTop) {
   drawPixelCharacter(x, y, npc.dir || 0, npc.shirtColor || '#8092a6', npc.skinColor || '#f0c39a', '#2a3342');
 }
 
+function drawCop(cop, worldLeft, worldTop) {
+  const x = Math.round(cop.x - worldLeft);
+  const y = Math.round(cop.y - worldTop);
+  if (x < -20 || y < -20 || x > canvas.width + 20 || y > canvas.height + 20) {
+    return;
+  }
+  const uniform = cop.mode === 'hunt' ? '#4a8dff' : '#3e76d8';
+  drawPixelCharacter(x, y, cop.dir || 0, uniform, '#efc39e', '#1f3157');
+}
+
 function updateEffects(dt) {
   for (let i = visualEffects.length - 1; i >= 0; i -= 1) {
     const effect = visualEffects[i];
@@ -1114,6 +1416,17 @@ function drawEffects(worldLeft, worldTop) {
       const sy = Math.round(effect.y - worldTop);
       ctx.fillStyle = '#8dff83';
       ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    } else if (effect.type === 'melee') {
+      const sx = Math.round(effect.x - worldLeft);
+      const sy = Math.round(effect.y - worldTop);
+      const tx = Math.round(effect.toX - worldLeft);
+      const ty = Math.round(effect.toY - worldTop);
+      ctx.strokeStyle = '#f0f3ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
     }
   }
 }
@@ -1193,6 +1506,9 @@ function renderState(state, dt) {
     if (!npc.alive) continue;
     drawList.push({ kind: 'npc', y: npc.y + 4, item: npc });
   }
+  for (const cop of state.cops || []) {
+    drawList.push({ kind: 'cop', y: cop.y + 5, item: cop });
+  }
   for (const player of state.players) {
     if (player.insideShopId) continue;
     if (player.inCarId) continue;
@@ -1205,6 +1521,8 @@ function renderState(state, dt) {
       drawCar(entry.item, worldLeft, worldTop);
     } else if (entry.kind === 'npc') {
       drawNpc(entry.item, worldLeft, worldTop);
+    } else if (entry.kind === 'cop') {
+      drawCop(entry.item, worldLeft, worldTop);
     } else {
       drawPixelPlayer(entry.item, worldLeft, worldTop);
     }
@@ -1248,7 +1566,7 @@ function updateHud(state) {
   hudName.textContent = `Player: ${p.name}`;
   hudHealth.textContent = `HP: ${Math.max(0, p.health | 0)}`;
   const weaponLabel =
-    p.weapon === 'shotgun' ? 'shotgun' : p.weapon === 'pistol' ? 'pistol' : 'unarmed';
+    p.weapon === 'shotgun' ? 'shotgun' : p.weapon === 'pistol' ? 'pistol' : 'fists';
   if (p.insideShopId) {
     hudMode.textContent = 'Mode: In Gun Shop';
   } else if (p.inCarId) {
@@ -1331,6 +1649,8 @@ function handleActionKey(event) {
       sendBuy('pistol');
     } else if (event.code === 'Digit2') {
       sendBuy('shotgun');
+    } else if (event.code === 'Digit3') {
+      INPUT.weaponSlot = 1;
     }
     event.preventDefault();
     return true;
@@ -1434,7 +1754,7 @@ function attachUiEvents() {
     if (!joined) return;
     if (event.button !== 0) return;
     const local = latestState?.localPlayer;
-    if (!local || local.insideShopId || local.weapon === 'none') return;
+    if (!local || local.insideShopId || !local.weapon) return;
 
     updatePointer(event.clientX, event.clientY);
     INPUT.shootSeq = (INPUT.shootSeq + 1) >>> 0;

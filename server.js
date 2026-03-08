@@ -30,18 +30,21 @@ const PLAYER_SPEED = 110;
 const PLAYER_RADIUS = 7;
 const DROP_LIFETIME = 22;
 const DROP_PICKUP_RADIUS = 14;
+const STAR_DECAY_PER_SECOND = 1 / 60;
 
-const NPC_COUNT = 64;
+const NPC_COUNT = 132;
 const NPC_RADIUS = 6;
 
-const TRAFFIC_COUNT = 44;
-const COP_COUNT = 7;
+const TRAFFIC_COUNT = 78;
+const COP_COUNT = 10;
+const COP_OFFICER_COUNT = 12;
 const MAX_NAME_LENGTH = 16;
 
 const clients = new Map();
 const players = new Map();
 const cars = new Map();
 const npcs = new Map();
+const cops = new Map();
 const cashDrops = new Map();
 
 let nextId = 1;
@@ -56,16 +59,21 @@ const SHOP_STOCK = {
   shotgun: 720,
 };
 const SHOPS = [
-  { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 114, y: BLOCK_PX * 2 + 160, radius: 28 },
-  { id: 'shop_south', name: 'South Arms', x: BLOCK_PX * 4 + 114, y: BLOCK_PX * 5 + 160, radius: 28 },
+  { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
+  { id: 'shop_south', name: 'South Arms', x: BLOCK_PX * 4 + 236, y: BLOCK_PX * 9 + 234, radius: 34 },
+  { id: 'shop_east', name: 'East Arms', x: BLOCK_PX * 10 + 236, y: BLOCK_PX * 4 + 228, radius: 34 },
+  { id: 'shop_west', name: 'West Arms', x: BLOCK_PX * 1 + 236, y: BLOCK_PX * 7 + 232, radius: 34 },
+  { id: 'shop_mid', name: 'Midtown Arms', x: BLOCK_PX * 6 + 232, y: BLOCK_PX * 6 + 236, radius: 34 },
+  { id: 'shop_dock', name: 'Dock Arms', x: BLOCK_PX * 10 + 232, y: BLOCK_PX * 10 + 232, radius: 34 },
 ];
 const WEAPONS = {
-  none: {
-    cooldown: 0.01,
-    pellets: 0,
+  fist: {
+    cooldown: 0.42,
+    pellets: 1,
     spread: 0,
-    range: 0,
-    damage: 0,
+    range: 28,
+    damage: 28,
+    type: 'melee',
   },
   pistol: {
     cooldown: 0.22,
@@ -73,6 +81,7 @@ const WEAPONS = {
     spread: 0.012,
     range: 320,
     damage: 100,
+    type: 'bullet',
   },
   shotgun: {
     cooldown: 0.82,
@@ -80,6 +89,7 @@ const WEAPONS = {
     spread: 0.22,
     range: 225,
     damage: 58,
+    type: 'bullet',
   },
 };
 
@@ -184,6 +194,14 @@ function groundTypeAt(x, y) {
   return 'park';
 }
 
+function roadInfoAt(x, y) {
+  const localX = mod(x, BLOCK_PX);
+  const localY = mod(y, BLOCK_PX);
+  const inVerticalRoad = localX >= ROAD_START && localX < ROAD_END;
+  const inHorizontalRoad = localY >= ROAD_START && localY < ROAD_END;
+  return { inVerticalRoad, inHorizontalRoad };
+}
+
 function isSolidForPed(x, y) {
   const g = groundTypeAt(x, y);
   return g === 'building' || g === 'void';
@@ -204,6 +222,10 @@ function laneFor(coord, forwardPositive) {
   const block = Math.floor(coord / BLOCK_PX);
   const base = block * BLOCK_PX;
   return base + (forwardPositive ? LANE_B : LANE_A);
+}
+
+function isPreferredPedGround(ground) {
+  return ground === 'sidewalk' || ground === 'park';
 }
 
 function sanitizeName(raw) {
@@ -258,7 +280,7 @@ function randomPedSpawn() {
     const angle = fromRoad.angle + Math.PI * 0.5;
     const x = clamp(fromRoad.x + Math.cos(angle) * offset * side, 24, WORLD.width - 24);
     const y = clamp(fromRoad.y + Math.sin(angle) * offset * side, 24, WORLD.height - 24);
-    if (!isSolidForPed(x, y)) {
+    if (!isSolidForPed(x, y) && isPreferredPedGround(groundTypeAt(x, y))) {
       return { x, y };
     }
   }
@@ -302,6 +324,16 @@ function makeCashDrop(x, y, amount) {
   };
   cashDrops.set(id, drop);
   return drop;
+}
+
+function randomCurbSpawn() {
+  const spawn = randomRoadSpawn();
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const offset = randRange(26, 44);
+  const angle = spawn.angle + Math.PI * 0.5;
+  const x = clamp(spawn.x + Math.cos(angle) * offset * side, 20, WORLD.width - 20);
+  const y = clamp(spawn.y + Math.sin(angle) * offset * side, 20, WORLD.height - 20);
+  return { x, y };
 }
 
 function addStars(player, amount, cooldown = 22) {
@@ -354,6 +386,7 @@ function makeNpc() {
     baseSpeed: randRange(28, 45),
     wanderTimer: randRange(0.3, 1.6),
     panicTimer: 0,
+    crossingTimer: 0,
     health: 100,
     alive: true,
     respawnTimer: 0,
@@ -372,16 +405,33 @@ function respawnNpc(npc) {
   npc.baseSpeed = randRange(28, 45);
   npc.wanderTimer = randRange(0.4, 1.8);
   npc.panicTimer = 0;
+  npc.crossingTimer = 0;
   npc.health = 100;
   npc.alive = true;
   npc.respawnTimer = 0;
+}
+
+function makeCopUnit() {
+  const spawn = randomCurbSpawn();
+  const cop = {
+    id: makeId('cop'),
+    x: spawn.x,
+    y: spawn.y,
+    dir: randRange(-Math.PI, Math.PI),
+    cooldown: randRange(0.4, 1.2),
+    patrolTimer: randRange(0.4, 1.8),
+    mode: 'patrol',
+    targetPlayerId: null,
+  };
+  cops.set(cop.id, cop);
+  return cop;
 }
 
 function awardNpcKill(killerId, x, y) {
   const killer = players.get(killerId);
   if (!killer || killer.health <= 0 || killer.insideShopId) return;
 
-  const reward = randInt(70, 151);
+  const reward = randInt(2, 11);
   addStars(killer, 1.0, 28);
   const drop = makeCashDrop(x, y, reward);
   emitEvent('cashDrop', {
@@ -545,7 +595,7 @@ function exitShop(player) {
 function applyWeaponSelection(player) {
   const slot = player.input.weaponSlot;
   if (slot === 1) {
-    player.weapon = 'none';
+    player.weapon = 'fist';
   } else if (slot === 2 && player.ownedPistol) {
     player.weapon = 'pistol';
   } else if (slot === 3 && player.ownedShotgun) {
@@ -576,8 +626,10 @@ function buyItemForPlayer(player, item) {
   player.money -= price;
   if (item === 'pistol') {
     player.ownedPistol = true;
+    player.input.weaponSlot = 2;
   } else if (item === 'shotgun') {
     player.ownedShotgun = true;
+    player.input.weaponSlot = 3;
   }
   player.weapon = item;
 
@@ -676,16 +728,47 @@ function movePedestrian(player, dt) {
   player.y = clamp(player.y, PLAYER_RADIUS + 2, WORLD.height - PLAYER_RADIUS - 2);
 }
 
-function enforceCarCollisions(car) {
-  car.x = clamp(car.x, 8, WORLD.width - 8);
-  car.y = clamp(car.y, 8, WORLD.height - 8);
+function carBodyPoints(car) {
+  const points = [{ x: car.x, y: car.y }];
+  const halfL = car.width * 0.52;
+  const halfW = car.height * 0.52;
+  const c = Math.cos(car.angle);
+  const s = Math.sin(car.angle);
+  const basis = [
+    { fx: halfL, fy: halfW },
+    { fx: halfL, fy: -halfW },
+    { fx: -halfL, fy: halfW },
+    { fx: -halfL, fy: -halfW },
+    { fx: halfL, fy: 0 },
+    { fx: -halfL, fy: 0 },
+  ];
 
-  if (isSolidForCar(car.x, car.y)) {
+  for (const b of basis) {
+    const px = car.x + c * b.fx - s * b.fy;
+    const py = car.y + s * b.fx + c * b.fy;
+    points.push({ x: px, y: py });
+  }
+  return points;
+}
+
+function carCollidesSolid(car) {
+  const points = carBodyPoints(car);
+  for (const p of points) {
+    if (isSolidForCar(p.x, p.y)) return true;
+  }
+  return false;
+}
+
+function enforceCarCollisions(car) {
+  car.x = clamp(car.x, 12, WORLD.width - 12);
+  car.y = clamp(car.y, 12, WORLD.height - 12);
+
+  if (carCollidesSolid(car)) {
     car.speed *= -0.35;
     car.angle = snapToRightAngle(car.angle + Math.PI * 0.5 * (Math.random() < 0.5 ? -1 : 1));
-    const retreat = 4;
-    car.x = clamp(car.x + Math.cos(car.angle + Math.PI) * retreat, 8, WORLD.width - 8);
-    car.y = clamp(car.y + Math.sin(car.angle + Math.PI) * retreat, 8, WORLD.height - 8);
+    const retreat = 7;
+    car.x = clamp(car.x + Math.cos(car.angle + Math.PI) * retreat, 12, WORLD.width - 12);
+    car.y = clamp(car.y + Math.sin(car.angle + Math.PI) * retreat, 12, WORLD.height - 12);
     emitEvent('impact', { x: car.x, y: car.y });
   }
 }
@@ -731,7 +814,8 @@ function stepTrafficCar(car, dt) {
     const desiredY = laneFor(car.y, Math.cos(car.angle) >= 0);
     car.y = lerp(car.y, desiredY, Math.min(1, dt * 4.4));
   } else {
-    const desiredX = laneFor(car.x, Math.sin(car.angle) >= 0);
+    // Keep right-hand lane on vertical roads (south uses west lane, north uses east lane).
+    const desiredX = laneFor(car.x, Math.sin(car.angle) < 0);
     car.x = lerp(car.x, desiredX, Math.min(1, dt * 4.4));
   }
 
@@ -798,26 +882,15 @@ function stepCopCar(car, dt) {
   }
 
   const desired = Math.atan2(target.y - car.y, target.x - car.x);
-  car.angle = angleApproach(car.angle, desired, dt * 3.2);
-  const targetSpeed = 140 + target.stars * 10;
-  car.speed = approach(car.speed, targetSpeed, dt * 98);
-  car.speed = clamp(car.speed, -80, car.maxSpeed);
+  car.angle = angleApproach(car.angle, desired, dt * 2.4);
+  const dist = Math.hypot(target.x - car.x, target.y - car.y);
+  const desiredSpeed = dist > 170 ? 120 : 42;
+  car.speed = approach(car.speed, desiredSpeed, dt * 88);
+  car.speed = clamp(car.speed, -60, 150);
 
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
   enforceCarCollisions(car);
-
-  const dx = target.x - car.x;
-  const dy = target.y - car.y;
-  const dist = Math.hypot(dx, dy);
-
-  if (dist < 52) {
-    target.health -= 17 * dt;
-    target.starCooldown = Math.max(target.starCooldown, 8);
-    if (target.health <= 0) {
-      defeatPlayer(target);
-    }
-  }
 }
 
 function pointToSegmentDistanceSq(px, py, x1, y1, x2, y2) {
@@ -855,9 +928,29 @@ function firstSolidDistance(x, y, dir, maxDist) {
   return maxDist;
 }
 
+function damagePlayer(victim, amount, attacker) {
+  if (victim.health <= 0 || victim.insideShopId) return;
+  victim.health -= amount;
+  victim.hitCooldown = Math.max(victim.hitCooldown, 0.2);
+  victim.starCooldown = Math.max(victim.starCooldown, 8);
+  emitEvent('impact', { x: victim.x, y: victim.y });
+  if (victim.health <= 0) {
+    defeatPlayer(victim);
+    if (attacker && attacker.id !== victim.id) {
+      addStars(attacker, 0.8, 26);
+      emitEvent('pvpKill', {
+        killerId: attacker.id,
+        victimId: victim.id,
+        x: victim.x,
+        y: victim.y,
+      });
+    }
+  }
+}
+
 function fireShot(player) {
   if (player.health <= 0 || player.inCarId || player.insideShopId) return;
-  const weapon = WEAPONS[player.weapon] || WEAPONS.none;
+  const weapon = WEAPONS[player.weapon] || WEAPONS.fist;
   if (weapon.pellets <= 0) return;
   if (player.shootCooldown > 0) return;
 
@@ -868,13 +961,15 @@ function fireShot(player) {
   const sy = player.y + Math.sin(dir) * 8;
 
   for (let pellet = 0; pellet < weapon.pellets; pellet++) {
-    const pelletDir = dir + randRange(-weapon.spread * 0.5, weapon.spread * 0.5);
+    const pelletDir =
+      weapon.type === 'melee' ? dir : dir + randRange(-weapon.spread * 0.5, weapon.spread * 0.5);
     let shotLength = firstSolidDistance(sx, sy, pelletDir, weapon.range);
     let ex = sx + Math.cos(pelletDir) * shotLength;
     let ey = sy + Math.sin(pelletDir) * shotLength;
 
-    let bestNpc = null;
-    let bestNpcDist = shotLength;
+    let bestHitType = null;
+    let bestHit = null;
+    let bestDist = shotLength;
 
     for (const npc of npcs.values()) {
       if (!npc.alive) continue;
@@ -885,26 +980,42 @@ function fireShot(player) {
       }
 
       const alongDist = hit.t * shotLength;
-      if (alongDist < bestNpcDist) {
-        bestNpcDist = alongDist;
-        bestNpc = npc;
+      if (alongDist < bestDist) {
+        bestDist = alongDist;
+        bestHitType = 'npc';
+        bestHit = npc;
       }
     }
 
-    if (bestNpc) {
-      shotLength = bestNpcDist;
+    for (const other of players.values()) {
+      if (other.id === player.id || other.health <= 0 || other.insideShopId) continue;
+      const hit = pointToSegmentDistanceSq(other.x, other.y, sx, sy, ex, ey);
+      if (hit.distSq > (PLAYER_RADIUS + 2) * (PLAYER_RADIUS + 2)) continue;
+      const alongDist = hit.t * shotLength;
+      if (alongDist < bestDist) {
+        bestDist = alongDist;
+        bestHitType = 'player';
+        bestHit = other;
+      }
+    }
+
+    if (bestHit) {
+      shotLength = bestDist;
       ex = sx + Math.cos(pelletDir) * shotLength;
       ey = sy + Math.sin(pelletDir) * shotLength;
-      bestNpc.health -= weapon.damage;
-      bestNpc.panicTimer = Math.max(bestNpc.panicTimer, 2.7);
-
-      if (bestNpc.health <= 0) {
-        killNpc(bestNpc, player.id);
+      if (bestHitType === 'npc') {
+        bestHit.health -= weapon.damage;
+        bestHit.panicTimer = Math.max(bestHit.panicTimer, 2.7);
+        if (bestHit.health <= 0) {
+          killNpc(bestHit, player.id);
+        }
+      } else if (bestHitType === 'player') {
+        damagePlayer(bestHit, weapon.damage, player);
       }
     }
 
     for (const npc of npcs.values()) {
-      if (!npc.alive || npc === bestNpc) continue;
+      if (!npc.alive || npc === bestHit) continue;
       const hit = pointToSegmentDistanceSq(npc.x, npc.y, sx, sy, ex, ey);
       if (hit.distSq < 40 * 40) {
         npc.panicTimer = Math.max(npc.panicTimer, 1.8);
@@ -912,14 +1023,24 @@ function fireShot(player) {
       }
     }
 
-    emitEvent('bullet', {
-      playerId: player.id,
-      weapon: player.weapon,
-      x: sx,
-      y: sy,
-      toX: ex,
-      toY: ey,
-    });
+    if (weapon.type === 'melee') {
+      emitEvent('melee', {
+        playerId: player.id,
+        x: sx,
+        y: sy,
+        toX: ex,
+        toY: ey,
+      });
+    } else {
+      emitEvent('bullet', {
+        playerId: player.id,
+        weapon: player.weapon,
+        x: sx,
+        y: sy,
+        toX: ex,
+        toY: ey,
+      });
+    }
   }
 }
 
@@ -948,7 +1069,7 @@ function stepPlayers(dt) {
       if (player.starCooldown > 0) {
         player.starCooldown -= dt;
       } else {
-        player.starHeat = Math.max(0, player.starHeat - dt * 0.06);
+        player.starHeat = Math.max(0, player.starHeat - dt * STAR_DECAY_PER_SECOND);
       }
       player.stars = clamp(Math.ceil(player.starHeat - 0.001), 0, 5);
       continue;
@@ -975,7 +1096,7 @@ function stepPlayers(dt) {
     if (player.starCooldown > 0) {
       player.starCooldown -= dt;
     } else {
-      player.starHeat = Math.max(0, player.starHeat - dt * 0.05);
+      player.starHeat = Math.max(0, player.starHeat - dt * STAR_DECAY_PER_SECOND);
     }
 
     player.stars = clamp(Math.ceil(player.starHeat - 0.001), 0, 5);
@@ -1032,6 +1153,9 @@ function stepPlayerHits() {
     }
 
     for (const car of cars.values()) {
+      if (car.type === 'cop' && !car.driverId) {
+        continue;
+      }
       const impactSpeed = Math.abs(car.speed);
       if (impactSpeed < 38) continue;
 
@@ -1063,6 +1187,43 @@ function stepPlayerHits() {
 }
 
 function stepNpcs(dt) {
+  const cardinal = [0, Math.PI * 0.5, Math.PI, -Math.PI * 0.5];
+
+  function chooseCrossingDirection(npc) {
+    const info = roadInfoAt(npc.x, npc.y);
+    if (info.inVerticalRoad && !info.inHorizontalRoad) {
+      return Math.random() < 0.5 ? 0 : Math.PI;
+    }
+    if (info.inHorizontalRoad && !info.inVerticalRoad) {
+      return Math.random() < 0.5 ? Math.PI * 0.5 : -Math.PI * 0.5;
+    }
+
+    const localX = mod(npc.x, BLOCK_PX);
+    const localY = mod(npc.y, BLOCK_PX);
+    const distV = Math.min(Math.abs(localX - ROAD_START), Math.abs(localX - ROAD_END));
+    const distH = Math.min(Math.abs(localY - ROAD_START), Math.abs(localY - ROAD_END));
+    if (distV < distH) {
+      return Math.random() < 0.5 ? 0 : Math.PI;
+    }
+    return Math.random() < 0.5 ? Math.PI * 0.5 : -Math.PI * 0.5;
+  }
+
+  function steerAwayFromRoad(npc) {
+    const probes = [16, 28, 40, 56];
+    for (const dist of probes) {
+      for (const dir of cardinal) {
+        const tx = npc.x + Math.cos(dir) * dist;
+        const ty = npc.y + Math.sin(dir) * dist;
+        if (isPreferredPedGround(groundTypeAt(tx, ty))) {
+          npc.dir = dir + randRange(-0.22, 0.22);
+          npc.wanderTimer = Math.min(npc.wanderTimer, 0.3);
+          return;
+        }
+      }
+    }
+    npc.dir += randRange(1.1, 2.4);
+  }
+
   for (const npc of npcs.values()) {
     if (!npc.alive) {
       npc.respawnTimer -= dt;
@@ -1075,17 +1236,47 @@ function stepNpcs(dt) {
     if (npc.panicTimer > 0) {
       npc.panicTimer -= dt;
     }
+    if (npc.crossingTimer > 0) {
+      npc.crossingTimer -= dt;
+    }
+
+    let threat = null;
+    let threatDistSq = 38 * 38;
+    for (const player of players.values()) {
+      if (player.health <= 0 || player.insideShopId) continue;
+      const dx = npc.x - player.x;
+      const dy = npc.y - player.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < threatDistSq) {
+        threat = player;
+        threatDistSq = d2;
+      }
+    }
+    if (threat) {
+      npc.panicTimer = Math.max(npc.panicTimer, 1.4);
+      npc.dir = Math.atan2(npc.y - threat.y, npc.x - threat.x);
+    }
 
     npc.wanderTimer -= dt;
     if (npc.wanderTimer <= 0) {
       npc.wanderTimer = randRange(0.5, 2.1);
-      npc.dir += randRange(-1.35, 1.35);
+      npc.dir += randRange(-1.2, 1.2);
       npc.baseSpeed = randRange(28, 45);
+      if (npc.panicTimer <= 0 && Math.random() < 0.18) {
+        npc.crossingTimer = randRange(0.9, 1.5);
+        npc.dir = chooseCrossingDirection(npc);
+      }
     }
 
-    const speed = npc.baseSpeed + (npc.panicTimer > 0 ? 44 : 0);
+    const speed = npc.baseSpeed + (npc.panicTimer > 0 ? 46 : 0) + (npc.crossingTimer > 0 ? 8 : 0);
     const nx = npc.x + Math.cos(npc.dir) * speed * dt;
     const ny = npc.y + Math.sin(npc.dir) * speed * dt;
+
+    const nextGround = groundTypeAt(nx, ny);
+    if (npc.panicTimer <= 0 && npc.crossingTimer <= 0 && nextGround === 'road') {
+      steerAwayFromRoad(npc);
+      continue;
+    }
 
     if (!isSolidForPed(nx, npc.y)) {
       npc.x = nx;
@@ -1101,8 +1292,68 @@ function stepNpcs(dt) {
       npc.wanderTimer = Math.min(npc.wanderTimer, 0.2);
     }
 
+    if (npc.panicTimer <= 0 && npc.crossingTimer <= 0 && groundTypeAt(npc.x, npc.y) === 'road') {
+      steerAwayFromRoad(npc);
+    }
+
     npc.x = clamp(npc.x, 12, WORLD.width - 12);
     npc.y = clamp(npc.y, 12, WORLD.height - 12);
+  }
+}
+
+function stepCops(dt) {
+  for (const cop of cops.values()) {
+    const target = nearestFiveStarPlayer(cop.x, cop.y);
+    cop.cooldown -= dt;
+    cop.patrolTimer -= dt;
+
+    if (target) {
+      cop.mode = 'hunt';
+      cop.targetPlayerId = target.id;
+      const toTarget = Math.atan2(target.y - cop.y, target.x - cop.x);
+      cop.dir = angleApproach(cop.dir, toTarget, dt * 5.2);
+      const speed = 94;
+      const nx = cop.x + Math.cos(cop.dir) * speed * dt;
+      const ny = cop.y + Math.sin(cop.dir) * speed * dt;
+      if (!isSolidForPed(nx, cop.y)) cop.x = nx;
+      if (!isSolidForPed(cop.x, ny)) cop.y = ny;
+
+      const dist = Math.hypot(target.x - cop.x, target.y - cop.y);
+      if (dist < 230 && cop.cooldown <= 0) {
+        cop.cooldown = randRange(0.52, 0.86);
+        const aim = Math.atan2(target.y - cop.y, target.x - cop.x) + randRange(-0.06, 0.06);
+        const maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
+        const ex = cop.x + Math.cos(aim) * maxDist;
+        const ey = cop.y + Math.sin(aim) * maxDist;
+        const directDist = Math.hypot(target.x - cop.x, target.y - cop.y);
+        if (directDist <= maxDist + 4) {
+          damagePlayer(target, 15, null);
+        }
+        emitEvent('bullet', {
+          playerId: `cop_${cop.id}`,
+          weapon: 'pistol',
+          x: cop.x,
+          y: cop.y,
+          toX: ex,
+          toY: ey,
+        });
+      }
+    } else {
+      cop.mode = 'patrol';
+      cop.targetPlayerId = null;
+      if (cop.patrolTimer <= 0) {
+        cop.patrolTimer = randRange(0.6, 1.7);
+        cop.dir += randRange(-1.3, 1.3);
+      }
+      const speed = 56;
+      const nx = cop.x + Math.cos(cop.dir) * speed * dt;
+      const ny = cop.y + Math.sin(cop.dir) * speed * dt;
+      if (!isSolidForPed(nx, cop.y)) cop.x = nx;
+      if (!isSolidForPed(cop.x, ny)) cop.y = ny;
+    }
+
+    cop.x = clamp(cop.x, 12, WORLD.width - 12);
+    cop.y = clamp(cop.y, 12, WORLD.height - 12);
   }
 }
 
@@ -1197,6 +1448,12 @@ function ensureNpcPopulation() {
   }
 }
 
+function ensureCopPopulation() {
+  while (cops.size < COP_OFFICER_COUNT) {
+    makeCopUnit();
+  }
+}
+
 function serializeSnapshot() {
   const playersPayload = [];
   for (const player of players.values()) {
@@ -1257,6 +1514,17 @@ function serializeSnapshot() {
     });
   }
 
+  const copsPayload = [];
+  for (const cop of cops.values()) {
+    copsPayload.push({
+      id: cop.id,
+      x: Math.round(cop.x * 100) / 100,
+      y: Math.round(cop.y * 100) / 100,
+      dir: Math.round(cop.dir * 1000) / 1000,
+      mode: cop.mode,
+    });
+  }
+
   return {
     type: 'snapshot',
     serverTime: Date.now(),
@@ -1281,6 +1549,7 @@ function serializeSnapshot() {
     players: playersPayload,
     cars: carsPayload,
     npcs: npcsPayload,
+    cops: copsPayload,
     drops: dropsPayload,
     events: pendingEvents,
   };
@@ -1357,8 +1626,8 @@ function handleJoin(ws, data) {
     hitCooldown: 0,
     shootCooldown: 0,
     lastShootSeq: 0,
-    weapon: 'pistol',
-    ownedPistol: true,
+    weapon: 'fist',
+    ownedPistol: false,
     ownedShotgun: false,
     prevEnter: false,
     input: {
@@ -1369,7 +1638,7 @@ function handleJoin(ws, data) {
       enter: false,
       horn: false,
       shootSeq: 0,
-      weaponSlot: 2,
+      weaponSlot: 1,
       aimX: spawn.x,
       aimY: spawn.y,
     },
@@ -1523,16 +1792,21 @@ for (let i = 0; i < COP_COUNT; i++) {
 for (let i = 0; i < NPC_COUNT; i++) {
   makeNpc();
 }
+for (let i = 0; i < COP_OFFICER_COUNT; i++) {
+  makeCopUnit();
+}
 
 setInterval(() => {
   stepPlayers(DT);
   stepCars(DT);
+  stepCops(DT);
   stepNpcs(DT);
   stepPlayerHits();
   stepNpcHitsByCars();
   stepCashDrops(DT);
   ensureCarPopulation();
   ensureNpcPopulation();
+  ensureCopPopulation();
   broadcastSnapshot();
 }, 1000 / TICK_RATE);
 
