@@ -1,0 +1,58 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pixel Crime City</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <canvas id="gameCanvas" aria-label="Pixel city game world"></canvas>
+
+    <div id="joinOverlay" class="overlay">
+      <div class="panel" id="joinPanel">
+        <h1>PIXEL CRIME CITY</h1>
+        <p class="subtitle">Multiplayer top-down chaos</p>
+
+        <section id="stepName" class="step active" aria-label="Step 1: enter name">
+          <h2>1. Enter Name</h2>
+          <label for="nameInput">Player Name</label>
+          <input id="nameInput" maxlength="16" placeholder="Street name" autocomplete="nickname" />
+          <button id="toColorBtn">Continue</button>
+        </section>
+
+        <section id="stepColor" class="step" aria-label="Step 2: choose color">
+          <h2>2. Choose Pixel Color</h2>
+          <div id="colorGrid" class="color-grid" role="radiogroup" aria-label="Color choices"></div>
+          <div class="custom-color-row">
+            <label for="customColor">Custom</label>
+            <input id="customColor" type="color" value="#58d2ff" />
+          </div>
+          <div class="buttons-row">
+            <button id="backBtn" class="secondary">Back</button>
+            <button id="joinBtn">Join Shared World</button>
+          </div>
+        </section>
+
+        <p id="joinError" class="error" role="alert"></p>
+      </div>
+    </div>
+
+    <div id="hud" class="hud hidden" aria-live="polite">
+      <div class="hud-row">
+        <span id="hudName"></span>
+        <span id="hudHealth"></span>
+      </div>
+      <div class="hud-row">
+        <span id="hudMode"></span>
+        <span id="hudMoney"></span>
+      </div>
+      <div class="hud-row">
+        <span id="hudWanted"></span>
+      </div>
+      <div class="hud-help">WASD move | Mouse aim | Click shoot | 1/2/3 switch weapon | E enter/exit/shop | Space horn</div>
+    </div>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>
