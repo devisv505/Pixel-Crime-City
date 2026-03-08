@@ -1,0 +1,21 @@
+The system cannot find the file \" "\.
+[2026-03-08T22:15:48.172Z] supervisor: started server pid=39668
+Pixel city server running on http://localhost:3000
+[2026-03-08T22:16:15.175Z] supervisor: server exited pid=39668 code=4294967295 signal=null
+[2026-03-08T22:16:16.196Z] supervisor: started server pid=39348
+Pixel city server running on http://localhost:3000
+[2026-03-08T22:38:28.735Z] supervisor: server exited pid=39348 code=4294967295 signal=null
+[2026-03-08T22:38:29.758Z] supervisor: started server pid=34596
+Pixel city server running on http://localhost:3000
+[2026-03-08T22:49:52.444Z] supervisor: server exited pid=34596 code=4294967295 signal=null
+[2026-03-08T22:49:53.465Z] supervisor: started server pid=28980
+Pixel city server running on http://localhost:3000
+[2026-03-08T22:58:50.553Z] supervisor: server exited pid=28980 code=4294967295 signal=null
+[2026-03-08T22:58:51.587Z] supervisor: started server pid=13012
+Pixel city server running on http://localhost:3000
+[2026-03-08T23:05:09.073Z] supervisor: server exited pid=13012 code=3221225786 signal=null
+[2026-03-08T23:05:10.101Z] supervisor: started server pid=35368
+Pixel city server running on http://localhost:3000
+[2026-03-08T23:07:12.406Z] supervisor: server exited pid=35368 code=4294967295 signal=null
+[2026-03-08T23:07:13.427Z] supervisor: started server pid=39360
+Pixel city server running on http://localhost:3000
