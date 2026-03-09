@@ -31,6 +31,9 @@ const settingsMusicVolValue = document.getElementById('settingsMusicVolValue');
 const settingsSfxVolValue = document.getElementById('settingsSfxVolValue');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+const chatBar = document.getElementById('chatBar');
+const chatInput = document.getElementById('chatInput');
+const chatSendBtn = document.getElementById('chatSendBtn');
 
 const COLOR_CHOICES = [
   '#58d2ff',
@@ -1306,6 +1309,23 @@ function sendBuy(item) {
   );
 }
 
+function sendChat(rawText) {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !joined) {
+    return;
+  }
+  const text = String(rawText || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90);
+  if (!text) return;
+  socket.send(
+    JSON.stringify({
+      type: 'chat',
+      text,
+    })
+  );
+}
+
 function resetSessionState() {
   joined = false;
   playerId = null;
@@ -1331,6 +1351,13 @@ function resetSessionState() {
   latestState = null;
   mapVisible = false;
   refreshMapToggleUi();
+  if (chatBar) {
+    chatBar.classList.add('hidden');
+  }
+  if (chatInput) {
+    chatInput.value = '';
+    chatInput.blur();
+  }
 }
 
 async function connectAndJoin() {
@@ -1385,6 +1412,9 @@ async function connectAndJoin() {
       joined = true;
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
+      if (chatBar) {
+        chatBar.classList.remove('hidden');
+      }
       setJoinError('');
       joinBtn.disabled = false;
       return;
@@ -1420,6 +1450,9 @@ async function connectAndJoin() {
     if (wasJoined) {
       joinOverlay.classList.remove('hidden');
       hud.classList.add('hidden');
+      if (chatBar) {
+        chatBar.classList.add('hidden');
+      }
       setStep('color');
       setJoinError('Connection lost. Press Join Shared World to reconnect.');
     }
@@ -2490,6 +2523,73 @@ function drawPixelCharacter(x, y, dir, bodyColor, skinColor, shirtDark, label = 
   }
 }
 
+function wrapSpeechText(text, maxWidth) {
+  const words = String(text || '').split(' ');
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (ctx.measureText(candidate).width <= maxWidth || !current) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.slice(0, 3);
+}
+
+function drawSpeechBubble(x, y, text) {
+  if (!text) return;
+  if (typeof text !== 'string') return;
+  const safe = text.trim();
+  if (!safe) return;
+
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  const maxLineWidth = 118;
+  const lines = wrapSpeechText(safe, maxLineWidth);
+  if (lines.length === 0) return;
+
+  let textW = 0;
+  for (const line of lines) {
+    textW = Math.max(textW, ctx.measureText(line).width);
+  }
+
+  const padX = 6;
+  const padY = 4;
+  const lineH = 8;
+  const bubbleW = Math.ceil(textW + padX * 2);
+  const bubbleH = Math.ceil(lines.length * lineH + padY * 2 - 1);
+  const bx = Math.round(x - bubbleW * 0.5);
+  const by = Math.round(y - 30 - bubbleH);
+  const tipX = Math.round(x);
+  const tipY = Math.round(y - 14);
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+  ctx.fillRect(bx + 2, by + 2, bubbleW, bubbleH);
+  ctx.fillRect(tipX + 2, by + bubbleH + 2, 3, 4);
+
+  ctx.fillStyle = '#11161e';
+  ctx.fillRect(bx - 1, by - 1, bubbleW + 2, bubbleH + 2);
+  ctx.fillRect(tipX - 2, by + bubbleH, 5, 5);
+
+  ctx.fillStyle = '#fbfdff';
+  ctx.fillRect(bx, by, bubbleW, bubbleH);
+  ctx.fillRect(tipX - 1, by + bubbleH + 1, 3, 3);
+
+  ctx.fillStyle = '#11161e';
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const lw = ctx.measureText(line).width;
+    const tx = Math.round(x - lw * 0.5);
+    const ty = by + padY + 6 + i * lineH;
+    ctx.fillText(line, tx, ty);
+  }
+}
+
 function drawPixelPlayer(player, worldLeft, worldTop) {
   const x = Math.round(player.x - worldLeft);
   const y = Math.round(player.y - worldTop);
@@ -2507,6 +2607,9 @@ function drawPixelPlayer(player, worldLeft, worldTop) {
 
   const walk = getWalkAnimationState(`p:${player.id}`, player.x, player.y);
   drawPixelCharacter(x, y, player.dir || 0, player.color, '#f0c39a', '#1a3452', player.name, walk.step, walk.moving);
+  if (typeof player.chatUntil === 'number' && player.chatUntil > Date.now()) {
+    drawSpeechBubble(x, y, player.chatText || '');
+  }
 }
 
 function drawNpc(npc, worldLeft, worldTop) {
@@ -3163,6 +3266,36 @@ function attachUiEvents() {
     });
   }
 
+  const submitChat = () => {
+    if (!chatInput) return;
+    const text = chatInput.value;
+    sendChat(text);
+    chatInput.value = '';
+    chatInput.blur();
+  };
+
+  if (chatSendBtn) {
+    chatSendBtn.addEventListener('click', () => {
+      if (!joined) return;
+      submitChat();
+    });
+  }
+
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!joined) return;
+        submitChat();
+        return;
+      }
+      if (event.key === 'Escape') {
+        chatInput.blur();
+      }
+    });
+  }
+
   toColorBtn.addEventListener('click', () => {
     const normalizedName = nameInput.value.trim().replace(/\s+/g, ' ');
     if (normalizedName.length < 2 || normalizedName.length > 16) {
@@ -3208,6 +3341,7 @@ function attachUiEvents() {
     }
 
     if (joined && event.code === 'KeyO' && !event.repeat) {
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
       if (isSettingsOpen()) {
         closeSettingsPanel();
       } else {

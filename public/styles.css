@@ -254,6 +254,33 @@ button.secondary {
   background: #2a6c89;
 }
 
+.chat-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border: 2px solid rgba(230, 244, 255, 0.45);
+  background: rgba(10, 19, 24, 0.78);
+  padding: 6px;
+}
+
+.chat-bar input[type="text"] {
+  width: min(58vw, 420px);
+  padding: 7px 8px;
+  border: 2px solid #325266;
+  background: #0c1a24;
+  color: #f0f6ff;
+  font: inherit;
+}
+
+.chat-bar button {
+  padding: 7px 10px;
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -318,5 +345,16 @@ button.secondary {
     top: 8px;
     left: 8px;
     min-width: 170px;
+  }
+
+  .chat-bar {
+    left: 8px;
+    right: 8px;
+    transform: none;
+  }
+
+  .chat-bar input[type="text"] {
+    width: 100%;
+    min-width: 0;
   }
 }

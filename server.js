@@ -49,6 +49,8 @@ const MAX_NAME_LENGTH = 16;
 const POLICE_WITNESS_RADIUS = 190;
 const COP_ALERT_MARK_SECONDS = 2.4;
 const NPC_HOSPITAL_FALLBACK_SECONDS = 60;
+const CHAT_DURATION_MS = 30_000;
+const CHAT_MAX_LENGTH = 90;
 const BLOOD_STAIN_LIFETIME = 240;
 
 const clients = new Map();
@@ -357,6 +359,16 @@ function sanitizeColor(raw) {
     return null;
   }
   return value;
+}
+
+function sanitizeChatText(raw) {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, CHAT_MAX_LENGTH);
+  return cleaned;
 }
 
 function emitEvent(type, payload) {
@@ -3159,8 +3171,10 @@ function ensureCopPopulation() {
 }
 
 function serializeSnapshot() {
+  const now = Date.now();
   const playersPayload = [];
   for (const player of players.values()) {
+    const hasChat = typeof player.chatUntil === 'number' && player.chatUntil > now && !!player.chatText;
     playersPayload.push({
       id: player.id,
       name: player.name,
@@ -3178,6 +3192,8 @@ function serializeSnapshot() {
       ownedShotgun: player.ownedShotgun,
       ownedMachinegun: player.ownedMachinegun,
       ownedBazooka: player.ownedBazooka,
+      chatText: hasChat ? player.chatText : '',
+      chatUntil: hasChat ? player.chatUntil : 0,
     });
   }
 
@@ -3355,6 +3371,8 @@ function handleJoin(ws, data) {
     starHeat: 0,
     starCooldown: 0,
     copAlertPlayed: false,
+    chatText: '',
+    chatUntil: 0,
     respawnTimer: 0,
     hitCooldown: 0,
     shootCooldown: 0,
@@ -3492,6 +3510,25 @@ function handleBuy(ws, data) {
   );
 }
 
+function handleChat(ws, data) {
+  const client = clients.get(ws);
+  if (!client) return;
+  const player = players.get(client.playerId);
+  if (!player) return;
+
+  const text = sanitizeChatText(data.text);
+  if (text === null) return;
+
+  if (!text) {
+    player.chatText = '';
+    player.chatUntil = 0;
+    return;
+  }
+
+  player.chatText = text;
+  player.chatUntil = Date.now() + CHAT_DURATION_MS;
+}
+
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     if (typeof raw !== 'string' && !(raw instanceof Buffer)) {
@@ -3522,6 +3559,8 @@ wss.on('connection', (ws) => {
       handleInput(ws, data);
     } else if (data.type === 'buy') {
       handleBuy(ws, data);
+    } else if (data.type === 'chat') {
+      handleChat(ws, data);
     }
   });
 
