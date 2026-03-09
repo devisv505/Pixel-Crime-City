@@ -1649,15 +1649,31 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     const localY = mod(worldY, WORLD.blockPx);
     const inVerticalRoad = localX >= WORLD.roadStart && localX < WORLD.roadEnd;
     const inHorizontalRoad = localY >= WORLD.roadStart && localY < WORLD.roadEnd;
+    const roadMid = (WORLD.roadStart + WORLD.roadEnd) * 0.5;
+    const centerMark = roadMid - 1;
 
-    if (inHorizontalRoad && !inVerticalRoad && Math.floor(worldX / tile) % 2 === 0) {
+    if (
+      inHorizontalRoad &&
+      !inVerticalRoad &&
+      localY <= centerMark &&
+      localY + tile > centerMark &&
+      Math.floor(worldX / tile) % 2 === 0
+    ) {
+      const centerOffsetY = Math.floor(centerMark - localY);
       ctx.fillStyle = '#c7b663';
-      ctx.fillRect(sx + (tile >> 1) - 1, sy + 1, 2, tile - 2);
+      ctx.fillRect(sx + 1, sy + centerOffsetY, tile - 2, 2);
     }
 
-    if (inVerticalRoad && !inHorizontalRoad && Math.floor(worldY / tile) % 2 === 0) {
+    if (
+      inVerticalRoad &&
+      !inHorizontalRoad &&
+      localX <= centerMark &&
+      localX + tile > centerMark &&
+      Math.floor(worldY / tile) % 2 === 0
+    ) {
+      const centerOffsetX = Math.floor(centerMark - localX);
       ctx.fillStyle = '#c7b663';
-      ctx.fillRect(sx + 1, sy + (tile >> 1) - 1, tile - 2, 2);
+      ctx.fillRect(sx + centerOffsetX, sy + 1, 2, tile - 2);
     }
 
     if (inVerticalRoad && inHorizontalRoad) {
