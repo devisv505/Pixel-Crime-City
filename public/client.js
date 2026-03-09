@@ -107,20 +107,37 @@ const MAX_SEEN_EVENTS = 650;
 const visualEffects = [];
 const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
 const AUDIO_PREF_SFX_KEY = 'pcc_sfx_volume';
-const BUILDING_TEXTURE_SOURCES = [
+const BASE_BUILDING_TEXTURE_SOURCES = [
   '/assets/buildings/building_01.png',
   '/assets/buildings/building_02.png',
   '/assets/buildings/building_03.png',
   '/assets/buildings/building_04.png',
+  '/assets/buildings/building_05.png',
+  '/assets/buildings/building_06.png',
+  '/assets/buildings/building_07.png',
 ];
+const ARMORY_BUILDING_TEXTURE_SOURCES = [
+  '/assets/buildings/armory_01.png',
+  '/assets/buildings/armory_02.png',
+  '/assets/buildings/armory_03.png',
+  '/assets/buildings/armory_04.png',
+];
+const HOSPITAL_BUILDING_TEXTURE_SOURCE = '/assets/buildings/hospital_01.png';
+const BUILDING_TEXTURE_SOURCES = [
+  ...BASE_BUILDING_TEXTURE_SOURCES,
+  ...ARMORY_BUILDING_TEXTURE_SOURCES,
+  HOSPITAL_BUILDING_TEXTURE_SOURCE,
+];
+const BASE_BUILDING_VARIANT_COUNT = BASE_BUILDING_TEXTURE_SOURCES.length;
+const ARMORY_VARIANT_START = BASE_BUILDING_VARIANT_COUNT;
+const HOSPITAL_VARIANT_INDEX = ARMORY_VARIANT_START + ARMORY_BUILDING_TEXTURE_SOURCES.length;
 const buildingTextures = BUILDING_TEXTURE_SOURCES.map((src) => ({
   src,
   state: 'idle',
   width: 0,
   height: 0,
-  pixels: null,
+  image: null,
 }));
-const buildingTextureColorCache = new Map();
 let buildingTexturesRequested = false;
 
 function parseAudioPref(value, fallback) {
@@ -578,15 +595,13 @@ function loadBuildingTexture(index) {
       const buffer = document.createElement('canvas');
       buffer.width = img.width;
       buffer.height = img.height;
-      const g = buffer.getContext('2d', { willReadFrequently: true });
+      const g = buffer.getContext('2d');
       g.imageSmoothingEnabled = false;
       g.drawImage(img, 0, 0);
-      const data = g.getImageData(0, 0, img.width, img.height);
       target.width = img.width;
       target.height = img.height;
-      target.pixels = data.data;
+      target.image = buffer;
       target.state = 'ready';
-      buildingTextureColorCache.clear();
     } catch {
       target.state = 'missing';
     }
@@ -603,26 +618,6 @@ function ensureBuildingTexturesLoaded() {
   for (let i = 0; i < buildingTextures.length; i += 1) {
     loadBuildingTexture(i);
   }
-}
-
-function sampleBuildingTextureColor(variant, u, v) {
-  const texture = buildingTextures[variant];
-  if (!texture || texture.state !== 'ready' || !texture.pixels || texture.width < 1 || texture.height < 1) {
-    return null;
-  }
-
-  const tx = clamp(Math.round(u * (texture.width - 1)), 0, texture.width - 1);
-  const ty = clamp(Math.round(v * (texture.height - 1)), 0, texture.height - 1);
-  const cacheKey = `${variant}|${tx}|${ty}`;
-  const cached = buildingTextureColorCache.get(cacheKey);
-  if (cached) return cached;
-
-  const idx = (ty * texture.width + tx) * 4;
-  const a = texture.pixels[idx + 3];
-  if (a < 1) return null;
-  const color = `rgb(${texture.pixels[idx]},${texture.pixels[idx + 1]},${texture.pixels[idx + 2]})`;
-  buildingTextureColorCache.set(cacheKey, color);
-  return color;
 }
 
 function refreshMapToggleUi() {
@@ -703,8 +698,79 @@ function worldGroundTypeAt(x, y) {
   return 'park';
 }
 
-function buildingVariantForBlock(blockX, blockY) {
-  return Math.floor(hash2D(blockX + 17, blockY - 29) * 4);
+function buildingVariantForPlot(blockX, blockY, plotIndex) {
+  return Math.floor(
+    hash2D(blockX * 31 + 17 + plotIndex * 7, blockY * 43 - 29 + plotIndex * 11) * BASE_BUILDING_VARIANT_COUNT
+  );
+}
+
+function plotIndexForLocalCoord(localX, localY) {
+  const xSide = localX < WORLD.roadStart ? 0 : localX >= WORLD.roadEnd ? 1 : null;
+  const ySide = localY < WORLD.roadStart ? 0 : localY >= WORLD.roadEnd ? 1 : null;
+  if (xSide === null || ySide === null) return null;
+  return ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
+}
+
+function buildSpecialPlotVariantMap(world) {
+  const result = new Map();
+  if (!world) return result;
+
+  const shops = world.shops || [];
+  for (let i = 0; i < shops.length; i += 1) {
+    const shop = shops[i];
+    if (!shop) continue;
+    const blockX = Math.floor(shop.x / WORLD.blockPx);
+    const blockY = Math.floor(shop.y / WORLD.blockPx);
+    const localX = mod(shop.x, WORLD.blockPx);
+    const localY = mod(shop.y, WORLD.blockPx);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex === null) continue;
+    const variant = ARMORY_VARIANT_START + (i % ARMORY_BUILDING_TEXTURE_SOURCES.length);
+    result.set(`${blockX},${blockY},${plotIndex}`, variant);
+  }
+
+  const hospital = world.hospital;
+  if (hospital) {
+    const blockX = Math.floor(hospital.x / WORLD.blockPx);
+    const blockY = Math.floor(hospital.y / WORLD.blockPx);
+    const localX = mod(hospital.x, WORLD.blockPx);
+    const localY = mod(hospital.y, WORLD.blockPx);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex !== null) {
+      result.set(`${blockX},${blockY},${plotIndex}`, HOSPITAL_VARIANT_INDEX);
+    }
+  }
+
+  return result;
+}
+
+function getBuildingPlotInfo(localX, localY, margin) {
+  const innerMin = margin;
+  const innerMax = WORLD.blockPx - margin;
+
+  let xSide = null;
+  if (localX >= innerMin && localX < WORLD.roadStart) {
+    xSide = 0; // left
+  } else if (localX >= WORLD.roadEnd && localX < innerMax) {
+    xSide = 1; // right
+  }
+
+  let ySide = null;
+  if (localY >= innerMin && localY < WORLD.roadStart) {
+    ySide = 0; // top
+  } else if (localY >= WORLD.roadEnd && localY < innerMax) {
+    ySide = 1; // bottom
+  }
+
+  if (xSide === null || ySide === null) return null;
+
+  const x0 = xSide === 0 ? innerMin : WORLD.roadEnd;
+  const x1 = xSide === 0 ? WORLD.roadStart : innerMax;
+  const y0 = ySide === 0 ? innerMin : WORLD.roadEnd;
+  const y1 = ySide === 0 ? WORLD.roadStart : innerMax;
+  const plotIndex = ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
+
+  return { plotIndex, x0, x1, y0, y1 };
 }
 
 function drawSolarRoofTile(sx, sy, tile) {
@@ -855,19 +921,32 @@ function drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, 
   }
 }
 
-function drawBuildingTextureTile(variant, sx, sy, tile, localX, localY, blockX, blockY) {
-  const margin = 42 + Math.floor(hash2D(blockX + 11, blockY - 7) * 12);
-  const min = margin;
-  const max = WORLD.blockPx - margin;
-  const span = Math.max(1, max - min);
-  const cx = localX + tile * 0.5;
-  const cy = localY + tile * 0.5;
-  const u = clamp((cx - min) / span, 0, 1);
-  const v = clamp((cy - min) / span, 0, 1);
-  const color = sampleBuildingTextureColor(variant, u, v);
-  if (!color) return false;
-  ctx.fillStyle = color;
+function drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY) {
+  const texture = buildingTextures[variant];
+  if (!texture || texture.state !== 'ready' || !texture.image || texture.width < 2 || texture.height < 2) {
+    return false;
+  }
+  if (!plot) return false;
+
+  // Transparent pixels in source textures should reveal lot ground, not the frame-clear color.
+  ctx.fillStyle = '#345a38';
   ctx.fillRect(sx, sy, tile, tile);
+
+  const spanX = Math.max(1, plot.x1 - plot.x0);
+  const spanY = Math.max(1, plot.y1 - plot.y0);
+  const u0 = clamp((localX - plot.x0) / spanX, 0, 1);
+  const v0 = clamp((localY - plot.y0) / spanY, 0, 1);
+  const u1 = clamp((localX + tile - plot.x0) / spanX, 0, 1);
+  const v1 = clamp((localY + tile - plot.y0) / spanY, 0, 1);
+
+  const srcX = clamp(Math.floor(u0 * (texture.width - 1)), 0, texture.width - 1);
+  const srcY = clamp(Math.floor(v0 * (texture.height - 1)), 0, texture.height - 1);
+  const srcX2 = clamp(Math.ceil(u1 * (texture.width - 1)), srcX + 1, texture.width);
+  const srcY2 = clamp(Math.ceil(v1 * (texture.height - 1)), srcY + 1, texture.height);
+  const srcW = Math.max(1, srcX2 - srcX);
+  const srcH = Math.max(1, srcY2 - srcY);
+
+  ctx.drawImage(texture.image, srcX, srcY, srcW, srcH, sx, sy, tile, tile);
   return true;
 }
 
@@ -1464,7 +1543,7 @@ function interpolateSnapshot(targetServerTime) {
   };
 }
 
-function drawTile(type, sx, sy, tile, worldX, worldY) {
+function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
   if (type === 'road') {
     ctx.fillStyle = '#343b42';
     ctx.fillRect(sx, sy, tile, tile);
@@ -1507,19 +1586,26 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
     const blockWorldY = Math.floor(worldY / WORLD.blockPx);
     const localX = mod(worldX, WORLD.blockPx);
     const localY = mod(worldY, WORLD.blockPx);
-    const variant = buildingVariantForBlock(blockWorldX, blockWorldY);
-    if (drawBuildingTextureTile(variant, sx, sy, tile, localX, localY, blockWorldX, blockWorldY)) {
+    const margin = 42 + Math.floor(hash2D(blockWorldX + 11, blockWorldY - 7) * 12);
+    const plot = getBuildingPlotInfo(localX, localY, margin);
+    const plotKey = plot ? `${blockWorldX},${blockWorldY},${plot.plotIndex}` : null;
+    const specialVariant = plotKey ? specialPlotVariants?.get(plotKey) : null;
+    const variant = Number.isInteger(specialVariant)
+      ? specialVariant
+      : buildingVariantForPlot(blockWorldX, blockWorldY, plot ? plot.plotIndex : 0);
+    if (drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY)) {
       return;
     }
 
     const btX = Math.floor(localX / tile);
     const btY = Math.floor(localY / tile);
+    const fallbackVariant = variant % 4;
     const roofPalette = [
       { base: '#bbb6ae', speck: '#c8c4bc', edgeLight: '#d7d2ca', edgeDark: '#8e8a84' },
       { base: '#c2bdb4', speck: '#cdc9c1', edgeLight: '#ddd8d0', edgeDark: '#97928b' },
       { base: '#b6b2ab', speck: '#c3bfb7', edgeLight: '#d2cdc5', edgeDark: '#88847d' },
       { base: '#beb8af', speck: '#cbc7bf', edgeLight: '#dad5cd', edgeDark: '#928d86' },
-    ][variant];
+    ][fallbackVariant];
 
     ctx.fillStyle = roofPalette.base;
     ctx.fillRect(sx, sy, tile, tile);
@@ -1530,7 +1616,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
       ctx.fillRect(sx + 3, sy + 3, 2, 2);
     }
 
-    drawBuildingRoofDetails(variant, sx, sy, tile, blockWorldX, blockWorldY, btX, btY);
+    drawBuildingRoofDetails(fallbackVariant, sx, sy, tile, blockWorldX, blockWorldY, btX, btY);
     drawBuildingParapetEdges(sx, sy, tile, worldX, worldY, roofPalette.edgeLight, roofPalette.edgeDark);
 
     if (speckSeed > 0.92) {
@@ -1548,8 +1634,9 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
   }
 }
 
-function drawWorld() {
+function drawWorld(state) {
   ensureBuildingTexturesLoaded();
+  const specialPlotVariants = buildSpecialPlotVariantMap(state?.world);
   const viewW = canvas.width;
   const viewH = canvas.height;
   const tile = WORLD.tileSize;
@@ -1573,7 +1660,7 @@ function drawWorld() {
       const worldX = tx * tile;
       const sx = Math.floor(worldX - worldLeft);
       const type = worldGroundTypeAt(worldX + tile * 0.5, worldY + tile * 0.5);
-      drawTile(type, sx, sy, tile, worldX, worldY);
+      drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants);
     }
   }
 }
@@ -1584,60 +1671,6 @@ function findShopByIdInWorld(world, id) {
     if (shop.id === id) return shop;
   }
   return null;
-}
-
-function drawShopMarkers(state, worldLeft, worldTop) {
-  const shops = state.world?.shops || [];
-  for (const shop of shops) {
-    const sx = Math.round(shop.x - worldLeft);
-    const sy = Math.round(shop.y - worldTop);
-    if (sx < -40 || sy < -40 || sx > canvas.width + 40 || sy > canvas.height + 40) {
-      continue;
-    }
-
-    ctx.fillStyle = '#2f3238';
-    ctx.fillRect(sx - 16, sy - 16, 32, 24);
-    ctx.fillStyle = '#505863';
-    ctx.fillRect(sx - 14, sy - 14, 28, 5);
-    ctx.fillStyle = '#1a1d22';
-    ctx.fillRect(sx - 4, sy - 3, 8, 10);
-    ctx.fillStyle = '#2d1d15';
-    ctx.fillRect(sx - 13, sy - 23, 26, 7);
-    ctx.fillStyle = '#ffb768';
-    ctx.font = '6px "Lucida Console", Monaco, monospace';
-    const label = 'GUN SHOP';
-    const w = ctx.measureText(label).width;
-    ctx.fillText(label, sx - w * 0.5, sy - 18);
-  }
-}
-
-function drawHospitalMarker(state, worldLeft, worldTop) {
-  const hospital = state.world?.hospital;
-  if (!hospital) return;
-
-  const sx = Math.round(hospital.x - worldLeft);
-  const sy = Math.round(hospital.y - worldTop);
-  if (sx < -50 || sy < -50 || sx > canvas.width + 50 || sy > canvas.height + 50) {
-    return;
-  }
-
-  ctx.fillStyle = '#d9dce3';
-  ctx.fillRect(sx - 18, sy - 15, 36, 25);
-  ctx.fillStyle = '#aeb4bf';
-  ctx.fillRect(sx - 16, sy - 13, 32, 5);
-  ctx.fillStyle = '#232730';
-  ctx.fillRect(sx - 5, sy - 2, 10, 12);
-  ctx.fillStyle = '#b72f36';
-  ctx.fillRect(sx - 13, sy - 24, 26, 7);
-  ctx.fillStyle = '#ffe5ea';
-  ctx.font = '6px "Lucida Console", Monaco, monospace';
-  const label = 'HOSP';
-  const w = ctx.measureText(label).width;
-  ctx.fillText(label, sx - w * 0.5, sy - 19);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(sx - 2, sy - 11, 4, 10);
-  ctx.fillRect(sx - 6, sy - 7, 12, 4);
 }
 
 function nearbyShopForPlayer(state, player, maxDistance = 34) {
@@ -1651,6 +1684,67 @@ function nearbyShopForPlayer(state, player, maxDistance = 34) {
     }
   }
   return null;
+}
+
+function drawFloatingLabel(worldX, worldY, worldLeft, worldTop, text, color, yOffset, phase = 0) {
+  const sx = Math.round(worldX - worldLeft);
+  const baseY = Math.round(worldY - worldTop + yOffset);
+  const bob = Math.sin(performance.now() * 0.005 + phase) * 3;
+  const sy = Math.round(baseY + bob);
+  if (sx < -80 || sy < -40 || sx > canvas.width + 80 || sy > canvas.height + 40) return;
+
+  ctx.font = '8px "Lucida Console", Monaco, monospace';
+  ctx.textBaseline = 'middle';
+  const w = Math.ceil(ctx.measureText(text).width);
+  const padX = 4;
+  const padY = 2;
+
+  ctx.fillStyle = 'rgba(16, 18, 22, 0.72)';
+  ctx.fillRect(sx - Math.floor(w * 0.5) - padX, sy - 4 - padY, w + padX * 2, 8 + padY * 2);
+
+  ctx.fillStyle = '#111316';
+  ctx.fillText(text, sx - Math.floor(w * 0.5) + 1, sy + 1);
+  ctx.fillStyle = color;
+  ctx.fillText(text, sx - Math.floor(w * 0.5), sy);
+}
+
+function drawFloatingHospitalSign(worldX, worldY, worldLeft, worldTop, yOffset, phase = 0) {
+  const sx = Math.round(worldX - worldLeft);
+  const baseY = Math.round(worldY - worldTop + yOffset);
+  const bob = Math.sin(performance.now() * 0.005 + phase) * 3;
+  const sy = Math.round(baseY + bob);
+  if (sx < -80 || sy < -40 || sx > canvas.width + 80 || sy > canvas.height + 40) return;
+
+  const w = 16;
+  const h = 14;
+  const x = sx - Math.floor(w * 0.5);
+  const y = sy - Math.floor(h * 0.5);
+
+  ctx.fillStyle = 'rgba(16, 18, 22, 0.72)';
+  ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+  ctx.fillStyle = '#eceff3';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#c9ced6';
+  ctx.fillRect(x + 1, y + 1, w - 2, 1);
+  ctx.fillStyle = '#f5f7fa';
+  ctx.fillRect(x + 1, y + h - 2, w - 2, 1);
+
+  ctx.fillStyle = '#d63e44';
+  ctx.fillRect(x + 6, y + 3, 4, 8);
+  ctx.fillRect(x + 4, y + 5, 8, 4);
+}
+
+function drawSpecialBuildingSigns(state, worldLeft, worldTop) {
+  const shops = state.world?.shops || [];
+  for (let i = 0; i < shops.length; i += 1) {
+    const shop = shops[i];
+    drawFloatingLabel(shop.x, shop.y, worldLeft, worldTop, 'GUNS', '#ffd477', -30, i * 0.9);
+  }
+
+  const hospital = state.world?.hospital;
+  if (hospital) {
+    drawFloatingHospitalSign(hospital.x, hospital.y, worldLeft, worldTop, -32, 1.4);
+  }
 }
 
 function drawDrops(state, worldLeft, worldTop) {
@@ -2480,9 +2574,7 @@ function renderState(state, dt) {
     return;
   }
 
-  drawWorld();
-  drawShopMarkers(state, worldLeft, worldTop);
-  drawHospitalMarker(state, worldLeft, worldTop);
+  drawWorld(state);
   drawBloodStains(state, worldLeft, worldTop);
   drawDrops(state, worldLeft, worldTop);
 
@@ -2516,6 +2608,7 @@ function renderState(state, dt) {
     }
   }
 
+  drawSpecialBuildingSigns(state, worldLeft, worldTop);
   drawEffects(worldLeft, worldTop);
   drawCrosshair(worldLeft, worldTop, state);
   drawMapOverlay(state);
