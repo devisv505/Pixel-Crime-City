@@ -31,6 +31,7 @@ body {
   height: 100%;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+  touch-action: none;
 }
 
 .overlay {
@@ -297,6 +298,7 @@ button.secondary {
   border: 2px solid rgba(230, 244, 255, 0.45);
   background: rgba(10, 19, 24, 0.78);
   padding: 6px;
+  touch-action: manipulation;
 }
 
 .chat-bar input[type="text"] {
@@ -321,6 +323,121 @@ button.secondary {
   justify-content: center;
   background: rgba(6, 10, 14, 0.66);
   padding: 12px;
+}
+
+.mobile-rotate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 10, 14, 0.92);
+}
+
+.mobile-rotate-card {
+  border: 2px solid rgba(230, 244, 255, 0.52);
+  background: rgba(11, 21, 29, 0.96);
+  padding: 16px 14px;
+  text-align: center;
+  max-width: 280px;
+}
+
+.mobile-rotate-title {
+  font-size: 14px;
+  color: #f2f7ff;
+}
+
+.mobile-rotate-subtitle {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #bad0df;
+}
+
+.mobile-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+.mobile-stick-base {
+  position: absolute;
+  left: calc(12px + env(safe-area-inset-left));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid rgba(230, 244, 255, 0.46);
+  background: rgba(14, 26, 35, 0.6);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.mobile-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid rgba(221, 239, 255, 0.65);
+  background: rgba(101, 195, 232, 0.45);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mobile-action-stack {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.mobile-action-stack button {
+  min-width: 42px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 2px solid rgba(209, 232, 246, 0.62);
+  background: rgba(16, 35, 47, 0.72);
+  color: #f2f7ff;
+  touch-action: manipulation;
+}
+
+body.mobile-ui .hud {
+  top: calc(6px + env(safe-area-inset-top));
+  left: calc(6px + env(safe-area-inset-left));
+  min-width: 158px;
+  padding: 6px 8px;
+}
+
+body.mobile-ui .hud-row {
+  gap: 8px;
+  font-size: 11px;
+}
+
+body.mobile-ui .hud-help {
+  display: none;
+}
+
+body.mobile-ui .chat-bar {
+  left: 50%;
+  right: auto;
+  width: min(68vw, 280px);
+  bottom: calc(4px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 4px;
+  gap: 4px;
+}
+
+body.mobile-ui .chat-bar input[type="text"] {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
 }
 
 .settings-panel {
