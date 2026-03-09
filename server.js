@@ -7,12 +7,30 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+function envFlag(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null) return defaultValue;
+  const value = String(raw).trim().toLowerCase();
+  if (!value) return defaultValue;
+  return !(value === '0' || value === 'false' || value === 'off' || value === 'no');
+}
+
 const PORT = Number(process.env.PORT || 3000);
 const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 30));
 const DT = 1 / TICK_RATE;
-const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 15));
+const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 20));
 const SNAPSHOT_EVERY_TICKS = Math.max(1, Math.round(TICK_RATE / SNAPSHOT_RATE));
+const PRESENCE_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.PRESENCE_RATE) || 1));
+const PRESENCE_EVERY_TICKS = Math.max(1, Math.round(TICK_RATE / PRESENCE_RATE));
 const COLLISION_GRID_CELL = 96;
+const AOI_PED_RADIUS = Math.max(320, Number(process.env.AOI_PED_RADIUS) || 900);
+const AOI_CAR_RADIUS = Math.max(AOI_PED_RADIUS, Number(process.env.AOI_CAR_RADIUS) || 1200);
+const AOI_PED_RADIUS_SQ = AOI_PED_RADIUS * AOI_PED_RADIUS;
+const AOI_CAR_RADIUS_SQ = AOI_CAR_RADIUS * AOI_CAR_RADIUS;
+const OPT_AOI = envFlag('OPT_AOI', true);
+const OPT_ZONE_LOD = envFlag('OPT_ZONE_LOD', true);
+const OPT_CLIENT_VFX = envFlag('OPT_CLIENT_VFX', true);
+const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(process.env.WORLD_REV) : 1;
 
 const WORLD = {
   width: 3840,
@@ -67,6 +85,12 @@ const bloodStains = new Map();
 let nextId = 1;
 let nextEventId = 1;
 let pendingEvents = [];
+let tickSpatialContext = null;
+let tickLodContext = null;
+let bytesSentSinceReport = 0;
+let nextMetricsAt = Date.now() + 5_000;
+const tickMsWindow = [];
+const snapshotBuildMsWindow = [];
 
 const CAR_PALETTE = ['#f9ce4e', '#ff7a5e', '#83d3ff', '#8eff92', '#d9a5ff', '#f2f2f2', '#a6ffef'];
 const NPC_PALETTE = ['#f0c39a', '#f5d0b2', '#d2a67f', '#efba9f', '#c78f6f', '#e9c09a'];
@@ -96,6 +120,7 @@ const HOSPITAL = {
   releaseY: BLOCK_PX * 0 + ROAD_END + 8,
 };
 const STATIC_WORLD_PAYLOAD = Object.freeze({
+  worldRev: WORLD_REV,
   width: WORLD.width,
   height: WORLD.height,
   tileSize: WORLD.tileSize,
@@ -254,6 +279,39 @@ function hash2D(x, y) {
   n = (n ^ (n >> 13)) * 1274126177;
   n ^= n >> 16;
   return (n >>> 0) / 4294967295;
+}
+
+function quantized(value, precision = 100) {
+  return Math.round(value * precision) / precision;
+}
+
+function pushMetricSample(buffer, value, max = 240) {
+  if (!Number.isFinite(value)) return;
+  buffer.push(value);
+  if (buffer.length > max) {
+    buffer.splice(0, buffer.length - max);
+  }
+}
+
+function percentile(values, p) {
+  if (!values || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p)));
+  return sorted[idx];
+}
+
+function idPhase(id) {
+  if (!id) return 0;
+  let h = 0;
+  const s = String(id);
+  for (let i = 0; i < s.length; i += 1) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+function entityInsidePlayerAoi(player, x, y, radiusSq) {
+  return wrappedDistanceSq(player.x, player.y, x, y) <= radiusSq;
 }
 
 function makeId(prefix) {
@@ -551,6 +609,14 @@ function makeBloodStain(x, y) {
     ttl: BLOOD_STAIN_LIFETIME,
   };
   bloodStains.set(id, stain);
+  if (OPT_CLIENT_VFX) {
+    emitEvent('bloodSpawn', {
+      stainId: id,
+      x,
+      y,
+      ttl: BLOOD_STAIN_LIFETIME,
+    });
+  }
   return stain;
 }
 
@@ -1793,25 +1859,33 @@ function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
   const bestStart = Number.isFinite(maxDistance) ? maxDistance * maxDistance : Infinity;
   let bestDistSq = bestStart;
 
-  for (const npc of npcs.values()) {
-    if (npc.alive || npc.corpseState !== 'down' || npc.bodyClaimedBy) continue;
-    const dx = npc.x - x;
-    const dy = npc.y - y;
-    const d2 = dx * dx + dy * dy;
+  const corpses = tickSpatialContext?.corpses;
+  const source = Array.isArray(corpses) ? corpses : [];
+  for (const item of source) {
+    if (!item || !item.entity || item.entity.alive || item.entity.bodyClaimedBy) continue;
+    const d2 = wrappedDistanceSq(x, y, item.entity.x, item.entity.y);
     if (d2 < bestDistSq) {
-      best = { type: 'npc', id: npc.id, entity: npc };
+      best = { type: item.type, id: item.id, entity: item.entity };
       bestDistSq = d2;
     }
   }
 
-  for (const cop of cops.values()) {
-    if (cop.alive || cop.corpseState !== 'down' || cop.bodyClaimedBy) continue;
-    const dx = cop.x - x;
-    const dy = cop.y - y;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < bestDistSq) {
-      best = { type: 'cop', id: cop.id, entity: cop };
-      bestDistSq = d2;
+  if (!best && !Array.isArray(corpses)) {
+    for (const npc of npcs.values()) {
+      if (npc.alive || npc.corpseState !== 'down' || npc.bodyClaimedBy) continue;
+      const d2 = wrappedDistanceSq(x, y, npc.x, npc.y);
+      if (d2 < bestDistSq) {
+        best = { type: 'npc', id: npc.id, entity: npc };
+        bestDistSq = d2;
+      }
+    }
+    for (const cop of cops.values()) {
+      if (cop.alive || cop.corpseState !== 'down' || cop.bodyClaimedBy) continue;
+      const d2 = wrappedDistanceSq(x, y, cop.x, cop.y);
+      if (d2 < bestDistSq) {
+        best = { type: 'cop', id: cop.id, entity: cop };
+        bestDistSq = d2;
+      }
     }
   }
 
@@ -2446,6 +2520,68 @@ function updateCarStuckState(car, dt) {
   }
 }
 
+function buildTickLodContext() {
+  const blocksX = Math.max(1, Math.floor(WORLD.width / BLOCK_PX));
+  const blocksY = Math.max(1, Math.floor(WORLD.height / BLOCK_PX));
+  if (!OPT_ZONE_LOD) {
+    return { enabled: false, blocksX, blocksY, playerBlocks: [] };
+  }
+
+  const playerBlocks = [];
+  for (const player of players.values()) {
+    if (player.health <= 0 || player.insideShopId) continue;
+    playerBlocks.push({
+      x: mod(Math.floor(player.x / BLOCK_PX), blocksX),
+      y: mod(Math.floor(player.y / BLOCK_PX), blocksY),
+    });
+  }
+
+  return {
+    enabled: true,
+    blocksX,
+    blocksY,
+    playerBlocks,
+  };
+}
+
+function zoneLevelForPosition(x, y) {
+  const ctx = tickLodContext;
+  if (!ctx || !ctx.enabled) return 'active';
+  if (!ctx.playerBlocks || ctx.playerBlocks.length === 0) return 'cold';
+
+  const bx = mod(Math.floor(x / BLOCK_PX), ctx.blocksX);
+  const by = mod(Math.floor(y / BLOCK_PX), ctx.blocksY);
+  let best = Infinity;
+
+  for (const p of ctx.playerBlocks) {
+    const dxRaw = Math.abs(p.x - bx);
+    const dyRaw = Math.abs(p.y - by);
+    const dx = Math.min(dxRaw, ctx.blocksX - dxRaw);
+    const dy = Math.min(dyRaw, ctx.blocksY - dyRaw);
+    const d = Math.max(dx, dy);
+    if (d < best) best = d;
+  }
+
+  if (best <= 2) return 'active';
+  if (best <= 4) return 'warm';
+  return 'cold';
+}
+
+function lodStepDt(entityId, x, y, dt, warmModulo = 2, coldModulo = 4) {
+  if (!OPT_ZONE_LOD) return dt;
+  const level = zoneLevelForPosition(x, y);
+  if (level === 'active') return dt;
+
+  const phase = idPhase(entityId);
+  if (level === 'warm') {
+    if ((tickCount + phase) % warmModulo !== 0) return 0;
+    return dt * warmModulo;
+  }
+
+  if ((tickCount + phase) % coldModulo !== 0) return 0;
+  return dt * coldModulo;
+}
+
 function stepCars(dt) {
   for (const car of cars.values()) {
     car.hornCooldown -= dt;
@@ -2494,7 +2630,10 @@ function stepCars(dt) {
       } else if (car.type === 'ambulance') {
         stepAmbulanceCar(car, dt);
       } else {
-        stepTrafficCar(car, dt);
+        const trafficDt = lodStepDt(car.id, car.x, car.y, dt);
+        if (trafficDt > 0) {
+          stepTrafficCar(car, trafficDt);
+        }
       }
       updateCarStuckState(car, dt);
       continue;
@@ -2510,7 +2649,10 @@ function stepCars(dt) {
         car.sirenOn = !!car.dismountTargetPlayerId;
       }
     }
-    stepAbandonedCar(car, dt);
+    const abandonedDt = car.type === 'civilian' ? lodStepDt(car.id, car.x, car.y, dt) : dt;
+    if (abandonedDt > 0) {
+      stepAbandonedCar(car, abandonedDt);
+    }
     car.abandonTimer += dt;
     const activeCopDeployment = car.type === 'cop' && Array.isArray(car.dismountCopIds) && car.dismountCopIds.length > 0;
     const waitingOwnerReturn = car.stolenFromNpc && car.type !== 'cop';
@@ -2535,12 +2677,15 @@ function stepCars(dt) {
   }
 }
 
-function stepCarHitsByCars() {
-  const list = Array.from(cars.values());
-  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
-  for (const car of list) {
-    spatialInsert(grid, car);
-  }
+function stepCarHitsByCars(ctx = tickSpatialContext) {
+  const list = Array.isArray(ctx?.cars) ? ctx.cars : Array.from(cars.values());
+  const grid = ctx?.carGrid || (() => {
+    const g = makeSpatialGrid(COLLISION_GRID_CELL);
+    for (const car of list) {
+      spatialInsert(g, car);
+    }
+    return g;
+  })();
 
   const pairSeen = new Set();
   for (let i = 0; i < list.length; i++) {
@@ -2606,21 +2751,22 @@ function stepCarHitsByCars() {
   }
 }
 
-function stepPlayerHits() {
+function stepPlayerHits(ctx = tickSpatialContext) {
   for (const player of players.values()) {
     if (player.health <= 0 || player.inCarId || player.hitCooldown > 0 || player.insideShopId) {
       continue;
     }
 
-    for (const car of cars.values()) {
+    const nearbyCars = ctx?.carGrid ? spatialQueryNeighbors(ctx.carGrid, player.x, player.y) : cars.values();
+    for (const car of nearbyCars) {
       if (car.type === 'cop' && !car.driverId) {
         continue;
       }
       const impactSpeed = Math.abs(car.speed);
       if (impactSpeed < 38) continue;
 
-      const dx = car.x - player.x;
-      const dy = car.y - player.y;
+      const dx = wrapDelta(car.x - player.x, WORLD.width);
+      const dy = wrapDelta(car.y - player.y, WORLD.height);
       const hitRadius = 14;
       if (dx * dx + dy * dy > hitRadius * hitRadius) {
         continue;
@@ -2649,7 +2795,7 @@ function stepPlayerHits() {
 function stepNpcs(dt) {
   const cardinal = [0, Math.PI * 0.5, Math.PI, -Math.PI * 0.5];
 
-  function stepNpcReclaimCar(npc) {
+  function stepNpcReclaimCar(npc, stepDt) {
     if (!npc.reclaimCarId) return false;
 
     const car = cars.get(npc.reclaimCarId);
@@ -2666,13 +2812,13 @@ function stepNpcs(dt) {
     const dy = wrapDelta(car.y - npc.y, WORLD.height);
     const dist = Math.hypot(dx, dy);
     const desired = Math.atan2(dy, dx);
-    npc.dir = angleApproach(npc.dir, desired, dt * 5.8);
+    npc.dir = angleApproach(npc.dir, desired, stepDt * 5.8);
     npc.panicTimer = Math.max(npc.panicTimer, 0.2);
     npc.crossingTimer = Math.max(npc.crossingTimer, 0.35);
 
     const speed = Math.max(npc.baseSpeed + 30, 72);
-    const nx = wrapWorldX(npc.x + Math.cos(npc.dir) * speed * dt);
-    const ny = wrapWorldY(npc.y + Math.sin(npc.dir) * speed * dt);
+    const nx = wrapWorldX(npc.x + Math.cos(npc.dir) * speed * stepDt);
+    const ny = wrapWorldY(npc.y + Math.sin(npc.dir) * speed * stepDt);
 
     if (!isSolidForPed(nx, npc.y)) {
       npc.x = nx;
@@ -2780,19 +2926,24 @@ function stepNpcs(dt) {
       continue;
     }
 
-    if (stepNpcReclaimCar(npc)) {
+    const npcDt = lodStepDt(npc.id, npc.x, npc.y, dt);
+    if (npcDt <= 0) {
+      continue;
+    }
+
+    if (stepNpcReclaimCar(npc, npcDt)) {
       wrapWorldPosition(npc);
       continue;
     }
 
     if (npc.panicTimer > 0) {
-      npc.panicTimer -= dt;
+      npc.panicTimer -= npcDt;
     }
     if (npc.crossingTimer > 0) {
-      npc.crossingTimer -= dt;
+      npc.crossingTimer -= npcDt;
     }
 
-    npc.wanderTimer -= dt;
+    npc.wanderTimer -= npcDt;
     if (npc.wanderTimer <= 0) {
       npc.wanderTimer = randRange(0.5, 2.1);
       npc.dir += randRange(-1.2, 1.2);
@@ -2804,8 +2955,8 @@ function stepNpcs(dt) {
     }
 
     const speed = npc.baseSpeed + (npc.panicTimer > 0 ? 46 : 0) + (npc.crossingTimer > 0 ? 8 : 0);
-    const nx = npc.x + Math.cos(npc.dir) * speed * dt;
-    const ny = npc.y + Math.sin(npc.dir) * speed * dt;
+    const nx = npc.x + Math.cos(npc.dir) * speed * npcDt;
+    const ny = npc.y + Math.sin(npc.dir) * speed * npcDt;
 
     const nextGround = groundTypeAt(nx, ny);
     if (npc.panicTimer <= 0 && npc.crossingTimer <= 0 && nextGround === 'road') {
@@ -2967,13 +3118,17 @@ function stepCops(dt) {
       moveCop(cop, Math.atan2(target.y - cop.y, target.x - cop.x), 94, dt);
       shootAtTargetFromCop(cop, target);
     } else {
+      const patrolDt = lodStepDt(cop.id, cop.x, cop.y, dt, 2, 3);
+      if (patrolDt <= 0) {
+        continue;
+      }
       cop.mode = 'patrol';
       cop.targetPlayerId = null;
       if (cop.patrolTimer <= 0) {
         cop.patrolTimer = randRange(0.6, 1.7);
         cop.dir += randRange(-1.3, 1.3);
       }
-      moveCop(cop, cop.dir, 56, dt);
+      moveCop(cop, cop.dir, 56, patrolDt);
     }
 
     wrapWorldPosition(cop);
@@ -3079,24 +3234,51 @@ function spatialQueryNeighbors(grid, x, y) {
   return result;
 }
 
-function stepNpcHitsByCars() {
+function buildTickSpatialContext() {
+  const carGrid = makeSpatialGrid(COLLISION_GRID_CELL);
+  const impactCarGrid = makeSpatialGrid(COLLISION_GRID_CELL);
+  const allCars = [];
   const impactCars = [];
+
   for (const car of cars.values()) {
+    allCars.push(car);
+    spatialInsert(carGrid, car);
     if (Math.abs(car.speed) >= 46) {
       impactCars.push(car);
+      spatialInsert(impactCarGrid, car);
     }
   }
-  if (impactCars.length === 0) return;
 
-  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
-  for (const car of impactCars) {
-    spatialInsert(grid, car);
+  const corpses = [];
+  for (const npc of npcs.values()) {
+    if (!npc.alive && npc.corpseState === 'down' && !npc.bodyClaimedBy) {
+      corpses.push({ type: 'npc', id: npc.id, entity: npc });
+    }
   }
+  for (const cop of cops.values()) {
+    if (!cop.alive && cop.corpseState === 'down' && !cop.bodyClaimedBy) {
+      corpses.push({ type: 'cop', id: cop.id, entity: cop });
+    }
+  }
+
+  return {
+    cars: allCars,
+    carGrid,
+    impactCars,
+    impactCarGrid,
+    corpses,
+  };
+}
+
+function stepNpcHitsByCars(ctx = tickSpatialContext) {
+  const impactCars = Array.isArray(ctx?.impactCars) ? ctx.impactCars : [];
+  if (impactCars.length === 0) return;
+  const impactGrid = ctx?.impactCarGrid;
 
   for (const npc of npcs.values()) {
     if (!npc.alive) continue;
 
-    const nearbyCars = spatialQueryNeighbors(grid, npc.x, npc.y);
+    const nearbyCars = impactGrid ? spatialQueryNeighbors(impactGrid, npc.x, npc.y) : impactCars;
     for (const car of nearbyCars) {
       const dx = wrapDelta(car.x - npc.x, WORLD.width);
       const dy = wrapDelta(car.y - npc.y, WORLD.height);
@@ -3116,24 +3298,15 @@ function stepNpcHitsByCars() {
   }
 }
 
-function stepCopHitsByCars() {
-  const impactCars = [];
-  for (const car of cars.values()) {
-    if (Math.abs(car.speed) >= 46) {
-      impactCars.push(car);
-    }
-  }
+function stepCopHitsByCars(ctx = tickSpatialContext) {
+  const impactCars = Array.isArray(ctx?.impactCars) ? ctx.impactCars : [];
   if (impactCars.length === 0) return;
-
-  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
-  for (const car of impactCars) {
-    spatialInsert(grid, car);
-  }
+  const impactGrid = ctx?.impactCarGrid;
 
   for (const cop of cops.values()) {
     if (!cop.alive || cop.inCarId) continue;
 
-    const nearbyCars = spatialQueryNeighbors(grid, cop.x, cop.y);
+    const nearbyCars = impactGrid ? spatialQueryNeighbors(impactGrid, cop.x, cop.y) : impactCars;
     for (const car of nearbyCars) {
       const dx = wrapDelta(car.x - cop.x, WORLD.width);
       const dy = wrapDelta(car.y - cop.y, WORLD.height);
@@ -3196,6 +3369,9 @@ function stepBloodStains(dt) {
   for (const stain of bloodStains.values()) {
     stain.ttl -= dt;
     if (stain.ttl <= 0) {
+      if (OPT_CLIENT_VFX) {
+        emitEvent('bloodRemove', { stainId: stain.id, x: stain.x, y: stain.y });
+      }
       bloodStains.delete(stain.id);
     }
   }
@@ -3230,6 +3406,11 @@ function resetAmbientSceneWhenEmpty() {
   }
 
   if (bloodStains.size > 0) {
+    if (OPT_CLIENT_VFX) {
+      for (const stain of bloodStains.values()) {
+        emitEvent('bloodRemove', { stainId: stain.id, x: stain.x, y: stain.y });
+      }
+    }
     bloodStains.clear();
   }
 }
@@ -3274,113 +3455,299 @@ function ensureCopPopulation() {
   }
 }
 
-function serializeSnapshot() {
-  const now = Date.now();
+function serializePlayerForSnapshot(player, now) {
+  const hasChat = typeof player.chatUntil === 'number' && player.chatUntil > now && !!player.chatText;
+  return {
+    id: player.id,
+    name: player.name,
+    color: player.color,
+    x: quantized(player.x, 100),
+    y: quantized(player.y, 100),
+    dir: quantized(player.dir, 1000),
+    inCarId: player.inCarId,
+    insideShopId: player.insideShopId,
+    health: Math.round(player.health),
+    stars: player.stars,
+    money: player.money,
+    weapon: player.weapon,
+    ownedPistol: player.ownedPistol,
+    ownedShotgun: player.ownedShotgun,
+    ownedMachinegun: player.ownedMachinegun,
+    ownedBazooka: player.ownedBazooka,
+    chatText: hasChat ? player.chatText : '',
+    chatUntil: hasChat ? player.chatUntil : 0,
+  };
+}
+
+function serializeCarForSnapshot(car) {
+  return {
+    id: car.id,
+    type: car.type,
+    x: quantized(car.x, 100),
+    y: quantized(car.y, 100),
+    angle: quantized(car.angle, 1000),
+    speed: quantized(car.speed, 10),
+    color: car.color,
+    driverId: car.driverId,
+    npcDriver: car.npcDriver,
+    sirenOn: !!car.sirenOn,
+  };
+}
+
+function serializeNpcForSnapshot(npc) {
+  return {
+    id: npc.id,
+    x: quantized(npc.x, 100),
+    y: quantized(npc.y, 100),
+    dir: quantized(npc.dir, 1000),
+    alive: npc.alive,
+    corpseState: npc.corpseState,
+    skinColor: npc.skinColor,
+    shirtColor: npc.shirtColor,
+    shirtDark: npc.shirtDark || '#2a3342',
+  };
+}
+
+function serializeCopForSnapshot(cop) {
+  return {
+    id: cop.id,
+    x: quantized(cop.x, 100),
+    y: quantized(cop.y, 100),
+    dir: quantized(cop.dir, 1000),
+    health: Math.round(cop.health || 0),
+    alive: !!cop.alive,
+    inCarId: cop.inCarId || null,
+    corpseState: cop.corpseState || 'none',
+    mode: cop.mode,
+    alert: (cop.alertTimer || 0) > 0,
+  };
+}
+
+function serializeDropForSnapshot(drop) {
+  return {
+    id: drop.id,
+    x: quantized(drop.x, 100),
+    y: quantized(drop.y, 100),
+    amount: drop.amount,
+    ttl: quantized(drop.ttl, 100),
+  };
+}
+
+function serializeBloodForSnapshot(stain) {
+  return {
+    id: stain.id,
+    x: quantized(stain.x, 100),
+    y: quantized(stain.y, 100),
+    ttl: quantized(stain.ttl, 100),
+  };
+}
+
+function isEventAlwaysRelevant(event, player) {
+  if (!event || !player) return false;
+  if (event.playerId && event.playerId === player.id) return true;
+  if (event.killerId && event.killerId === player.id) return true;
+  if (event.victimId && event.victimId === player.id) return true;
+  if (event.sourcePlayerId && event.sourcePlayerId === player.id) return true;
+  return false;
+}
+
+function eventLocationRelevant(event, player, radiusSq = AOI_CAR_RADIUS_SQ) {
+  if (!event || !player) return false;
+  if (!Number.isFinite(event.x) || !Number.isFinite(event.y)) return false;
+  return wrappedDistanceSq(player.x, player.y, event.x, event.y) <= radiusSq;
+}
+
+function filterEventsForPlayer(player, events) {
+  if (!Array.isArray(events) || events.length === 0) return [];
+  if (!OPT_AOI) return events;
+
+  const filtered = [];
+  for (const event of events) {
+    if (!event) continue;
+    if (isEventAlwaysRelevant(event, player)) {
+      filtered.push(event);
+      continue;
+    }
+    if (eventLocationRelevant(event, player)) {
+      filtered.push(event);
+      continue;
+    }
+  }
+  return filtered;
+}
+
+function shouldIncludeCarForPlayer(player, car) {
+  if (!player || !car) return false;
+  if (!OPT_AOI) return true;
+  if (car.id === player.inCarId || car.driverId === player.id) return true;
+  if (car.type === 'cop' && car.dismountTargetPlayerId === player.id) return true;
+  return entityInsidePlayerAoi(player, car.x, car.y, AOI_CAR_RADIUS_SQ);
+}
+
+function shouldIncludePlayerForPlayer(player, other) {
+  if (!player || !other) return false;
+  if (!OPT_AOI) return true;
+  if (other.id === player.id) return true;
+  return entityInsidePlayerAoi(player, other.x, other.y, AOI_PED_RADIUS_SQ);
+}
+
+function shouldIncludeNpcForPlayer(player, npc) {
+  if (!player || !npc) return false;
+  if (!OPT_AOI) return true;
+  return entityInsidePlayerAoi(player, npc.x, npc.y, AOI_PED_RADIUS_SQ);
+}
+
+function shouldIncludeCopForPlayer(player, cop) {
+  if (!player || !cop) return false;
+  if (!OPT_AOI) return true;
+  if (cop.targetPlayerId === player.id) return true;
+  return entityInsidePlayerAoi(player, cop.x, cop.y, AOI_PED_RADIUS_SQ);
+}
+
+function shouldIncludeDropForPlayer(player, drop) {
+  if (!player || !drop) return false;
+  if (!OPT_AOI) return true;
+  return entityInsidePlayerAoi(player, drop.x, drop.y, AOI_PED_RADIUS_SQ);
+}
+
+function shouldIncludeBloodForPlayer(player, stain) {
+  if (!player || !stain) return false;
+  if (!OPT_AOI) return true;
+  return entityInsidePlayerAoi(player, stain.x, stain.y, AOI_PED_RADIUS_SQ);
+}
+
+function buildGlobalWorldStats() {
+  let npcAlive = 0;
+  for (const npc of npcs.values()) {
+    if (npc.alive) npcAlive += 1;
+  }
+
+  let carsCivilian = 0;
+  let carsCop = 0;
+  let carsAmbulance = 0;
+  for (const car of cars.values()) {
+    if (car.type === 'cop') {
+      carsCop += 1;
+    } else if (car.type === 'ambulance') {
+      carsAmbulance += 1;
+    } else {
+      carsCivilian += 1;
+    }
+  }
+
+  let copsAlive = 0;
+  for (const cop of cops.values()) {
+    if (cop.alive) copsAlive += 1;
+  }
+
+  return {
+    npcAlive,
+    carsCivilian,
+    carsCop,
+    carsAmbulance,
+    copsAlive,
+  };
+}
+
+function serializeSnapshotForPlayer(player, now, events, globalStats = null) {
   const playersPayload = [];
-  for (const player of players.values()) {
-    const hasChat = typeof player.chatUntil === 'number' && player.chatUntil > now && !!player.chatText;
-    playersPayload.push({
-      id: player.id,
-      name: player.name,
-      color: player.color,
-      x: Math.round(player.x * 100) / 100,
-      y: Math.round(player.y * 100) / 100,
-      dir: Math.round(player.dir * 1000) / 1000,
-      inCarId: player.inCarId,
-      insideShopId: player.insideShopId,
-      health: Math.round(player.health),
-      stars: player.stars,
-      money: player.money,
-      weapon: player.weapon,
-      ownedPistol: player.ownedPistol,
-      ownedShotgun: player.ownedShotgun,
-      ownedMachinegun: player.ownedMachinegun,
-      ownedBazooka: player.ownedBazooka,
-      chatText: hasChat ? player.chatText : '',
-      chatUntil: hasChat ? player.chatUntil : 0,
-    });
+  for (const entry of players.values()) {
+    if (!shouldIncludePlayerForPlayer(player, entry)) continue;
+    playersPayload.push(serializePlayerForSnapshot(entry, now));
   }
 
   const carsPayload = [];
   for (const car of cars.values()) {
-    carsPayload.push({
-      id: car.id,
-      type: car.type,
-      x: Math.round(car.x * 100) / 100,
-      y: Math.round(car.y * 100) / 100,
-      angle: Math.round(car.angle * 1000) / 1000,
-      speed: Math.round(car.speed * 10) / 10,
-      color: car.color,
-      driverId: car.driverId,
-      npcDriver: car.npcDriver,
-      sirenOn: !!car.sirenOn,
-    });
+    if (!shouldIncludeCarForPlayer(player, car)) continue;
+    carsPayload.push(serializeCarForSnapshot(car));
   }
 
   const npcsPayload = [];
   for (const npc of npcs.values()) {
-    npcsPayload.push({
-      id: npc.id,
-      x: Math.round(npc.x * 100) / 100,
-      y: Math.round(npc.y * 100) / 100,
-      dir: Math.round(npc.dir * 1000) / 1000,
-      alive: npc.alive,
-      corpseState: npc.corpseState,
-      skinColor: npc.skinColor,
-      shirtColor: npc.shirtColor,
-      shirtDark: npc.shirtDark || '#2a3342',
-    });
-  }
-
-  const dropsPayload = [];
-  for (const drop of cashDrops.values()) {
-    dropsPayload.push({
-      id: drop.id,
-      x: Math.round(drop.x * 100) / 100,
-      y: Math.round(drop.y * 100) / 100,
-      amount: drop.amount,
-      ttl: Math.round(drop.ttl * 100) / 100,
-    });
+    if (!shouldIncludeNpcForPlayer(player, npc)) continue;
+    npcsPayload.push(serializeNpcForSnapshot(npc));
   }
 
   const copsPayload = [];
   for (const cop of cops.values()) {
-    copsPayload.push({
-      id: cop.id,
-      x: Math.round(cop.x * 100) / 100,
-      y: Math.round(cop.y * 100) / 100,
-      dir: Math.round(cop.dir * 1000) / 1000,
-      health: Math.round(cop.health || 0),
-      alive: !!cop.alive,
-      inCarId: cop.inCarId || null,
-      corpseState: cop.corpseState || 'none',
-      mode: cop.mode,
-      alert: (cop.alertTimer || 0) > 0,
-    });
+    if (!shouldIncludeCopForPlayer(player, cop)) continue;
+    copsPayload.push(serializeCopForSnapshot(cop));
+  }
+
+  const dropsPayload = [];
+  for (const drop of cashDrops.values()) {
+    if (!shouldIncludeDropForPlayer(player, drop)) continue;
+    dropsPayload.push(serializeDropForSnapshot(drop));
   }
 
   const bloodPayload = [];
-  for (const stain of bloodStains.values()) {
-    bloodPayload.push({
-      id: stain.id,
-      x: Math.round(stain.x * 100) / 100,
-      y: Math.round(stain.y * 100) / 100,
-      ttl: Math.round(stain.ttl * 100) / 100,
-    });
+  if (!OPT_CLIENT_VFX) {
+    for (const stain of bloodStains.values()) {
+      if (!shouldIncludeBloodForPlayer(player, stain)) continue;
+      bloodPayload.push(serializeBloodForSnapshot(stain));
+    }
   }
 
-  return {
+  const payload = {
     type: 'snapshot',
-    serverTime: Date.now(),
-    world: STATIC_WORLD_PAYLOAD,
+    serverTime: now,
+    worldRev: WORLD_REV,
     players: playersPayload,
     cars: carsPayload,
     npcs: npcsPayload,
     cops: copsPayload,
     drops: dropsPayload,
     blood: bloodPayload,
-    events: pendingEvents,
+    events: filterEventsForPlayer(player, events),
   };
+
+  if (player.requestStats && globalStats) {
+    payload.stats = globalStats;
+  }
+
+  if (OPT_AOI) {
+    payload.scope = {
+      x: quantized(player.x, 10),
+      y: quantized(player.y, 10),
+      pedRadius: AOI_PED_RADIUS,
+      carRadius: AOI_CAR_RADIUS,
+    };
+  }
+
+  return payload;
+}
+
+function serializePresencePayload() {
+  const playersPayload = [];
+  for (const player of players.values()) {
+    playersPayload.push({
+      id: player.id,
+      name: player.name,
+      color: player.color,
+      x: quantized(player.x, 10),
+      y: quantized(player.y, 10),
+      inCarId: player.inCarId || null,
+    });
+  }
+  return {
+    type: 'presence',
+    serverTime: Date.now(),
+    worldRev: WORLD_REV,
+    onlineCount: playersPayload.length,
+    players: playersPayload,
+  };
+}
+
+function broadcastPresence() {
+  if (clients.size === 0) return;
+  const payload = JSON.stringify(serializePresencePayload());
+  const payloadBytes = Buffer.byteLength(payload);
+  for (const ws of clients.keys()) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+      bytesSentSinceReport += payloadBytes;
+    }
+  }
 }
 
 function broadcastSnapshot() {
@@ -3388,13 +3755,21 @@ function broadcastSnapshot() {
     pendingEvents = [];
     return;
   }
-  const payload = JSON.stringify(serializeSnapshot());
+  const now = Date.now();
+  const events = pendingEvents;
   pendingEvents = [];
+  const globalStats = buildGlobalWorldStats();
 
-  for (const ws of clients.keys()) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
-    }
+  for (const [ws, client] of clients.entries()) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    const player = players.get(client.playerId);
+    if (!player) continue;
+    const buildStart = performance.now();
+    const message = serializeSnapshotForPlayer(player, now, events, globalStats);
+    pushMetricSample(snapshotBuildMsWindow, performance.now() - buildStart, 300);
+    const payload = JSON.stringify(message);
+    bytesSentSinceReport += Buffer.byteLength(payload);
+    ws.send(payload);
   }
 }
 
@@ -3416,6 +3791,7 @@ function disconnectClient(ws) {
   }
 
   clients.delete(ws);
+  broadcastPresence();
 }
 
 function handleJoin(ws, data) {
@@ -3466,6 +3842,7 @@ function handleJoin(ws, data) {
     ownedShotgun: true,
     ownedMachinegun: true,
     ownedBazooka: true,
+    requestStats: false,
     prevEnter: false,
     input: {
       up: false,
@@ -3477,6 +3854,7 @@ function handleJoin(ws, data) {
       shootHeld: false,
       shootSeq: 0,
       weaponSlot: 1,
+      requestStats: false,
       aimX: spawn.x,
       aimY: spawn.y,
       clickAimX: spawn.x,
@@ -3492,11 +3870,13 @@ function handleJoin(ws, data) {
       type: 'joined',
       playerId: id,
       tickRate: TICK_RATE,
+      worldRev: WORLD_REV,
       world: STATIC_WORLD_PAYLOAD,
     })
   );
 
   emitEvent('join', { playerId: id, x: player.x, y: player.y });
+  broadcastPresence();
 }
 
 function normalizeShootSeq(raw, prev) {
@@ -3531,6 +3911,8 @@ function handleInput(ws, data) {
   player.input.enter = !!input.enter;
   player.input.horn = !!input.horn;
   player.input.shootHeld = !!input.shootHeld;
+  player.requestStats = !!input.requestStats;
+  player.input.requestStats = player.requestStats;
   const slot = Number(input.weaponSlot);
   if (Number.isInteger(slot) && slot >= 1 && slot <= 4) {
     player.input.weaponSlot = slot;
@@ -3651,18 +4033,43 @@ for (let i = 0; i < COP_OFFICER_COUNT; i++) {
   makeCopUnit();
 }
 
+function reportServerMetricsIfNeeded(nowMs) {
+  if (nowMs < nextMetricsAt) return;
+  const reportWindowSec = 5;
+  const tickP50 = percentile(tickMsWindow, 0.5);
+  const tickP95 = percentile(tickMsWindow, 0.95);
+  const snapshotP95 = percentile(snapshotBuildMsWindow, 0.95);
+  const kbps = (bytesSentSinceReport / 1024 / reportWindowSec).toFixed(1);
+  // eslint-disable-next-line no-console
+  console.log(
+    [
+      `[metrics] tick p50=${tickP50.toFixed(2)}ms p95=${tickP95.toFixed(2)}ms`,
+      `snapshotBuild p95=${snapshotP95.toFixed(2)}ms`,
+      `net=${kbps}KB/s`,
+      `entities players=${players.size} npcs=${npcs.size} cars=${cars.size} cops=${cops.size} drops=${cashDrops.size}`,
+    ].join(' | ')
+  );
+  bytesSentSinceReport = 0;
+  nextMetricsAt = nowMs + 5_000;
+}
+
 let tickCount = 0;
 setInterval(() => {
+  const tickStart = performance.now();
   tickCount += 1;
+  tickLodContext = buildTickLodContext();
+  tickSpatialContext = buildTickSpatialContext();
   stepPlayers(DT);
   stepCars(DT);
-  stepCarHitsByCars();
+  tickSpatialContext = buildTickSpatialContext();
+  stepCarHitsByCars(tickSpatialContext);
   stepCops(DT);
   maybeEmitCopTriggerAlerts();
   stepNpcs(DT);
-  stepPlayerHits();
-  stepNpcHitsByCars();
-  stepCopHitsByCars();
+  tickSpatialContext = buildTickSpatialContext();
+  stepPlayerHits(tickSpatialContext);
+  stepNpcHitsByCars(tickSpatialContext);
+  stepCopHitsByCars(tickSpatialContext);
   stepCashDrops(DT);
   stepBloodStains(DT);
   resetAmbientSceneWhenEmpty();
@@ -3672,9 +4079,18 @@ setInterval(() => {
   if (tickCount % SNAPSHOT_EVERY_TICKS === 0) {
     broadcastSnapshot();
   }
+  if (tickCount % PRESENCE_EVERY_TICKS === 0) {
+    broadcastPresence();
+  }
+  pushMetricSample(tickMsWindow, performance.now() - tickStart, 300);
+  reportServerMetricsIfNeeded(Date.now());
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Pixel city server running on http://localhost:${PORT}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `flags AOI=${OPT_AOI ? 1 : 0} ZONE_LOD=${OPT_ZONE_LOD ? 1 : 0} CLIENT_VFX=${OPT_CLIENT_VFX ? 1 : 0}`
+  );
 });

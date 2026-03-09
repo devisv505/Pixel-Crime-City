@@ -66,6 +66,7 @@ const INPUT = {
   weaponSlot: 1,
   clickAimX: 0,
   clickAimY: 0,
+  requestStats: false,
 };
 
 const POINTER = {
@@ -84,6 +85,9 @@ const WORLD = {
   roadEnd: 192,
   laneA: 144,
   laneB: 176,
+  worldRev: 0,
+  shops: [],
+  hospital: null,
 };
 
 const camera = { x: WORLD.width * 0.5, y: WORLD.height * 0.5 };
@@ -106,10 +110,16 @@ let mapVisible = false;
 let renderNowMs = performance.now();
 const walkAnimById = new Map();
 let lastWalkAnimCleanupAt = 0;
+let worldRev = 0;
+let presenceOnlineCount = 0;
+let presencePlayers = [];
+const clientBloodStains = new Map();
+let debugStatsVisible = false;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
 const MAX_SEEN_EVENTS = 650;
+const CLIENT_BLOOD_TTL = 240;
 
 const visualEffects = [];
 const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
@@ -1195,6 +1205,16 @@ function applyWorldFromServer(payload) {
       WORLD[key] = payload[key];
     }
   }
+  if (Array.isArray(payload.shops)) {
+    WORLD.shops = payload.shops.map((shop) => ({ ...shop }));
+  }
+  if (payload.hospital && typeof payload.hospital === 'object') {
+    WORLD.hospital = { ...payload.hospital };
+  }
+  if (typeof payload.worldRev === 'number' && Number.isFinite(payload.worldRev)) {
+    WORLD.worldRev = payload.worldRev;
+    worldRev = payload.worldRev;
+  }
 }
 
 function setStep(step) {
@@ -1288,6 +1308,7 @@ function sendInput() {
         shootHeld: INPUT.shootHeld,
         shootSeq: INPUT.shootSeq,
         weaponSlot: INPUT.weaponSlot,
+        requestStats: INPUT.requestStats,
         aimX: Math.round(POINTER.worldX * 100) / 100,
         aimY: Math.round(POINTER.worldY * 100) / 100,
         clickAimX: Math.round(INPUT.clickAimX * 100) / 100,
@@ -1332,6 +1353,10 @@ function resetSessionState() {
   snapshots = [];
   lastSnapshot = null;
   localPlayerCache = null;
+  presenceOnlineCount = 0;
+  presencePlayers = [];
+  clientBloodStains.clear();
+  debugStatsVisible = false;
   walkAnimById.clear();
   closeSettingsPanel();
   audio.resetSessionAudioState();
@@ -1346,6 +1371,7 @@ function resetSessionState() {
   INPUT.weaponSlot = 1;
   INPUT.clickAimX = WORLD.width * 0.5;
   INPUT.clickAimY = WORLD.height * 0.5;
+  INPUT.requestStats = false;
   statusNotice = '';
   statusNoticeUntil = 0;
   latestState = null;
@@ -1408,6 +1434,9 @@ async function connectAndJoin() {
 
     if (data.type === 'joined') {
       applyWorldFromServer(data.world);
+      if (typeof data.worldRev === 'number' && Number.isFinite(data.worldRev)) {
+        worldRev = data.worldRev;
+      }
       playerId = data.playerId;
       joined = true;
       joinOverlay.classList.add('hidden');
@@ -1421,12 +1450,26 @@ async function connectAndJoin() {
     }
 
     if (data.type === 'snapshot') {
-      applyWorldFromServer(data.world);
+      if (data.world) {
+        applyWorldFromServer(data.world);
+      }
+      if (typeof data.worldRev === 'number' && Number.isFinite(data.worldRev)) {
+        worldRev = data.worldRev;
+      }
       data.receivedAt = performance.now();
       snapshots.push(data);
       while (snapshots.length > 55) snapshots.shift();
       lastSnapshot = data;
       processEvents(data.events || []);
+      return;
+    }
+
+    if (data.type === 'presence') {
+      presenceOnlineCount = Number.isFinite(data.onlineCount) ? Math.max(0, data.onlineCount) : presenceOnlineCount;
+      presencePlayers = Array.isArray(data.players) ? data.players : [];
+      if (typeof data.worldRev === 'number' && Number.isFinite(data.worldRev)) {
+        worldRev = data.worldRev;
+      }
       return;
     }
 
@@ -1543,6 +1586,20 @@ function processEvents(events) {
         y: ey,
         ttl: 0.25,
       });
+    } else if (ev.type === 'bloodSpawn') {
+      if (ev.stainId && Number.isFinite(ev.x) && Number.isFinite(ev.y)) {
+        clientBloodStains.set(ev.stainId, {
+          id: ev.stainId,
+          x: ev.x,
+          y: ev.y,
+          ttl: Number.isFinite(ev.ttl) ? ev.ttl : 180,
+          maxTtl: Number.isFinite(ev.ttl) ? ev.ttl : 180,
+        });
+      }
+    } else if (ev.type === 'bloodRemove') {
+      if (ev.stainId) {
+        clientBloodStains.delete(ev.stainId);
+      }
     } else if (ev.type === 'cashPickup' && ev.playerId === playerId) {
       audio.playCash();
       pushEffect({
@@ -1580,13 +1637,14 @@ function interpolateSnapshot(targetServerTime) {
   if (snapshots.length === 1) {
     const single = snapshots[0];
     return {
-      world: single.world,
+      world: WORLD,
       players: single.players || [],
       cars: single.cars || [],
       npcs: single.npcs || [],
       cops: single.cops || [],
       drops: single.drops || [],
       blood: single.blood || [],
+      stats: single.stats || null,
       playersById: new Map((single.players || []).map((p) => [p.id, p])),
       carsById: new Map((single.cars || []).map((c) => [c.id, c])),
       localPlayer: (single.players || []).find((p) => p.id === playerId) || null,
@@ -1685,13 +1743,14 @@ function interpolateSnapshot(targetServerTime) {
   const carsById = new Map(cars.map((c) => [c.id, c]));
 
   return {
-    world: newer.world,
+    world: WORLD,
     players,
     cars,
     npcs,
     cops,
     drops,
     blood,
+    stats: newer.stats || null,
     playersById,
     carsById,
     localPlayer: playersById.get(playerId) || null,
@@ -1995,14 +2054,30 @@ function drawDrops(state, worldLeft, worldTop) {
 }
 
 function drawBloodStains(state, worldLeft, worldTop) {
-  for (const stain of state.blood || []) {
+  const serverBlood = state?.blood || [];
+  const merged = [];
+  const seen = new Set();
+  for (const stain of serverBlood) {
+    if (!stain || !stain.id) continue;
+    merged.push(stain);
+    seen.add(stain.id);
+  }
+  for (const stain of clientBloodStains.values()) {
+    if (!stain || seen.has(stain.id)) continue;
+    merged.push(stain);
+  }
+
+  for (const stain of merged) {
     const sx = Math.round(stain.x - worldLeft);
     const sy = Math.round(stain.y - worldTop);
     if (sx < -18 || sy < -18 || sx > canvas.width + 18 || sy > canvas.height + 18) {
       continue;
     }
 
-    ctx.fillStyle = '#6d1a1d';
+    const maxTtl = Number.isFinite(stain.maxTtl) ? stain.maxTtl : CLIENT_BLOOD_TTL;
+    const ttl = Number.isFinite(stain.ttl) ? stain.ttl : maxTtl;
+    const alpha = clamp(ttl / Math.max(1, maxTtl), 0.2, 1);
+    ctx.fillStyle = `rgba(109,26,29,${alpha.toFixed(3)})`;
     ctx.fillRect(sx - 4, sy - 2, 8, 4);
     ctx.fillRect(sx - 2, sy - 4, 4, 8);
     ctx.fillRect(sx - 6, sy - 1, 2, 2);
@@ -2840,7 +2915,7 @@ function drawMapOverlay(state) {
   ctx.fillStyle = '#90c9e8';
   ctx.font = '6px "Lucida Console", Monaco, monospace';
   ctx.fillText('CITY MAP (M)', px + 6, py + 8);
-  const onlineCount = (state.players || []).length;
+  const onlineCount = presenceOnlineCount > 0 ? presenceOnlineCount : (state.players || []).length;
   const onlineText = `Online:${onlineCount}`;
   const onlineWidth = ctx.measureText(onlineText).width;
   ctx.fillStyle = '#d9f2ff';
@@ -2879,7 +2954,8 @@ function drawMapOverlay(state) {
     ctx.fillRect(hx - 2, hy - 1, 4, 2);
   }
 
-  for (const p of state.players || []) {
+  const markerPlayers = presencePlayers.length > 0 ? presencePlayers : state.players || [];
+  for (const p of markerPlayers) {
     if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
     const x = Math.round(toMapX(p.x));
     const y = Math.round(toMapY(p.y));
@@ -3062,19 +3138,19 @@ function updateHud(state) {
   hudMoney.textContent = `Money: $${p.money || 0}`;
   hudWanted.textContent = p.stars > 0 ? `Stars: ${'*'.repeat(p.stars)}` : 'Stars: none';
   if (hudOnline) {
-    hudOnline.textContent = `Online: ${(state.players || []).length}`;
+    const online = presenceOnlineCount > 0 ? presenceOnlineCount : (state.players || []).length;
+    hudOnline.textContent = `Online: ${online}`;
   }
   if (hudWorldStats) {
-    const cars = state.cars || [];
-    const npcs = state.npcs || [];
-    const cops = state.cops || [];
-    const aliveNpcs = npcs.reduce((sum, npc) => sum + (npc.alive ? 1 : 0), 0);
-    const civilianCars = cars.reduce((sum, car) => sum + (car.type === 'civilian' ? 1 : 0), 0);
-    const copCars = cars.reduce((sum, car) => sum + (car.type === 'cop' ? 1 : 0), 0);
-    const ambulanceCars = cars.reduce((sum, car) => sum + (car.type === 'ambulance' ? 1 : 0), 0);
-    const aliveOfficers = cops.reduce((sum, cop) => sum + (cop.alive ? 1 : 0), 0);
-    hudWorldStats.textContent =
-      `NPC: ${aliveNpcs} | Cars: ${civilianCars} | Officers: ${aliveOfficers} | Cop Cars: ${copCars} | Ambulance: ${ambulanceCars}`;
+    if (!debugStatsVisible || !state.stats) {
+      hudWorldStats.textContent = '';
+      hudWorldStats.style.display = 'none';
+    } else {
+      const s = state.stats;
+      hudWorldStats.style.display = '';
+      hudWorldStats.textContent =
+        `NPC: ${s.npcAlive || 0} | Cars: ${s.carsCivilian || 0} | Officers: ${s.copsAlive || 0} | Cop Cars: ${s.carsCop || 0} | Ambulance: ${s.carsAmbulance || 0}`;
+    }
   }
 }
 function resizeCanvas() {
@@ -3185,12 +3261,23 @@ function handleActionKey(event) {
   return true;
 }
 
+function stepClientBlood(dt) {
+  if (clientBloodStains.size === 0) return;
+  for (const stain of clientBloodStains.values()) {
+    stain.ttl -= dt;
+    if (stain.ttl <= 0) {
+      clientBloodStains.delete(stain.id);
+    }
+  }
+}
+
 function startRenderLoop() {
   function frame(now) {
     const dt = clamp((now - lastFrameTime) / 1000, 0, 0.15);
     lastFrameTime = now;
     renderNowMs = now;
     cleanupWalkAnimationCache(now);
+    stepClientBlood(dt);
 
     if (joined) {
       inputSendAccumulator += dt;
@@ -3355,6 +3442,14 @@ function attachUiEvents() {
       } else {
         openSettingsPanel();
       }
+      event.preventDefault();
+      return;
+    }
+
+    if (joined && event.code === 'KeyU' && !event.repeat) {
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
+      debugStatsVisible = !debugStatsVisible;
+      INPUT.requestStats = debugStatsVisible;
       event.preventDefault();
       return;
     }

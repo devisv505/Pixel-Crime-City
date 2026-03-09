@@ -5,7 +5,8 @@
   "description": "Browser-based multiplayer top-down pixel driving/action game",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "loadtest": "node scripts/load-bots.js"
   },
   "engines": {
     "node": ">=18"
