@@ -107,6 +107,21 @@ const MAX_SEEN_EVENTS = 650;
 const visualEffects = [];
 const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
 const AUDIO_PREF_SFX_KEY = 'pcc_sfx_volume';
+const BUILDING_TEXTURE_SOURCES = [
+  '/assets/buildings/building_01.png',
+  '/assets/buildings/building_02.png',
+  '/assets/buildings/building_03.png',
+  '/assets/buildings/building_04.png',
+];
+const buildingTextures = BUILDING_TEXTURE_SOURCES.map((src) => ({
+  src,
+  state: 'idle',
+  width: 0,
+  height: 0,
+  pixels: null,
+}));
+const buildingTextureColorCache = new Map();
+let buildingTexturesRequested = false;
 
 function parseAudioPref(value, fallback) {
   const n = Number(value);
@@ -551,6 +566,65 @@ function saveSettingsPanel() {
   closeSettingsPanel();
 }
 
+function loadBuildingTexture(index) {
+  const target = buildingTextures[index];
+  if (!target || target.state === 'loading' || target.state === 'ready') return;
+  target.state = 'loading';
+
+  const img = new Image();
+  img.decoding = 'async';
+  img.onload = () => {
+    try {
+      const buffer = document.createElement('canvas');
+      buffer.width = img.width;
+      buffer.height = img.height;
+      const g = buffer.getContext('2d', { willReadFrequently: true });
+      g.imageSmoothingEnabled = false;
+      g.drawImage(img, 0, 0);
+      const data = g.getImageData(0, 0, img.width, img.height);
+      target.width = img.width;
+      target.height = img.height;
+      target.pixels = data.data;
+      target.state = 'ready';
+      buildingTextureColorCache.clear();
+    } catch {
+      target.state = 'missing';
+    }
+  };
+  img.onerror = () => {
+    target.state = 'missing';
+  };
+  img.src = target.src;
+}
+
+function ensureBuildingTexturesLoaded() {
+  if (buildingTexturesRequested) return;
+  buildingTexturesRequested = true;
+  for (let i = 0; i < buildingTextures.length; i += 1) {
+    loadBuildingTexture(i);
+  }
+}
+
+function sampleBuildingTextureColor(variant, u, v) {
+  const texture = buildingTextures[variant];
+  if (!texture || texture.state !== 'ready' || !texture.pixels || texture.width < 1 || texture.height < 1) {
+    return null;
+  }
+
+  const tx = clamp(Math.round(u * (texture.width - 1)), 0, texture.width - 1);
+  const ty = clamp(Math.round(v * (texture.height - 1)), 0, texture.height - 1);
+  const cacheKey = `${variant}|${tx}|${ty}`;
+  const cached = buildingTextureColorCache.get(cacheKey);
+  if (cached) return cached;
+
+  const idx = (ty * texture.width + tx) * 4;
+  const a = texture.pixels[idx + 3];
+  if (a < 1) return null;
+  const color = `rgb(${texture.pixels[idx]},${texture.pixels[idx + 1]},${texture.pixels[idx + 2]})`;
+  buildingTextureColorCache.set(cacheKey, color);
+  return color;
+}
+
 function refreshMapToggleUi() {
   if (!mapBtn) return;
   mapBtn.classList.toggle('active', mapVisible);
@@ -627,6 +701,295 @@ function worldGroundTypeAt(x, y) {
   }
 
   return 'park';
+}
+
+function buildingVariantForBlock(blockX, blockY) {
+  return Math.floor(hash2D(blockX + 17, blockY - 29) * 4);
+}
+
+function drawSolarRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#123351';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, tile - 2);
+  ctx.fillStyle = '#27679e';
+  ctx.fillRect(sx + 2, sy + 2, tile - 4, tile - 4);
+  ctx.fillStyle = '#5ba0de';
+  ctx.fillRect(sx + 3, sy + 3, tile - 6, 2);
+}
+
+function drawFanRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#8e959d';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, tile - 2);
+  ctx.fillStyle = '#596067';
+  ctx.fillRect(sx + 3, sy + 3, tile - 6, tile - 6);
+  ctx.fillStyle = '#3f454b';
+  ctx.fillRect(sx + 4, sy + Math.floor(tile * 0.5), tile - 8, 1);
+  ctx.fillRect(sx + Math.floor(tile * 0.5), sy + 4, 1, tile - 8);
+}
+
+function drawVentRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#9da3aa';
+  ctx.fillRect(sx + 2, sy + 3, tile - 4, tile - 5);
+  ctx.fillStyle = '#707780';
+  ctx.fillRect(sx + 2, sy + 3, tile - 4, 2);
+  ctx.fillStyle = '#5a616a';
+  ctx.fillRect(sx + 3, sy + 7, tile - 6, 1);
+}
+
+function drawPenthouseRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#6e737b';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, tile - 2);
+  ctx.fillStyle = '#4b5159';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, 3);
+  ctx.fillStyle = '#8f959e';
+  ctx.fillRect(sx + 4, sy + 5, tile - 8, tile - 8);
+}
+
+function drawSkylightRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#4f6984';
+  ctx.fillRect(sx + 3, sy + 4, tile - 6, tile - 8);
+  ctx.fillStyle = '#86a9c9';
+  ctx.fillRect(sx + 4, sy + 5, tile - 8, 2);
+  ctx.fillStyle = '#2c3f53';
+  ctx.fillRect(sx + 4, sy + tile - 5, tile - 8, 1);
+}
+
+function drawWaterTankRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#7e868f';
+  ctx.fillRect(sx + 4, sy + 3, tile - 8, tile - 6);
+  ctx.fillStyle = '#a8afb7';
+  ctx.fillRect(sx + 5, sy + 4, tile - 10, 2);
+  ctx.fillStyle = '#5d646d';
+  ctx.fillRect(sx + 5, sy + tile - 4, tile - 10, 1);
+  ctx.fillStyle = '#444b54';
+  ctx.fillRect(sx + 3, sy + tile - 2, tile - 6, 1);
+}
+
+function drawDuctRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#8a9199';
+  ctx.fillRect(sx + 2, sy + 6, tile - 4, 3);
+  ctx.fillStyle = '#666d75';
+  ctx.fillRect(sx + 2, sy + 6, tile - 4, 1);
+  ctx.fillStyle = '#a7adb4';
+  ctx.fillRect(sx + 4, sy + 7, tile - 8, 1);
+}
+
+function drawAntennaRoofTile(sx, sy, tile) {
+  ctx.fillStyle = '#70767f';
+  ctx.fillRect(sx + 7, sy + 4, 2, tile - 6);
+  ctx.fillStyle = '#949aa3';
+  ctx.fillRect(sx + 6, sy + 3, 4, 1);
+  ctx.fillRect(sx + 5, sy + 6, 1, 1);
+  ctx.fillRect(sx + 10, sy + 7, 1, 1);
+}
+
+function isMainRoofCell(variant, btX, btY) {
+  const core = btX >= 4 && btX <= 15 && btY >= 4 && btY <= 15;
+  if (!core) return false;
+
+  if (variant === 0) {
+    return !(btX >= 13 && btY >= 12);
+  }
+  if (variant === 1) {
+    return !(btX >= 12 && btY <= 6);
+  }
+  if (variant === 2) {
+    return !(btX >= 14 && btY <= 5);
+  }
+  return !(btX <= 6 && btY <= 6);
+}
+
+function drawInsetRoofCell(sx, sy, tile) {
+  ctx.fillStyle = '#a19c94';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, tile - 2);
+  ctx.fillStyle = '#8a857e';
+  ctx.fillRect(sx + 1, sy + 1, tile - 2, 2);
+  ctx.fillStyle = '#7d7871';
+  ctx.fillRect(sx + 1, sy + tile - 3, tile - 2, 2);
+}
+
+function drawInnerRoofParapet(variant, sx, sy, tile, btX, btY) {
+  if (!isMainRoofCell(variant, btX, btY)) return;
+
+  const n = isMainRoofCell(variant, btX, btY - 1);
+  const s = isMainRoofCell(variant, btX, btY + 1);
+  const w = isMainRoofCell(variant, btX - 1, btY);
+  const e = isMainRoofCell(variant, btX + 1, btY);
+
+  if (!n) {
+    ctx.fillStyle = '#d7d2ca';
+    ctx.fillRect(sx + 1, sy + 1, tile - 2, 1);
+  }
+  if (!s) {
+    ctx.fillStyle = '#8a857e';
+    ctx.fillRect(sx + 1, sy + tile - 2, tile - 2, 1);
+  }
+  if (!w) {
+    ctx.fillStyle = '#d7d2ca';
+    ctx.fillRect(sx + 1, sy + 1, 1, tile - 2);
+  }
+  if (!e) {
+    ctx.fillStyle = '#8a857e';
+    ctx.fillRect(sx + tile - 2, sy + 1, 1, tile - 2);
+  }
+}
+
+function drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, btY) {
+  if (btX < 4 || btX > 15 || btY < 4 || btY > 15) return;
+
+  const detailSeed = hash2D(blockX * 97 + btX * 3 + variant * 11, blockY * 131 + btY * 5 - variant * 7);
+  const accentSeed = hash2D(blockX * 67 + btX * 11, blockY * 71 + btY * 13 + variant * 19);
+
+  if (detailSeed > 0.992) {
+    drawAntennaRoofTile(sx, sy, tile);
+  } else if (detailSeed > 0.975) {
+    drawWaterTankRoofTile(sx, sy, tile);
+  } else if (detailSeed > 0.946 && btX % 2 === 0) {
+    drawDuctRoofTile(sx, sy, tile);
+  } else if (detailSeed > 0.905 && (btX + btY) % 3 === 0) {
+    drawSkylightRoofTile(sx, sy, tile);
+  }
+
+  if (accentSeed > 0.987) {
+    ctx.fillStyle = '#5d636c';
+    ctx.fillRect(sx + 1, sy + 11, tile - 2, 1);
+  }
+}
+
+function drawBuildingTextureTile(variant, sx, sy, tile, localX, localY, blockX, blockY) {
+  const margin = 42 + Math.floor(hash2D(blockX + 11, blockY - 7) * 12);
+  const min = margin;
+  const max = WORLD.blockPx - margin;
+  const span = Math.max(1, max - min);
+  const cx = localX + tile * 0.5;
+  const cy = localY + tile * 0.5;
+  const u = clamp((cx - min) / span, 0, 1);
+  const v = clamp((cy - min) / span, 0, 1);
+  const color = sampleBuildingTextureColor(variant, u, v);
+  if (!color) return false;
+  ctx.fillStyle = color;
+  ctx.fillRect(sx, sy, tile, tile);
+  return true;
+}
+
+function drawBuildingParapetEdges(sx, sy, tile, worldX, worldY, edgeLight, edgeDark) {
+  const cx = worldX + tile * 0.5;
+  const cy = worldY + tile * 0.5;
+  const north = worldGroundTypeAt(cx, cy - tile) === 'building';
+  const south = worldGroundTypeAt(cx, cy + tile) === 'building';
+  const west = worldGroundTypeAt(cx - tile, cy) === 'building';
+  const east = worldGroundTypeAt(cx + tile, cy) === 'building';
+
+  if (!north) {
+    ctx.fillStyle = edgeLight;
+    ctx.fillRect(sx, sy, tile, 2);
+  }
+  if (!south) {
+    ctx.fillStyle = edgeDark;
+    ctx.fillRect(sx, sy + tile - 2, tile, 2);
+  }
+  if (!west) {
+    ctx.fillStyle = edgeLight;
+    ctx.fillRect(sx, sy, 2, tile);
+  }
+  if (!east) {
+    ctx.fillStyle = edgeDark;
+    ctx.fillRect(sx + tile - 2, sy, 2, tile);
+  }
+}
+
+function drawBuildingRoofDetails(variant, sx, sy, tile, blockX, blockY, btX, btY) {
+  if (!isMainRoofCell(variant, btX, btY)) {
+    drawInsetRoofCell(sx, sy, tile);
+    return;
+  }
+
+  if (variant === 0) {
+    const inSolarField = btX >= 4 && btX <= 13 && btY >= 4 && btY <= 13;
+    const inSmallSolar = btX >= 11 && btX <= 14 && btY >= 14 && btY <= 15;
+    if ((inSolarField && ((btX + btY) % 2 === 0 || btX % 3 === 0)) || inSmallSolar) {
+      drawSolarRoofTile(sx, sy, tile);
+    }
+    if ((btX >= 14 && btX <= 15 && btY >= 4 && btY <= 6) || (btX === 15 && btY === 8)) {
+      drawPenthouseRoofTile(sx, sy, tile);
+    }
+    if (btX === 12 && btY === 5) {
+      drawVentRoofTile(sx, sy, tile);
+    }
+    if (btX >= 4 && btX <= 6 && btY === 14) {
+      drawDuctRoofTile(sx, sy, tile);
+    }
+    drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, btY);
+    drawInnerRoofParapet(variant, sx, sy, tile, btX, btY);
+    return;
+  }
+
+  if (variant === 1) {
+    const fanCells =
+      ((btY === 5 || btY === 6) && (btX === 6 || btX === 7 || btX === 8)) ||
+      (btY === 8 && (btX === 10 || btX === 11 || btX === 12)) ||
+      (btY === 11 && (btX === 12 || btX === 13 || btX === 14)) ||
+      (btY === 13 && (btX === 11 || btX === 12));
+    if (fanCells) {
+      drawFanRoofTile(sx, sy, tile);
+    }
+    if ((btX >= 9 && btX <= 10 && btY >= 5 && btY <= 6) || (btX === 9 && btY === 4)) {
+      drawVentRoofTile(sx, sy, tile);
+    }
+    if (btX >= 14 && btX <= 15 && btY >= 12 && btY <= 13) {
+      drawPenthouseRoofTile(sx, sy, tile);
+    }
+    if (btY === 9 && btX >= 7 && btX <= 9) {
+      drawDuctRoofTile(sx, sy, tile);
+    }
+    drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, btY);
+    drawInnerRoofParapet(variant, sx, sy, tile, btX, btY);
+    return;
+  }
+
+  if (variant === 2) {
+    const fanCells =
+      (btY === 6 && (btX === 5 || btX === 6 || btX === 7)) ||
+      (btY === 9 && (btX === 5 || btX === 6)) ||
+      (btY === 12 && (btX === 10 || btX === 11 || btX === 12));
+    if (fanCells) {
+      drawFanRoofTile(sx, sy, tile);
+    }
+    if (btX >= 12 && btX <= 15 && btY >= 7 && btY <= 8) {
+      drawSolarRoofTile(sx, sy, tile);
+    }
+    if ((btX >= 11 && btX <= 13 && btY >= 10 && btY <= 11) || (btX === 14 && btY === 10)) {
+      drawPenthouseRoofTile(sx, sy, tile);
+    }
+    if (btX === 8 && btY === 6) {
+      drawVentRoofTile(sx, sy, tile);
+    }
+    if (btX >= 12 && btX <= 14 && btY === 13) {
+      drawDuctRoofTile(sx, sy, tile);
+    }
+    drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, btY);
+    drawInnerRoofParapet(variant, sx, sy, tile, btX, btY);
+    return;
+  }
+
+  const longSolarStrip = btX >= 6 && btX <= 15 && (btY === 11 || btY === 12);
+  if (longSolarStrip) {
+    drawSolarRoofTile(sx, sy, tile);
+  }
+  const fanCells =
+    (btY === 6 && (btX === 6 || btX === 7)) ||
+    (btY === 7 && (btX === 6 || btX === 7)) ||
+    (btY === 10 && btX === 14);
+  if (fanCells) {
+    drawFanRoofTile(sx, sy, tile);
+  }
+  if ((btX === 12 && btY === 6) || (btX >= 9 && btX <= 10 && btY >= 8 && btY <= 9)) {
+    drawVentRoofTile(sx, sy, tile);
+  }
+  if (btX >= 11 && btX <= 13 && btY === 5) {
+    drawDuctRoofTile(sx, sy, tile);
+  }
+  drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, btY);
+  drawInnerRoofParapet(variant, sx, sy, tile, btX, btY);
 }
 
 function applyWorldFromServer(payload) {
@@ -1140,24 +1503,39 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
   }
 
   if (type === 'building') {
-    ctx.fillStyle = '#4a4f56';
+    const blockWorldX = Math.floor(worldX / WORLD.blockPx);
+    const blockWorldY = Math.floor(worldY / WORLD.blockPx);
+    const localX = mod(worldX, WORLD.blockPx);
+    const localY = mod(worldY, WORLD.blockPx);
+    const variant = buildingVariantForBlock(blockWorldX, blockWorldY);
+    if (drawBuildingTextureTile(variant, sx, sy, tile, localX, localY, blockWorldX, blockWorldY)) {
+      return;
+    }
+
+    const btX = Math.floor(localX / tile);
+    const btY = Math.floor(localY / tile);
+    const roofPalette = [
+      { base: '#bbb6ae', speck: '#c8c4bc', edgeLight: '#d7d2ca', edgeDark: '#8e8a84' },
+      { base: '#c2bdb4', speck: '#cdc9c1', edgeLight: '#ddd8d0', edgeDark: '#97928b' },
+      { base: '#b6b2ab', speck: '#c3bfb7', edgeLight: '#d2cdc5', edgeDark: '#88847d' },
+      { base: '#beb8af', speck: '#cbc7bf', edgeLight: '#dad5cd', edgeDark: '#928d86' },
+    ][variant];
+
+    ctx.fillStyle = roofPalette.base;
     ctx.fillRect(sx, sy, tile, tile);
 
-    const blockX = Math.floor(worldX / tile);
-    const blockY = Math.floor(worldY / tile);
-    const seed = hash2D(blockX, blockY);
-    ctx.fillStyle = seed > 0.5 ? '#59616b' : '#424850';
-    ctx.fillRect(sx, sy, tile, 2);
-    ctx.fillRect(sx, sy + tile - 2, tile, 2);
-    if (seed > 0.28) {
-      ctx.fillStyle = '#90a5b8';
-      ctx.fillRect(sx + 3, sy + 4, 2, 2);
-      ctx.fillRect(sx + 7, sy + 4, 2, 2);
-      ctx.fillRect(sx + 11, sy + 4, 2, 2);
+    const speckSeed = hash2D(blockWorldX * 37 + btX, blockWorldY * 41 + btY);
+    if (speckSeed > 0.74) {
+      ctx.fillStyle = roofPalette.speck;
+      ctx.fillRect(sx + 3, sy + 3, 2, 2);
     }
-    if (seed > 0.74) {
-      ctx.fillStyle = '#343942';
-      ctx.fillRect(sx + 6, sy + 8, 4, 4);
+
+    drawBuildingRoofDetails(variant, sx, sy, tile, blockWorldX, blockWorldY, btX, btY);
+    drawBuildingParapetEdges(sx, sy, tile, worldX, worldY, roofPalette.edgeLight, roofPalette.edgeDark);
+
+    if (speckSeed > 0.92) {
+      ctx.fillStyle = '#5f6872';
+      ctx.fillRect(sx + 6, sy + 6, 2, 2);
     }
     return;
   }
@@ -1171,6 +1549,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY) {
 }
 
 function drawWorld() {
+  ensureBuildingTexturesLoaded();
   const viewW = canvas.width;
   const viewH = canvas.height;
   const tile = WORLD.tileSize;
@@ -2510,6 +2889,7 @@ function attachUiEvents() {
 
 function boot() {
   applyAudioSettings();
+  ensureBuildingTexturesLoaded();
   refreshMapToggleUi();
   refreshSettingsPanel();
   populateColorGrid();
