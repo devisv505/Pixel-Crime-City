@@ -499,6 +499,7 @@ function decodeServerFrame(raw) {
           const speed = unpackSpeed(reader.i16());
           const color = reader.color24();
           const driverId = reader.u32() || null;
+          const health = reader.u8();
           const flagsCar = reader.u8();
           return {
             id,
@@ -509,8 +510,10 @@ function decodeServerFrame(raw) {
             speed,
             color,
             driverId,
+            health,
             npcDriver: !!(flagsCar & 1),
             sirenOn: !!(flagsCar & 2),
+            smoking: !!(flagsCar & 4),
           };
         }
         if (name === 'npcs') {

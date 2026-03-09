@@ -458,9 +458,11 @@ function encodeSnapshotFrame(payload) {
         writer.i16(packSpeed(record.speed || 0));
         writer.color24(record.color || '#ffffff');
         writer.u32(record.driverId ? record.driverId >>> 0 : 0);
+        writer.u8(clamp(Math.round(record.health || 0), 0, 255));
         let flagsCar = 0;
         if (record.npcDriver) flagsCar |= 1;
         if (record.sirenOn) flagsCar |= 2;
+        if (record.smoking) flagsCar |= 4;
         writer.u8(flagsCar);
         return;
       }

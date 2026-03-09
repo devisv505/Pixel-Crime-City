@@ -162,6 +162,8 @@ const snapshotEntityState = {
 const PLAYER_SPEED = 110;
 const CAR_WIDTH = 24;
 const CAR_HEIGHT = 14;
+const CAR_MAX_HEALTH = 100;
+const CAR_SMOKE_HEALTH = 50;
 const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
 const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
 const CAR_BUILDING_COLLISION_INSET_PX = 2;
@@ -3582,6 +3584,34 @@ function drawCarShadow(sx, sy, angle, sprite) {
   ctx.restore();
 }
 
+function drawCarDamageSmoke(car, halfW, halfH) {
+  const health = Number.isFinite(car.health) ? car.health : CAR_MAX_HEALTH;
+  const smoking = !!car.smoking || health <= CAR_SMOKE_HEALTH;
+  if (!smoking || health <= 0) return;
+
+  const intensity = clamp((CAR_SMOKE_HEALTH - health) / CAR_SMOKE_HEALTH, 0, 1);
+  const now = performance.now() * 0.0031;
+  const idSeed = Number.isFinite(Number(car.id)) ? Number(car.id) : 0;
+  const rearX = Math.round(-halfW * 0.22);
+  const rearY = halfH - 1;
+  const puffCount = 8;
+
+  for (let i = 0; i < puffCount; i += 1) {
+    const phase = now + idSeed * 0.19 + i * 0.17;
+    const cycle = phase - Math.floor(phase);
+    const lift = cycle * (12 + intensity * 19);
+    const drift = Math.sin(phase * Math.PI * 2) * (3 + intensity * 5.2);
+    const puffSize = 3 + Math.floor(intensity * 5 + (i % 3) * 0.7);
+    const alpha = clamp((1 - cycle) * (0.46 + intensity * 0.54), 0.2, 0.96);
+    const px = Math.round(rearX + drift + (i - 3.5) * 1.4);
+    const py = Math.round(rearY - lift);
+    ctx.fillStyle = `rgba(44, 47, 52, ${alpha.toFixed(3)})`;
+    ctx.fillRect(px - 1, py - 1, puffSize + 1, puffSize + 1);
+    ctx.fillStyle = `rgba(63, 68, 76, ${clamp(alpha * 0.7, 0.14, 0.72).toFixed(3)})`;
+    ctx.fillRect(px, py, puffSize, puffSize);
+  }
+}
+
 function drawCar(car, worldLeft, worldTop) {
   const sx = Math.round(car.x - worldLeft);
   const sy = Math.round(car.y - worldTop);
@@ -3633,6 +3663,8 @@ function drawCar(car, worldLeft, worldTop) {
     ctx.fillStyle = '#f0c39a';
     ctx.fillRect(-1, -1, 2, 2);
   }
+
+  drawCarDamageSmoke(car, halfW, halfH);
 
   ctx.restore();
 }

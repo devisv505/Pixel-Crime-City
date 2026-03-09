@@ -89,6 +89,9 @@ const COP_OFFICER_COUNT = 32;
 const AMBULANCE_COUNT = 8;
 const AMBULANCE_CAPACITY = 3;
 const CAR_STUCK_RESPAWN_SECONDS = 5;
+const CAR_MAX_HEALTH = 100;
+const CAR_SMOKE_HEALTH = 50;
+const CAR_RESPAWN_SECONDS = 30;
 const MAX_NAME_LENGTH = 16;
 const POLICE_WITNESS_RADIUS = 190;
 const COP_ALERT_MARK_SECONDS = 2.4;
@@ -892,7 +895,7 @@ function policeWitnessReport(x, y, radius = POLICE_WITNESS_RADIUS) {
   }
 
   for (const car of cars.values()) {
-    if (car.type !== 'cop') continue;
+    if (car.type !== 'cop' || car.destroyed) continue;
     const dx = car.x - x;
     const dy = car.y - y;
     const d2 = dx * dx + dy * dy;
@@ -923,17 +926,25 @@ function makeCar(type = 'civilian') {
   const spawn = randomRoadSpawn();
   const isCop = type === 'cop';
   const isAmbulance = type === 'ambulance';
+  const baseSpeed = isCop ? 75 : isAmbulance ? 60 : 55;
+  const maxSpeed = isCop ? 190 : isAmbulance ? 165 : 145;
+  const turnSpeed = isCop ? 3.1 : isAmbulance ? 2.6 : 2.2;
   const car = {
     id: makeId('car'),
     type,
     x: spawn.x,
     y: spawn.y,
     angle: spawn.angle,
-    speed: isCop ? 75 : isAmbulance ? 60 : 55,
-    maxSpeed: isCop ? 190 : isAmbulance ? 165 : 145,
-    turnSpeed: isCop ? 3.1 : isAmbulance ? 2.6 : 2.2,
+    speed: baseSpeed,
+    maxSpeed,
+    turnSpeed,
     width: 24,
     height: 14,
+    health: CAR_MAX_HEALTH,
+    destroyed: false,
+    destroyedTimer: 0,
+    destroyedX: spawn.x,
+    destroyedY: spawn.y,
     driverId: null,
     npcDriver: true,
     abandonTimer: 0,
@@ -961,6 +972,187 @@ function makeCar(type = 'civilian') {
   };
   cars.set(car.id, car);
   return car;
+}
+
+function carCruiseSpeedByType(type) {
+  if (type === 'cop') return 88;
+  if (type === 'ambulance') return 72;
+  return 62;
+}
+
+function randomRoadSpawnFarFrom(x, y, minDistance = BLOCK_PX * 2.2) {
+  const minDistSq = minDistance * minDistance;
+  for (let i = 0; i < 72; i += 1) {
+    const spawn = randomRoadSpawn();
+    if (wrappedDistanceSq(spawn.x, spawn.y, x, y) >= minDistSq && !isSolidForCar(spawn.x, spawn.y)) {
+      return spawn;
+    }
+  }
+  return randomRoadSpawnNear(x, y);
+}
+
+function resetCarForRespawn(car, spawn) {
+  const isCop = car.type === 'cop';
+  const isAmbulance = car.type === 'ambulance';
+  car.x = spawn.x;
+  car.y = spawn.y;
+  car.angle = spawn.angle;
+  car.speed = isCop ? 75 : isAmbulance ? 60 : 55;
+  car.maxSpeed = isCop ? 190 : isAmbulance ? 165 : 145;
+  car.turnSpeed = isCop ? 3.1 : isAmbulance ? 2.6 : 2.2;
+  car.health = CAR_MAX_HEALTH;
+  car.destroyed = false;
+  car.destroyedTimer = 0;
+  car.destroyedX = spawn.x;
+  car.destroyedY = spawn.y;
+  car.driverId = null;
+  car.npcDriver = true;
+  car.abandonTimer = 0;
+  car.aiCooldown = randRange(0.25, 1.15);
+  car.hornCooldown = randRange(0, 1);
+  car.bodyHitCooldown = 0;
+  car.dismountCooldown = 0;
+  car.sirenOn = false;
+  car.stuckTimer = 0;
+  car.lastMoveX = spawn.x;
+  car.lastMoveY = spawn.y;
+  car.stolenFromNpc = false;
+  car.ownerNpcId = null;
+  car.ownerReturnTimer = 0;
+  car.occupantNpcIds = [];
+  if (car.type === 'cop') {
+    car.dismountCopIds = [];
+    car.dismountTargetPlayerId = null;
+  }
+  if (car.type === 'ambulance') {
+    dropAmbulanceLoadAtCar(car);
+    resetAmbulanceTask(car);
+    car.ambulanceMode = 'idle';
+    car.ambulanceTargetType = null;
+    car.ambulanceTargetId = null;
+  }
+}
+
+function killCarOccupants(car, attacker = null) {
+  const killerId = attacker && attacker.id ? attacker.id : null;
+
+  if (car.driverId) {
+    const driver = players.get(car.driverId);
+    if (driver) {
+      damagePlayer(driver, 999, attacker || null);
+    }
+    car.driverId = null;
+  }
+
+  if (Array.isArray(car.occupantNpcIds)) {
+    for (const npcId of car.occupantNpcIds) {
+      const npc = npcs.get(npcId);
+      if (npc && npc.alive) {
+        killNpc(npc, killerId);
+      }
+    }
+    car.occupantNpcIds = [];
+  }
+  car.ownerNpcId = null;
+  car.stolenFromNpc = false;
+  car.ownerReturnTimer = 0;
+
+  for (const cop of cops.values()) {
+    if (!cop.alive || cop.inCarId !== car.id) continue;
+    damageCop(cop, 999, attacker || null);
+  }
+}
+
+function destroyCar(car, attacker = null) {
+  if (!car || car.destroyed) return;
+  const blastX = car.x;
+  const blastY = car.y;
+  const killer = attacker && attacker.health > 0 ? attacker : null;
+
+  car.destroyed = true;
+  car.health = 0;
+  car.destroyedTimer = CAR_RESPAWN_SECONDS;
+  car.destroyedX = blastX;
+  car.destroyedY = blastY;
+  car.speed = 0;
+  car.npcDriver = false;
+  car.abandonTimer = 0;
+  car.aiCooldown = 0;
+  car.bodyHitCooldown = 0;
+  car.sirenOn = false;
+
+  if (car.type === 'cop') {
+    car.dismountCopIds = [];
+    car.dismountTargetPlayerId = null;
+  }
+  if (car.type === 'ambulance') {
+    dropAmbulanceLoadAtCar(car);
+    resetAmbulanceTask(car);
+    car.ambulanceMode = 'idle';
+  }
+
+  const reward = randInt(10, 21);
+  const drop = makeCashDrop(blastX, blastY, reward);
+  emitEvent('cashDrop', {
+    dropId: drop.id,
+    amount: reward,
+    x: drop.x,
+    y: drop.y,
+  });
+
+  if (killer && !killer.insideShopId) {
+    const starGain = car.type === 'cop' ? 1.6 : car.type === 'ambulance' ? 1.25 : 0.9;
+    addStars(killer, starGain, 30);
+  }
+
+  killCarOccupants(car, attacker);
+  applyExplosionDamage(blastX, blastY, attacker, 72, { sourceCarId: car.id });
+}
+
+function damageCar(car, amount, attacker = null) {
+  if (!car || car.destroyed) return false;
+  const dmg = Number(amount);
+  if (!Number.isFinite(dmg) || dmg <= 0) return false;
+  triggerCopCarAggroOnAttack(car, attacker);
+  car.health = clamp(car.health - dmg, 0, CAR_MAX_HEALTH);
+  if (car.health <= 0) {
+    destroyCar(car, attacker);
+    return true;
+  }
+  return false;
+}
+
+function carDamageFromWeapon(weaponName) {
+  if (weaponName === 'machinegun') return 2.2;
+  if (weaponName === 'shotgun') return 3.2;
+  if (weaponName === 'pistol') return 4;
+  return 0;
+}
+
+function copCarHasOfficersInside(car) {
+  if (!car || car.type !== 'cop' || car.destroyed) return false;
+  const crew = Array.isArray(car.crewCopIds) ? car.crewCopIds : [];
+  for (const copId of crew) {
+    const cop = cops.get(copId);
+    if (cop && cop.alive && cop.inCarId === car.id) return true;
+  }
+  for (const cop of cops.values()) {
+    if (cop.alive && cop.inCarId === car.id) return true;
+  }
+  return false;
+}
+
+function triggerCopCarAggroOnAttack(car, attacker) {
+  if (!car || car.type !== 'cop' || car.destroyed) return;
+  if (!attacker || attacker.health <= 0 || attacker.insideShopId) return;
+  if (!copCarHasOfficersInside(car)) return;
+
+  forceFiveStars(attacker, 48);
+  car.dismountTargetPlayerId = attacker.id;
+  tryDeployCopOfficers(car, attacker, true);
+  if (Array.isArray(car.dismountCopIds) && car.dismountCopIds.length > 0) {
+    car.sirenOn = true;
+  }
 }
 
 function makeNpc() {
@@ -1046,7 +1238,7 @@ function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
   const homeCarId = cop.homeCarId || null;
   const desiredCarId = rejoinPreviousCar ? cop.rejoinCarId || homeCarId : homeCarId;
   const desiredCar = desiredCarId ? cars.get(desiredCarId) : null;
-  const canRejoin = !!(desiredCar && desiredCar.type === 'cop');
+  const canRejoin = !!(desiredCar && desiredCar.type === 'cop' && !desiredCar.destroyed);
 
   cop.x = spawn.x;
   cop.y = spawn.y;
@@ -1255,6 +1447,7 @@ function findNearbyCarForPlayer(player, maxDistance) {
   let best = null;
   let bestSq = maxDistance * maxDistance;
   for (const car of cars.values()) {
+    if (car.destroyed) continue;
     if (car.driverId) continue;
     const dx = car.x - player.x;
     const dy = car.y - player.y;
@@ -1941,11 +2134,15 @@ function availableCopForCar(car, target, alreadySelected) {
   return best;
 }
 
-function tryDeployCopOfficers(car, target) {
+function tryDeployCopOfficers(car, target, forceDeploy = false) {
   if (!target || target.health <= 0 || target.stars < 5 || target.insideShopId) return;
-  if (car.dismountCooldown > 0) return;
-  if (wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_DISMOUNT_RADIUS * COP_CAR_DISMOUNT_RADIUS) {
-    return;
+  if (!forceDeploy) {
+    if (car.dismountCooldown > 0) return;
+    if (
+      wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_DISMOUNT_RADIUS * COP_CAR_DISMOUNT_RADIUS
+    ) {
+      return;
+    }
   }
 
   pruneCopCarAssignments(car);
@@ -2455,6 +2652,7 @@ function firstCarBlockDistance(sx, sy, dir, maxDist, ignoreCarId = null) {
   let bestCar = null;
   let bestDist = maxDist;
   for (const car of cars.values()) {
+    if (car.destroyed) continue;
     if (ignoreCarId && car.id === ignoreCarId) continue;
     const dist = rayIntersectCarDistance(sx, sy, dir, bestDist, car);
     if (dist == null) continue;
@@ -2503,7 +2701,8 @@ function damagePlayer(victim, amount, attacker) {
   }
 }
 
-function applyExplosionDamage(x, y, attacker, radius = 72) {
+function applyExplosionDamage(x, y, attacker, radius = 72, options = {}) {
+  const sourceCarId = options && options.sourceCarId ? options.sourceCarId : null;
   const r2 = radius * radius;
 
   for (const npc of npcs.values()) {
@@ -2513,14 +2712,13 @@ function applyExplosionDamage(x, y, attacker, radius = 72) {
   }
 
   for (const cop of cops.values()) {
-    if (!cop.alive || cop.inCarId) continue;
+    if (!cop.alive) continue;
     if (wrappedDistanceSq(x, y, cop.x, cop.y) > r2) continue;
     damageCop(cop, 999, attacker || null);
   }
 
   for (const other of players.values()) {
     if (other.health <= 0 || other.insideShopId) continue;
-    if (attacker && other.id === attacker.id) continue;
     if (wrappedDistanceSq(x, y, other.x, other.y) > r2) continue;
     damagePlayer(other, 220, attacker || null);
   }
@@ -2528,6 +2726,8 @@ function applyExplosionDamage(x, y, attacker, radius = 72) {
   const carEffectRadius = radius * 1.6;
   const carEffectR2 = carEffectRadius * carEffectRadius;
   for (const car of cars.values()) {
+    if (car.destroyed) continue;
+    if (sourceCarId && car.id === sourceCarId) continue;
     const dx = wrapDelta(car.x - x, WORLD.width);
     const dy = wrapDelta(car.y - y, WORLD.height);
     const d2 = dx * dx + dy * dy;
@@ -2546,6 +2746,8 @@ function applyExplosionDamage(x, y, attacker, radius = 72) {
     car.angle = angleApproach(car.angle, Math.atan2(ny, nx), 0.5 + force * 0.4);
     car.speed = clamp(car.speed + force * 105, -92, car.maxSpeed);
     enforceCarCollisions(car, prevX, prevY);
+    const blastDamage = 50;
+    damageCar(car, blastDamage, attacker || null);
   }
 
   emitEvent('explosion', { x, y, radius });
@@ -2659,6 +2861,7 @@ function fireShot(player, clickAimOverride = null) {
       } else if (bestHitType === 'cop') {
         damageCop(bestHit, weapon.damage, player);
       } else if (bestHitType === 'car') {
+        damageCar(bestHit, carDamageFromWeapon(player.weapon), player);
         emitEvent('impact', { x: ex, y: ey });
       }
     }
@@ -2774,7 +2977,7 @@ function respawnStuckCarNearRoad(car) {
     car.y = fallback.y;
     car.angle = fallback.angle;
   }
-  const cruiseSpeed = car.type === 'cop' ? 88 : car.type === 'ambulance' ? 72 : 62;
+  const cruiseSpeed = carCruiseSpeedByType(car.type);
   car.speed = cruiseSpeed;
   car.aiCooldown = randRange(0.25, 1.15);
   car.stuckTimer = 0;
@@ -2873,6 +3076,17 @@ function lodStepDt(entityId, x, y, dt, warmModulo = 2, coldModulo = 4) {
 
 function stepCars(dt) {
   for (const car of cars.values()) {
+    if (car.destroyed) {
+      car.destroyedTimer = Math.max(0, (car.destroyedTimer || 0) - dt);
+      if (car.destroyedTimer <= 0) {
+        const spawn = randomRoadSpawnFarFrom(car.destroyedX || car.x, car.destroyedY || car.y);
+        resetCarForRespawn(car, spawn);
+        car.speed = carCruiseSpeedByType(car.type);
+        car.aiCooldown = randRange(0.25, 1.15);
+      }
+      continue;
+    }
+
     car.hornCooldown -= dt;
     car.bodyHitCooldown = Math.max(0, (car.bodyHitCooldown || 0) - dt);
     car.dismountCooldown = Math.max(0, (car.dismountCooldown || 0) - dt);
@@ -2967,7 +3181,7 @@ function stepCars(dt) {
 }
 
 function stepCarHitsByCars(ctx = tickSpatialContext) {
-  const list = Array.isArray(ctx?.cars) ? ctx.cars : Array.from(cars.values());
+  const list = Array.isArray(ctx?.cars) ? ctx.cars : Array.from(cars.values()).filter((car) => !car.destroyed);
   const grid = ctx?.carGrid || (() => {
     const g = makeSpatialGrid(COLLISION_GRID_CELL);
     for (const car of list) {
@@ -3048,6 +3262,7 @@ function stepPlayerHits(ctx = tickSpatialContext) {
 
     const nearbyCars = ctx?.carGrid ? spatialQueryNeighbors(ctx.carGrid, player.x, player.y) : cars.values();
     for (const car of nearbyCars) {
+      if (car.destroyed) continue;
       if (car.type === 'cop' && !car.driverId) {
         continue;
       }
@@ -3088,7 +3303,7 @@ function stepNpcs(dt) {
     if (!npc.reclaimCarId) return false;
 
     const car = cars.get(npc.reclaimCarId);
-    if (!car || !car.stolenFromNpc || car.type === 'cop') {
+    if (!car || car.destroyed || !car.stolenFromNpc || car.type === 'cop') {
       npc.reclaimCarId = null;
       return false;
     }
@@ -3196,7 +3411,7 @@ function stepNpcs(dt) {
         }
       } else if (npc.corpseState === 'carried') {
         const carrier = npc.bodyCarriedBy ? cars.get(npc.bodyCarriedBy) : null;
-        if (carrier && carrier.type === 'ambulance') {
+        if (carrier && carrier.type === 'ambulance' && !carrier.destroyed) {
           npc.x = carrier.x;
           npc.y = carrier.y;
           npc.dir = carrier.angle;
@@ -3331,10 +3546,11 @@ function shootAtTargetFromCop(cop, target) {
   const ex = wrapWorldX(cop.x + Math.cos(aim) * maxDist);
   const ey = wrapWorldY(cop.y + Math.sin(aim) * maxDist);
   const directDist = toTarget.dist;
-  if (directDist <= maxDist + 4) {
+  if (!target.inCarId && directDist <= maxDist + 4) {
     damagePlayer(target, 15, null);
   }
   if (carBlock && carBlock.dist <= maxDist + 0.01) {
+    damageCar(carBlock.car, carDamageFromWeapon('pistol'), null);
     emitEvent('impact', { x: ex, y: ey });
   }
   emitEvent('bullet', {
@@ -3374,7 +3590,7 @@ function stepCops(dt) {
         }
       } else if (cop.corpseState === 'carried') {
         const carrier = cop.bodyCarriedBy ? cars.get(cop.bodyCarriedBy) : null;
-        if (carrier && carrier.type === 'ambulance') {
+        if (carrier && carrier.type === 'ambulance' && !carrier.destroyed) {
           cop.x = carrier.x;
           cop.y = carrier.y;
           cop.dir = carrier.angle;
@@ -3395,7 +3611,7 @@ function stepCops(dt) {
 
     if (cop.inCarId) {
       const car = cars.get(cop.inCarId);
-      if (!car || car.type !== 'cop') {
+      if (!car || car.type !== 'cop' || car.destroyed) {
         cop.inCarId = null;
       } else {
         cop.x = car.x;
@@ -3407,7 +3623,7 @@ function stepCops(dt) {
 
     if (cop.assignedCarId) {
       const car = cars.get(cop.assignedCarId);
-      if (!car || car.type !== 'cop') {
+      if (!car || car.type !== 'cop' || car.destroyed) {
         cop.assignedCarId = null;
         cop.mode = 'patrol';
         cop.targetPlayerId = null;
@@ -3589,6 +3805,7 @@ function buildTickSpatialContext() {
   const impactCars = [];
 
   for (const car of cars.values()) {
+    if (car.destroyed) continue;
     allCars.push(car);
     spatialInsert(carGrid, car);
     if (Math.abs(car.speed) >= 46) {
@@ -3820,7 +4037,7 @@ function targetCrewSizePerCopCar(copCarCount) {
 }
 
 function assignCopToHomeCar(cop, car) {
-  if (!cop || !car || car.type !== 'cop') return false;
+  if (!cop || !car || car.type !== 'cop' || car.destroyed) return false;
   cop.homeCarId = car.id;
   cop.assignedCarId = car.id;
   if (!cop.rejoinCarId && !cop.alive) {
@@ -3845,7 +4062,7 @@ function assignCopToHomeCar(cop, car) {
 function ensureCopCarCrews() {
   const copCars = [];
   for (const car of cars.values()) {
-    if (car.type !== 'cop') continue;
+    if (car.type !== 'cop' || car.destroyed) continue;
     if (!Array.isArray(car.crewCopIds)) {
       car.crewCopIds = [];
     }
@@ -3983,6 +4200,8 @@ function serializeCarForSnapshot(car) {
     driverId: car.driverId,
     npcDriver: car.npcDriver,
     sirenOn: !!car.sirenOn,
+    health: Math.round(car.health || 0),
+    smoking: (car.health || 0) > 0 && (car.health || 0) <= CAR_SMOKE_HEALTH,
   };
 }
 
@@ -4070,6 +4289,7 @@ function filterEventsForPlayer(player, events) {
 
 function shouldIncludeCarForPlayer(player, car) {
   if (!player || !car) return false;
+  if (car.destroyed) return false;
   if (!OPT_AOI) return true;
   if (car.id === player.inCarId || car.driverId === player.id) return true;
   if (car.type === 'cop' && car.dismountTargetPlayerId === player.id) return true;
@@ -4118,6 +4338,7 @@ function buildGlobalWorldStats() {
   let carsCop = 0;
   let carsAmbulance = 0;
   for (const car of cars.values()) {
+    if (car.destroyed) continue;
     if (car.type === 'cop') {
       carsCop += 1;
     } else if (car.type === 'ambulance') {
@@ -4248,6 +4469,8 @@ function toWireCarRecord(record) {
     driverId: protocolIdForEntityOptional(record.driverId),
     npcDriver: !!record.npcDriver,
     sirenOn: !!record.sirenOn,
+    health: clamp(Math.round(record.health || 0), 0, CAR_MAX_HEALTH),
+    smoking: !!record.smoking,
   };
 }
 
