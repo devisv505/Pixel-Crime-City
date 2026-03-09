@@ -77,6 +77,8 @@ const COP_RADIUS = 7;
 const COP_HEALTH = 200;
 const COP_CAR_DISMOUNT_RADIUS = 92;
 const COP_CAR_RECALL_RADIUS = 320;
+const COP_DEPLOY_PICK_RADIUS = 220;
+const COP_CAR_DEFAULT_CREW_SIZE = 2;
 
 const TRAFFIC_COUNT = 254;
 const COP_COUNT = 32;
@@ -88,6 +90,7 @@ const MAX_NAME_LENGTH = 16;
 const POLICE_WITNESS_RADIUS = 190;
 const COP_ALERT_MARK_SECONDS = 2.4;
 const NPC_HOSPITAL_FALLBACK_SECONDS = 60;
+const COP_HOSPITAL_FALLBACK_SECONDS = 60;
 const CHAT_DURATION_MS = 30_000;
 const CHAT_MAX_LENGTH = 90;
 const BLOOD_STAIN_LIFETIME = 240;
@@ -257,6 +260,22 @@ function wrappedDistanceSq(x1, y1, x2, y2) {
   const dx = wrapDelta(x2 - x1, WORLD.width);
   const dy = wrapDelta(y2 - y1, WORLD.height);
   return dx * dx + dy * dy;
+}
+
+function wrappedVector(x1, y1, x2, y2) {
+  const dx = wrapDelta(x2 - x1, WORLD.width);
+  const dy = wrapDelta(y2 - y1, WORLD.height);
+  return {
+    dx,
+    dy,
+    distSq: dx * dx + dy * dy,
+    dist: Math.hypot(dx, dy),
+  };
+}
+
+function wrappedDirection(fromX, fromY, toX, toY) {
+  const v = wrappedVector(fromX, fromY, toX, toY);
+  return Math.atan2(v.dy, v.dx);
 }
 
 function lerp(a, b, t) {
@@ -920,6 +939,7 @@ function makeCar(type = 'civilian') {
     bodyHitCooldown: 0,
     dismountCooldown: 0,
     dismountCopIds: [],
+    crewCopIds: [],
     dismountTargetPlayerId: null,
     sirenOn: false,
     ambulanceMode: 'idle',
@@ -1003,6 +1023,8 @@ function makeCopUnit() {
     bodyClaimedBy: null,
     bodyCarriedBy: null,
     reviveTimer: 0,
+    corpseDownTimer: 0,
+    homeCarId: null,
     rejoinCarId: null,
     assignedCarId: null,
     inCarId: null,
@@ -1016,7 +1038,8 @@ function makeCopUnit() {
 
 function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
   const spawn = spawnOverride || randomCurbSpawn();
-  const desiredCarId = rejoinPreviousCar ? cop.rejoinCarId : null;
+  const homeCarId = cop.homeCarId || null;
+  const desiredCarId = rejoinPreviousCar ? cop.rejoinCarId || homeCarId : homeCarId;
   const desiredCar = desiredCarId ? cars.get(desiredCarId) : null;
   const canRejoin = !!(desiredCar && desiredCar.type === 'cop');
 
@@ -1031,7 +1054,8 @@ function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
   cop.bodyClaimedBy = null;
   cop.bodyCarriedBy = null;
   cop.reviveTimer = 0;
-  cop.rejoinCarId = canRejoin ? desiredCarId : null;
+  cop.corpseDownTimer = 0;
+  cop.rejoinCarId = rejoinPreviousCar && canRejoin ? desiredCarId : null;
   cop.assignedCarId = canRejoin ? desiredCarId : null;
   cop.inCarId = null;
   cop.mode = canRejoin ? 'return' : 'patrol';
@@ -1054,7 +1078,7 @@ function removeCopFromAssignedCar(cop) {
 function killCop(cop, killer = null) {
   if (!cop || !cop.alive) return;
 
-  const recoveryCarId = cop.assignedCarId || cop.inCarId || cop.rejoinCarId || null;
+  const recoveryCarId = cop.assignedCarId || cop.inCarId || cop.rejoinCarId || cop.homeCarId || null;
   cop.rejoinCarId = recoveryCarId;
   if (recoveryCarId && !cop.assignedCarId) {
     cop.assignedCarId = recoveryCarId;
@@ -1066,6 +1090,7 @@ function killCop(cop, killer = null) {
   cop.bodyClaimedBy = null;
   cop.bodyCarriedBy = null;
   cop.reviveTimer = 0;
+  cop.corpseDownTimer = 0;
   cop.targetPlayerId = null;
   cop.cooldown = 0;
   cop.inCarId = null;
@@ -1836,9 +1861,7 @@ function nearestFiveStarPlayer(x, y) {
 
   for (const player of players.values()) {
     if (player.health <= 0 || player.stars < 5 || player.insideShopId) continue;
-    const dx = player.x - x;
-    const dy = player.y - y;
-    const dist2 = dx * dx + dy * dy;
+    const dist2 = wrappedDistanceSq(x, y, player.x, player.y);
     if (dist2 < winnerScore) {
       winner = player;
       winnerScore = dist2;
@@ -1856,6 +1879,7 @@ function pruneCopCarAssignments(car) {
   car.dismountCopIds = car.dismountCopIds.filter((copId) => {
     const cop = cops.get(copId);
     if (!cop) return false;
+    if (cop.homeCarId && cop.homeCarId !== car.id) return false;
     if (cop.inCarId === car.id) return false;
     return cop.assignedCarId === car.id || cop.rejoinCarId === car.id;
   });
@@ -1867,14 +1891,23 @@ function pruneCopCarAssignments(car) {
 function availableCopForCar(car, target, alreadySelected) {
   let best = null;
   let bestScore = Infinity;
+  const maxPickDistSq = COP_DEPLOY_PICK_RADIUS * COP_DEPLOY_PICK_RADIUS;
+  const crew = Array.isArray(car.crewCopIds) ? car.crewCopIds : [];
 
-  for (const cop of cops.values()) {
-    if (!cop.alive) continue;
-    if (cop.assignedCarId && cop.assignedCarId !== car.id) continue;
+  for (const copId of crew) {
+    const cop = cops.get(copId);
+    if (!cop || !cop.alive) continue;
     if (cop.inCarId && cop.inCarId !== car.id) continue;
+    if (cop.assignedCarId && cop.assignedCarId !== car.id) continue;
     if (alreadySelected.has(cop.id)) continue;
-    const score =
-      cop.inCarId === car.id ? -1 : (cop.x - car.x) * (cop.x - car.x) + (cop.y - car.y) * (cop.y - car.y);
+
+    let score = -1;
+    if (cop.inCarId !== car.id) {
+      const distSq = wrappedDistanceSq(cop.x, cop.y, car.x, car.y);
+      if (distSq > maxPickDistSq) continue;
+      score = distSq;
+    }
+
     if (score < bestScore) {
       best = cop;
       bestScore = score;
@@ -1884,11 +1917,13 @@ function availableCopForCar(car, target, alreadySelected) {
   if (!best) return null;
   const side = alreadySelected.size === 0 ? -1 : 1;
   const offset = 12;
-  const sx = Math.sin(car.angle);
-  const sy = -Math.cos(car.angle);
-  best.x = wrapWorldX(car.x + sx * side * offset);
-  best.y = wrapWorldY(car.y + sy * side * offset);
-  best.dir = Math.atan2(target.y - best.y, target.x - best.x);
+  if (best.inCarId === car.id) {
+    const sx = Math.sin(car.angle);
+    const sy = -Math.cos(car.angle);
+    best.x = wrapWorldX(car.x + sx * side * offset);
+    best.y = wrapWorldY(car.y + sy * side * offset);
+  }
+  best.dir = wrappedDirection(best.x, best.y, target.x, target.y);
   best.mode = 'hunt';
   best.targetPlayerId = target.id;
   best.rejoinCarId = null;
@@ -1902,7 +1937,9 @@ function availableCopForCar(car, target, alreadySelected) {
 function tryDeployCopOfficers(car, target) {
   if (!target || target.health <= 0 || target.stars < 5 || target.insideShopId) return;
   if (car.dismountCooldown > 0) return;
-  if (Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_DISMOUNT_RADIUS) return;
+  if (wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_DISMOUNT_RADIUS * COP_CAR_DISMOUNT_RADIUS) {
+    return;
+  }
 
   pruneCopCarAssignments(car);
   if (car.dismountCopIds.length > 0) {
@@ -1910,13 +1947,15 @@ function tryDeployCopOfficers(car, target) {
     return;
   }
 
+  const crew = Array.isArray(car.crewCopIds) ? car.crewCopIds : [];
+  const maxDeploy = Math.max(1, Math.min(2, crew.length));
   const selected = new Set();
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < maxDeploy; i++) {
     const cop = availableCopForCar(car, target, selected);
     if (!cop) break;
     selected.add(cop.id);
   }
-  if (selected.size < 2) {
+  if (selected.size === 0) {
     for (const copId of selected) {
       const cop = cops.get(copId);
       if (!cop) continue;
@@ -1962,7 +2001,7 @@ function stepCopCar(car, dt) {
       target.health <= 0 ||
       target.stars < 5 ||
       target.insideShopId ||
-      Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_RECALL_RADIUS
+      wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS
     ) {
       target = null;
     }
@@ -1996,10 +2035,11 @@ function stepCopCar(car, dt) {
   }
 
   car.sirenOn = true;
-  const desired = Math.atan2(target.y - car.y, target.x - car.x);
+  const chase = wrappedVector(car.x, car.y, target.x, target.y);
+  const desired = Math.atan2(chase.dy, chase.dx);
   const steerDesired = chooseAvoidanceHeading(car, desired);
   car.angle = angleApproach(car.angle, steerDesired, dt * 2.4);
-  const dist = Math.hypot(target.x - car.x, target.y - car.y);
+  const dist = chase.dist;
   const desiredSpeed = dist > 170 ? 120 : 42;
   car.speed = approach(car.speed, desiredSpeed, dt * 88);
   car.speed = clamp(car.speed, -60, 150);
@@ -2052,10 +2092,11 @@ function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
 }
 
 function driveAiToward(car, targetX, targetY, dt, farSpeed = 98, nearSpeed = 34) {
-  const desired = Math.atan2(targetY - car.y, targetX - car.x);
+  const chase = wrappedVector(car.x, car.y, targetX, targetY);
+  const desired = Math.atan2(chase.dy, chase.dx);
   const steerDesired = chooseAvoidanceHeading(car, desired);
   car.angle = angleApproach(car.angle, steerDesired, dt * 2.7);
-  const dist = Math.hypot(targetX - car.x, targetY - car.y);
+  const dist = chase.dist;
   const desiredSpeed = dist > 120 ? farSpeed : nearSpeed;
   car.speed = approach(car.speed, desiredSpeed, dt * 84);
   car.speed = clamp(car.speed, -50, farSpeed + 20);
@@ -2171,9 +2212,7 @@ function dispatchAmbulanceForCorpse(targetType, entity) {
     if (load.length >= AMBULANCE_CAPACITY) continue;
     if (car.ambulanceMode === 'to_hospital' && load.length > 0) continue;
 
-    const dx = car.x - entity.x;
-    const dy = car.y - entity.y;
-    const d2 = dx * dx + dy * dy;
+    const d2 = wrappedDistanceSq(car.x, car.y, entity.x, entity.y);
     const hasTarget = !!(car.ambulanceTargetType && car.ambulanceTargetId);
     const modePenalty = car.ambulanceMode === 'idle' && !hasTarget ? 0 : hasTarget ? 180000 : 70000;
     const loadPenalty = load.length * 45000;
@@ -3155,15 +3194,16 @@ function moveCop(cop, dir, speed, dt) {
 }
 
 function shootAtTargetFromCop(cop, target) {
-  const dist = Math.hypot(target.x - cop.x, target.y - cop.y);
+  const toTarget = wrappedVector(cop.x, cop.y, target.x, target.y);
+  const dist = toTarget.dist;
   if (dist >= 230 || cop.cooldown > 0) return;
 
   cop.cooldown = randRange(0.52, 0.86);
-  const aim = Math.atan2(target.y - cop.y, target.x - cop.x) + randRange(-0.06, 0.06);
+  const aim = Math.atan2(toTarget.dy, toTarget.dx) + randRange(-0.06, 0.06);
   const maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
-  const ex = cop.x + Math.cos(aim) * maxDist;
-  const ey = cop.y + Math.sin(aim) * maxDist;
-  const directDist = Math.hypot(target.x - cop.x, target.y - cop.y);
+  const ex = wrapWorldX(cop.x + Math.cos(aim) * maxDist);
+  const ey = wrapWorldY(cop.y + Math.sin(aim) * maxDist);
+  const directDist = toTarget.dist;
   if (directDist <= maxDist + 4) {
     damagePlayer(target, 15, null);
   }
@@ -3184,7 +3224,25 @@ function stepCops(dt) {
     cop.alertTimer = Math.max(0, (cop.alertTimer || 0) - dt);
 
     if (!cop.alive) {
-      if (cop.corpseState === 'carried') {
+      if (cop.corpseState === 'down') {
+        cop.corpseDownTimer = (cop.corpseDownTimer || 0) + dt;
+        if (cop.corpseDownTimer >= COP_HOSPITAL_FALLBACK_SECONDS) {
+          const claimedByCar = cop.bodyClaimedBy ? cars.get(cop.bodyClaimedBy) : null;
+          if (claimedByCar && claimedByCar.type === 'ambulance') {
+            resetAmbulanceTask(claimedByCar);
+          }
+          cop.bodyClaimedBy = null;
+          cop.bodyCarriedBy = null;
+          const release = hospitalReleaseSpawn();
+          respawnCop(cop, release, true);
+          emitEvent('copHospital', {
+            x: release.x,
+            y: release.y,
+            victimId: cop.id,
+            fallback: true,
+          });
+        }
+      } else if (cop.corpseState === 'carried') {
         const carrier = cop.bodyCarriedBy ? cars.get(cop.bodyCarriedBy) : null;
         if (carrier && carrier.type === 'ambulance') {
           cop.x = carrier.x;
@@ -3194,6 +3252,7 @@ function stepCops(dt) {
           cop.corpseState = 'down';
           cop.bodyCarriedBy = null;
           cop.bodyClaimedBy = null;
+          cop.corpseDownTimer = 0;
         }
       } else if (cop.corpseState === 'reviving') {
         cop.reviveTimer -= dt;
@@ -3229,7 +3288,7 @@ function stepCops(dt) {
           target.health <= 0 ||
           target.stars < 5 ||
           target.insideShopId ||
-          Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_RECALL_RADIUS
+          wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS
         ) {
           target = null;
         }
@@ -3238,20 +3297,20 @@ function stepCops(dt) {
           if (cop.rejoinCarId && cop.assignedCarId === cop.rejoinCarId) {
             cop.mode = 'return';
             cop.targetPlayerId = null;
-            moveCop(cop, Math.atan2(car.y - cop.y, car.x - cop.x), 106, dt);
+            moveCop(cop, wrappedDirection(cop.x, cop.y, car.x, car.y), 106, dt);
           } else {
             cop.mode = 'hunt';
             cop.targetPlayerId = target.id;
-            moveCop(cop, Math.atan2(target.y - cop.y, target.x - cop.x), 98, dt);
+            moveCop(cop, wrappedDirection(cop.x, cop.y, target.x, target.y), 98, dt);
             shootAtTargetFromCop(cop, target);
           }
         } else {
           cop.mode = 'return';
           cop.targetPlayerId = null;
-          moveCop(cop, Math.atan2(car.y - cop.y, car.x - cop.x), 106, dt);
+          moveCop(cop, wrappedDirection(cop.x, cop.y, car.x, car.y), 106, dt);
         }
 
-        const closeToCar = Math.hypot(car.x - cop.x, car.y - cop.y) < 16;
+        const closeToCar = wrappedDistanceSq(cop.x, cop.y, car.x, car.y) < 16 * 16;
         const mustRejoin = !!(cop.rejoinCarId && cop.assignedCarId === cop.rejoinCarId);
         if (closeToCar && (!target || mustRejoin)) {
           cop.inCarId = car.id;
@@ -3274,7 +3333,7 @@ function stepCops(dt) {
     if (target) {
       cop.mode = 'hunt';
       cop.targetPlayerId = target.id;
-      moveCop(cop, Math.atan2(target.y - cop.y, target.x - cop.x), 94, dt);
+      moveCop(cop, wrappedDirection(cop.x, cop.y, target.x, target.y), 94, dt);
       shootAtTargetFromCop(cop, target);
     } else {
       const patrolDt = lodStepDt(cop.id, cop.x, cop.y, dt, 2, 3);
@@ -3556,12 +3615,21 @@ function resetAmbientSceneWhenEmpty() {
   }
 
   for (const cop of cops.values()) {
-    if (!cop.alive || cop.inCarId || cop.assignedCarId) {
-      respawnCop(cop);
-    } else {
-      cop.mode = 'patrol';
-      cop.targetPlayerId = null;
+    if (!cop.alive) {
+      respawnCop(cop, hospitalReleaseSpawn(), true);
+      continue;
     }
+    cop.targetPlayerId = null;
+    cop.alertTimer = 0;
+    if (cop.inCarId) {
+      cop.mode = 'in_car';
+      continue;
+    }
+    if (cop.assignedCarId) {
+      cop.mode = 'return';
+      continue;
+    }
+    cop.mode = 'patrol';
   }
 
   if (bloodStains.size > 0) {
@@ -3611,6 +3679,141 @@ function ensureNpcPopulation() {
 function ensureCopPopulation() {
   while (cops.size < COP_OFFICER_COUNT) {
     makeCopUnit();
+  }
+}
+
+function targetCrewSizePerCopCar(copCarCount) {
+  if (copCarCount <= 0 || COP_OFFICER_COUNT <= 0) return 0;
+  const desired = clamp(COP_CAR_DEFAULT_CREW_SIZE, 1, 2);
+  const byPool = Math.floor(COP_OFFICER_COUNT / copCarCount);
+  return clamp(Math.min(desired, Math.max(1, byPool)), 1, 2);
+}
+
+function assignCopToHomeCar(cop, car) {
+  if (!cop || !car || car.type !== 'cop') return false;
+  cop.homeCarId = car.id;
+  cop.assignedCarId = car.id;
+  if (!cop.rejoinCarId && !cop.alive) {
+    cop.rejoinCarId = car.id;
+  }
+  if (cop.alive && !cop.inCarId) {
+    if (!car.driverId && car.npcDriver) {
+      cop.inCarId = car.id;
+      cop.mode = 'in_car';
+      cop.targetPlayerId = null;
+      cop.x = car.x;
+      cop.y = car.y;
+      cop.dir = car.angle;
+    } else {
+      cop.mode = 'return';
+      cop.targetPlayerId = null;
+    }
+  }
+  return true;
+}
+
+function ensureCopCarCrews() {
+  const copCars = [];
+  for (const car of cars.values()) {
+    if (car.type !== 'cop') continue;
+    if (!Array.isArray(car.crewCopIds)) {
+      car.crewCopIds = [];
+    }
+    copCars.push(car);
+  }
+  if (copCars.length === 0) return;
+
+  for (const cop of cops.values()) {
+    if (!cop.homeCarId) continue;
+    const oldHomeCarId = cop.homeCarId;
+    const homeCar = cars.get(cop.homeCarId);
+    if (!homeCar || homeCar.type !== 'cop') {
+      cop.homeCarId = null;
+      if (!cop.assignedCarId || cop.assignedCarId === oldHomeCarId) {
+        cop.assignedCarId = null;
+      }
+      if (cop.rejoinCarId && cop.rejoinCarId === oldHomeCarId) {
+        cop.rejoinCarId = null;
+      }
+    }
+  }
+
+  const assigned = new Set();
+  for (const car of copCars) {
+    const nextCrew = [];
+    for (const copId of car.crewCopIds) {
+      const cop = cops.get(copId);
+      if (!cop) continue;
+      if (cop.homeCarId && cop.homeCarId !== car.id) continue;
+      if (assigned.has(cop.id)) continue;
+      cop.homeCarId = car.id;
+      nextCrew.push(cop.id);
+      assigned.add(cop.id);
+    }
+    car.crewCopIds = nextCrew;
+  }
+
+  const targetCrewSize = targetCrewSizePerCopCar(copCars.length);
+  if (targetCrewSize <= 0) return;
+
+  const freeCops = [];
+  for (const cop of cops.values()) {
+    if (assigned.has(cop.id)) continue;
+    if (cop.homeCarId) continue;
+    freeCops.push(cop);
+  }
+
+  for (const car of copCars) {
+    while (car.crewCopIds.length < targetCrewSize && freeCops.length > 0) {
+      const cop = freeCops.shift();
+      if (!assignCopToHomeCar(cop, car)) continue;
+      car.crewCopIds.push(cop.id);
+      assigned.add(cop.id);
+    }
+  }
+
+  for (const car of copCars) {
+    for (const copId of car.crewCopIds) {
+      const cop = cops.get(copId);
+      if (!cop) continue;
+      const isDeployedFromThisCar =
+        Array.isArray(car.dismountCopIds) && car.dismountCopIds.includes(cop.id);
+      if (cop.homeCarId !== car.id) {
+        cop.homeCarId = car.id;
+      }
+      if (!cop.alive) {
+        if (!cop.assignedCarId) cop.assignedCarId = car.id;
+        if (!cop.rejoinCarId) cop.rejoinCarId = car.id;
+        continue;
+      }
+      if (cop.inCarId && cop.inCarId !== car.id) {
+        cop.inCarId = null;
+      }
+      const canSeatInReserve = !car.driverId && car.npcDriver;
+      const returningToThisCar = cop.rejoinCarId === car.id && cop.mode === 'return';
+      const idleReserveCop = !isDeployedFromThisCar && cop.mode !== 'hunt' && !cop.targetPlayerId;
+      if (canSeatInReserve && (returningToThisCar || idleReserveCop)) {
+        cop.inCarId = car.id;
+        cop.mode = 'in_car';
+        cop.targetPlayerId = null;
+        cop.x = car.x;
+        cop.y = car.y;
+        cop.dir = car.angle;
+        cop.rejoinCarId = null;
+        removeCopFromAssignedCar(cop);
+        continue;
+      }
+      if (!cop.assignedCarId && !cop.inCarId) {
+        cop.assignedCarId = car.id;
+        cop.mode = 'return';
+        cop.targetPlayerId = null;
+      }
+      if (cop.inCarId === car.id) {
+        cop.x = car.x;
+        cop.y = car.y;
+        cop.dir = car.angle;
+      }
+    }
   }
 }
 
@@ -4439,6 +4642,7 @@ for (let i = 0; i < NPC_COUNT; i++) {
 for (let i = 0; i < COP_OFFICER_COUNT; i++) {
   makeCopUnit();
 }
+ensureCopCarCrews();
 
 function reportServerMetricsIfNeeded(nowMs) {
   if (nowMs < nextMetricsAt) return;
@@ -4483,6 +4687,7 @@ setInterval(() => {
   ensureCarPopulation();
   ensureNpcPopulation();
   ensureCopPopulation();
+  ensureCopCarCrews();
   const snapshotStep = 1 / SNAPSHOT_RATE;
   snapshotAccumulator += DT;
   let snapshotLoops = 0;

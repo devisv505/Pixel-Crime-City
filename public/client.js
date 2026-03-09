@@ -36,8 +36,10 @@ const settingsOverlay = document.getElementById('settingsOverlay');
 const settingsPanel = document.getElementById('settingsPanel');
 const settingsMusicVol = document.getElementById('settingsMusicVol');
 const settingsSfxVol = document.getElementById('settingsSfxVol');
+const settingsSirenVol = document.getElementById('settingsSirenVol');
 const settingsMusicVolValue = document.getElementById('settingsMusicVolValue');
 const settingsSfxVolValue = document.getElementById('settingsSfxVolValue');
+const settingsSirenVolValue = document.getElementById('settingsSirenVolValue');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsCancelBtn = document.getElementById('settingsCancelBtn');
 const chatBar = document.getElementById('chatBar');
@@ -175,6 +177,7 @@ const CLIENT_BLOOD_TTL = 240;
 const visualEffects = [];
 const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
 const AUDIO_PREF_SFX_KEY = 'pcc_sfx_volume';
+const AUDIO_PREF_SIREN_KEY = 'pcc_siren_volume';
 const BASE_BUILDING_TEXTURE_SOURCES = [
   '/assets/buildings/building_01.png',
   '/assets/buildings/building_02.png',
@@ -226,10 +229,12 @@ function parseAudioPref(value, fallback) {
 const audioSettings = {
   music: parseAudioPref(localStorage.getItem(AUDIO_PREF_MUSIC_KEY), 0.65),
   sfx: parseAudioPref(localStorage.getItem(AUDIO_PREF_SFX_KEY), 0.8),
+  siren: parseAudioPref(localStorage.getItem(AUDIO_PREF_SIREN_KEY), 0.55),
 };
 const settingsDraft = {
   music: audioSettings.music,
   sfx: audioSettings.sfx,
+  siren: audioSettings.siren,
 };
 
 function profileNameKey(name) {
@@ -396,6 +401,7 @@ function loadProfilesFromStorage() {
 function saveAudioSettings() {
   localStorage.setItem(AUDIO_PREF_MUSIC_KEY, String(audioSettings.music));
   localStorage.setItem(AUDIO_PREF_SFX_KEY, String(audioSettings.sfx));
+  localStorage.setItem(AUDIO_PREF_SIREN_KEY, String(audioSettings.siren));
 }
 
 class GameAudio {
@@ -418,6 +424,7 @@ class GameAudio {
     this.cityBase = 0.16;
     this.sfxLevel = audioSettings.sfx;
     this.musicLevel = audioSettings.music;
+    this.sirenLevel = audioSettings.siren;
     this.currentSirenVolume = 0;
     this.effectClips = new Map();
     this.effectLastAt = new Map();
@@ -482,7 +489,7 @@ class GameAudio {
     if (!this.sirenLoop) return;
 
     this.currentSirenVolume = clamp(volume, 0, 0.32);
-    const v = this.currentSirenVolume * this.sfxLevel;
+    const v = this.currentSirenVolume * this.sfxLevel * this.sirenLevel;
     this.sirenLoop.volume = v;
 
     if (v > 0.01) {
@@ -538,9 +545,10 @@ class GameAudio {
     this.setSirenVolume(0);
   }
 
-  setLevels(musicLevel, sfxLevel) {
+  setLevels(musicLevel, sfxLevel, sirenLevel = this.sirenLevel) {
     this.musicLevel = clamp(musicLevel, 0, 1);
     this.sfxLevel = clamp(sfxLevel, 0, 1);
+    this.sirenLevel = clamp(sirenLevel, 0, 1);
 
     if (this.masterGain) {
       this.masterGain.gain.value = this.masterBase * this.sfxLevel;
@@ -750,7 +758,9 @@ class GameAudio {
     }
     this.lastStars = currentStars;
 
-    let nearestSiren = Infinity;
+    let loudestSiren = 0;
+    const halfW = canvas.width * 0.5;
+    const halfH = canvas.height * 0.5;
     for (const car of state.cars || []) {
       if ((car.type !== 'cop' && car.type !== 'ambulance') || !car.sirenOn) continue;
       const dxRaw = Math.abs((car.x || 0) - (localPlayer.x || 0));
@@ -758,14 +768,26 @@ class GameAudio {
       const dx = Math.min(dxRaw, Math.max(0, WORLD.width - dxRaw));
       const dy = Math.min(dyRaw, Math.max(0, WORLD.height - dyRaw));
       const dist = Math.hypot(dx, dy);
-      if (dist < nearestSiren) nearestSiren = dist;
+      const distMix = clamp(1 - dist / 920, 0, 1);
+      if (distMix <= 0) continue;
+
+      const cameraDx = wrapDelta((car.x || 0) - camera.x, WORLD.width);
+      const cameraDy = wrapDelta((car.y || 0) - camera.y, WORLD.height);
+      const outsideX = Math.max(0, Math.abs(cameraDx) - halfW);
+      const outsideY = Math.max(0, Math.abs(cameraDy) - halfH);
+      const outsideDist = Math.hypot(outsideX, outsideY);
+      let offscreenFactor = 1;
+      if (outsideDist > 0) {
+        const nearEdge = clamp(1 - outsideDist / 620, 0, 1);
+        offscreenFactor = 0.08 + nearEdge * 0.14;
+      }
+
+      const sirenMix = distMix * 0.28 * offscreenFactor;
+      if (sirenMix > loudestSiren) {
+        loudestSiren = sirenMix;
+      }
     }
-    if (Number.isFinite(nearestSiren)) {
-      const sirenVolume = clamp(1 - nearestSiren / 920, 0, 1) * 0.28;
-      this.setSirenVolume(sirenVolume);
-    } else {
-      this.setSirenVolume(0);
-    }
+    this.setSirenVolume(loudestSiren);
   }
 }
 
@@ -777,16 +799,22 @@ function refreshSettingsPanel() {
   if (settingsSfxVol) {
     settingsSfxVol.value = String(Math.round(settingsDraft.sfx * 100));
   }
+  if (settingsSirenVol) {
+    settingsSirenVol.value = String(Math.round(settingsDraft.siren * 100));
+  }
   if (settingsMusicVolValue) {
     settingsMusicVolValue.textContent = `${Math.round(settingsDraft.music * 100)}%`;
   }
   if (settingsSfxVolValue) {
     settingsSfxVolValue.textContent = `${Math.round(settingsDraft.sfx * 100)}%`;
   }
+  if (settingsSirenVolValue) {
+    settingsSirenVolValue.textContent = `${Math.round(settingsDraft.siren * 100)}%`;
+  }
 }
 
 function applyAudioSettings() {
-  audio.setLevels(audioSettings.music, audioSettings.sfx);
+  audio.setLevels(audioSettings.music, audioSettings.sfx, audioSettings.siren);
 }
 
 function isSettingsOpen() {
@@ -807,6 +835,7 @@ function openSettingsPanel() {
   if (!settingsOverlay) return;
   settingsDraft.music = audioSettings.music;
   settingsDraft.sfx = audioSettings.sfx;
+  settingsDraft.siren = audioSettings.siren;
   refreshSettingsPanel();
   settingsOverlay.classList.remove('hidden');
   settingsOverlay.setAttribute('aria-hidden', 'false');
@@ -823,6 +852,7 @@ function closeSettingsPanel() {
 function saveSettingsPanel() {
   audioSettings.music = settingsDraft.music;
   audioSettings.sfx = settingsDraft.sfx;
+  audioSettings.siren = settingsDraft.siren;
   applyAudioSettings();
   saveAudioSettings();
   closeSettingsPanel();
@@ -4176,6 +4206,14 @@ function attachUiEvents() {
     settingsSfxVol.addEventListener('input', (event) => {
       const value = Number(event.target.value);
       settingsDraft.sfx = clamp(value / 100, 0, 1);
+      refreshSettingsPanel();
+    });
+  }
+
+  if (settingsSirenVol) {
+    settingsSirenVol.addEventListener('input', (event) => {
+      const value = Number(event.target.value);
+      settingsDraft.siren = clamp(value / 100, 0, 1);
       refreshSettingsPanel();
     });
   }
