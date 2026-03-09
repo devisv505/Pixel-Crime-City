@@ -1640,6 +1640,29 @@ function interpolateSnapshot(targetServerTime) {
   };
 }
 
+function drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY) {
+  const cx = worldX + tile * 0.5;
+  const cy = worldY + tile * 0.5;
+  const leftIsBuilding = worldGroundTypeAt(cx - tile, cy) === 'building';
+  const topIsBuilding = worldGroundTypeAt(cx, cy - tile) === 'building';
+  const diagIsBuilding = worldGroundTypeAt(cx - tile, cy - tile) === 'building';
+
+  if (leftIsBuilding) {
+    ctx.fillStyle = 'rgba(12, 16, 20, 0.16)';
+    ctx.fillRect(sx, sy + 1, 4, tile - 1);
+  }
+
+  if (topIsBuilding) {
+    ctx.fillStyle = 'rgba(12, 16, 20, 0.14)';
+    ctx.fillRect(sx + 1, sy, tile - 1, 4);
+  }
+
+  if (diagIsBuilding) {
+    ctx.fillStyle = 'rgba(12, 16, 20, 0.12)';
+    ctx.fillRect(sx, sy, 4, 4);
+  }
+}
+
 function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
   if (type === 'road') {
     ctx.fillStyle = '#343b42';
@@ -1692,6 +1715,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
 
   if (type === 'sidewalk') {
     if (hasBlockUnderlay) {
+      drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY);
       return;
     }
 
@@ -1702,6 +1726,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     if ((Math.floor(worldX / tile) + Math.floor(worldY / tile)) % 2 === 0) {
       ctx.fillRect(sx, sy, tile >> 1, tile >> 1);
     }
+    drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY);
     return;
   }
 
@@ -1748,6 +1773,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
 
   if (type === 'park') {
     if (hasBlockUnderlay) {
+      drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY);
       return;
     }
   }
@@ -1758,6 +1784,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     ctx.fillStyle = '#3f6a42';
     ctx.fillRect(sx + 3, sy + 3, 2, 2);
   }
+  drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY);
 }
 
 function drawWorld(state) {
