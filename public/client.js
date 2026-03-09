@@ -3008,11 +3008,19 @@ function renderState(state, dt) {
   if (!local.inCarId) {
     const nearbyShop = nearbyShopForPlayer(state, local);
     if (nearbyShop) {
-      ctx.fillStyle = '#ffe8bc';
       ctx.font = '8px "Lucida Console", Monaco, monospace';
       const text = 'Press E to enter Gun Shop';
       const w = ctx.measureText(text).width;
-      ctx.fillText(text, Math.floor(canvas.width * 0.5 - w * 0.5), canvas.height - 12);
+      const chatVisible = !!(chatBar && !chatBar.classList.contains('hidden'));
+      const bottomOffset = chatVisible ? 32 : 12;
+      const tx = Math.floor(canvas.width * 0.5 - w * 0.5);
+      const ty = canvas.height - bottomOffset;
+      ctx.fillStyle = 'rgba(10, 14, 18, 0.76)';
+      ctx.fillRect(tx - 4, ty - 8, Math.ceil(w) + 8, 11);
+      ctx.fillStyle = '#121820';
+      ctx.fillText(text, tx + 1, ty + 1);
+      ctx.fillStyle = '#fff2ab';
+      ctx.fillText(text, tx, ty);
     }
   }
 

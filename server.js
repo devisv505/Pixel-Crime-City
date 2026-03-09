@@ -8,8 +8,11 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 const PORT = Number(process.env.PORT || 3000);
-const TICK_RATE = 30;
+const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 30));
 const DT = 1 / TICK_RATE;
+const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 15));
+const SNAPSHOT_EVERY_TICKS = Math.max(1, Math.round(TICK_RATE / SNAPSHOT_RATE));
+const COLLISION_GRID_CELL = 96;
 
 const WORLD = {
   width: 3840,
@@ -92,6 +95,33 @@ const HOSPITAL = {
   releaseX: BLOCK_PX * 5 + ROAD_END + 8,
   releaseY: BLOCK_PX * 0 + ROAD_END + 8,
 };
+const STATIC_WORLD_PAYLOAD = Object.freeze({
+  width: WORLD.width,
+  height: WORLD.height,
+  tileSize: WORLD.tileSize,
+  blockPx: BLOCK_PX,
+  roadStart: ROAD_START,
+  roadEnd: ROAD_END,
+  laneA: LANE_A,
+  laneB: LANE_B,
+  shops: SHOPS.map((shop) =>
+    Object.freeze({
+      id: shop.id,
+      name: shop.name,
+      x: shop.x,
+      y: shop.y,
+      radius: shop.radius,
+      stock: SHOP_STOCK,
+    })
+  ),
+  hospital: Object.freeze({
+    id: HOSPITAL.id,
+    name: HOSPITAL.name,
+    x: HOSPITAL.x,
+    y: HOSPITAL.y,
+    radius: HOSPITAL.radius,
+  }),
+});
 const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
 const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
 const CAR_BUILDING_COLLISION_INSET_PX = 2;
@@ -2507,13 +2537,25 @@ function stepCars(dt) {
 
 function stepCarHitsByCars() {
   const list = Array.from(cars.values());
+  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
+  for (const car of list) {
+    spatialInsert(grid, car);
+  }
+
+  const pairSeen = new Set();
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    for (let j = i + 1; j < list.length; j++) {
-      const b = list[j];
+    const neighbors = spatialQueryNeighbors(grid, a.x, a.y);
+    for (const b of neighbors) {
+      if (!b || b.id === a.id) continue;
+      const aId = String(a.id);
+      const bId = String(b.id);
+      const pairKey = aId < bId ? `${aId}|${bId}` : `${bId}|${aId}`;
+      if (pairSeen.has(pairKey)) continue;
+      pairSeen.add(pairKey);
 
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
+      const dx = wrapDelta(b.x - a.x, WORLD.width);
+      const dy = wrapDelta(b.y - a.y, WORLD.height);
       const minDist = (a.width + b.width) * 0.42;
       const distSq = dx * dx + dy * dy;
       if (distSq > minDist * minDist) continue;
@@ -2997,16 +3039,67 @@ function maybeEmitCopTriggerAlerts() {
   }
 }
 
+function makeSpatialGrid(cellSize = COLLISION_GRID_CELL) {
+  const cellsX = Math.max(1, Math.ceil(WORLD.width / cellSize));
+  const cellsY = Math.max(1, Math.ceil(WORLD.height / cellSize));
+  return { map: new Map(), cellSize, cellsX, cellsY };
+}
+
+function spatialKey(cx, cy, cellsX) {
+  return cy * cellsX + cx;
+}
+
+function spatialInsert(grid, entity) {
+  if (!grid || !entity) return;
+  const cx = mod(Math.floor(entity.x / grid.cellSize), grid.cellsX);
+  const cy = mod(Math.floor(entity.y / grid.cellSize), grid.cellsY);
+  const key = spatialKey(cx, cy, grid.cellsX);
+  let bucket = grid.map.get(key);
+  if (!bucket) {
+    bucket = [];
+    grid.map.set(key, bucket);
+  }
+  bucket.push(entity);
+}
+
+function spatialQueryNeighbors(grid, x, y) {
+  const result = [];
+  if (!grid) return result;
+  const baseX = mod(Math.floor(x / grid.cellSize), grid.cellsX);
+  const baseY = mod(Math.floor(y / grid.cellSize), grid.cellsY);
+  for (let oy = -1; oy <= 1; oy += 1) {
+    const cy = mod(baseY + oy, grid.cellsY);
+    for (let ox = -1; ox <= 1; ox += 1) {
+      const cx = mod(baseX + ox, grid.cellsX);
+      const bucket = grid.map.get(spatialKey(cx, cy, grid.cellsX));
+      if (!bucket || bucket.length === 0) continue;
+      result.push(...bucket);
+    }
+  }
+  return result;
+}
+
 function stepNpcHitsByCars() {
+  const impactCars = [];
+  for (const car of cars.values()) {
+    if (Math.abs(car.speed) >= 46) {
+      impactCars.push(car);
+    }
+  }
+  if (impactCars.length === 0) return;
+
+  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
+  for (const car of impactCars) {
+    spatialInsert(grid, car);
+  }
+
   for (const npc of npcs.values()) {
     if (!npc.alive) continue;
 
-    for (const car of cars.values()) {
-      const impactSpeed = Math.abs(car.speed);
-      if (impactSpeed < 46) continue;
-
-      const dx = car.x - npc.x;
-      const dy = car.y - npc.y;
+    const nearbyCars = spatialQueryNeighbors(grid, npc.x, npc.y);
+    for (const car of nearbyCars) {
+      const dx = wrapDelta(car.x - npc.x, WORLD.width);
+      const dy = wrapDelta(car.y - npc.y, WORLD.height);
       if (dx * dx + dy * dy > 13 * 13) continue;
 
       if (!car.driverId) {
@@ -3024,13 +3117,24 @@ function stepNpcHitsByCars() {
 }
 
 function stepCopHitsByCars() {
+  const impactCars = [];
+  for (const car of cars.values()) {
+    if (Math.abs(car.speed) >= 46) {
+      impactCars.push(car);
+    }
+  }
+  if (impactCars.length === 0) return;
+
+  const grid = makeSpatialGrid(COLLISION_GRID_CELL);
+  for (const car of impactCars) {
+    spatialInsert(grid, car);
+  }
+
   for (const cop of cops.values()) {
     if (!cop.alive || cop.inCarId) continue;
 
-    for (const car of cars.values()) {
-      const impactSpeed = Math.abs(car.speed);
-      if (impactSpeed < 46) continue;
-
+    const nearbyCars = spatialQueryNeighbors(grid, cop.x, cop.y);
+    for (const car of nearbyCars) {
       const dx = wrapDelta(car.x - cop.x, WORLD.width);
       const dy = wrapDelta(car.y - cop.y, WORLD.height);
       if (dx * dx + dy * dy > 13 * 13) continue;
@@ -3268,31 +3372,7 @@ function serializeSnapshot() {
   return {
     type: 'snapshot',
     serverTime: Date.now(),
-    world: {
-      width: WORLD.width,
-      height: WORLD.height,
-      tileSize: WORLD.tileSize,
-      blockPx: BLOCK_PX,
-      roadStart: ROAD_START,
-      roadEnd: ROAD_END,
-      laneA: LANE_A,
-      laneB: LANE_B,
-      shops: SHOPS.map((shop) => ({
-        id: shop.id,
-        name: shop.name,
-        x: shop.x,
-        y: shop.y,
-        radius: shop.radius,
-        stock: SHOP_STOCK,
-      })),
-      hospital: {
-        id: HOSPITAL.id,
-        name: HOSPITAL.name,
-        x: HOSPITAL.x,
-        y: HOSPITAL.y,
-        radius: HOSPITAL.radius,
-      },
-    },
+    world: STATIC_WORLD_PAYLOAD,
     players: playersPayload,
     cars: carsPayload,
     npcs: npcsPayload,
@@ -3304,6 +3384,10 @@ function serializeSnapshot() {
 }
 
 function broadcastSnapshot() {
+  if (clients.size === 0) {
+    pendingEvents = [];
+    return;
+  }
   const payload = JSON.stringify(serializeSnapshot());
   pendingEvents = [];
 
@@ -3408,31 +3492,7 @@ function handleJoin(ws, data) {
       type: 'joined',
       playerId: id,
       tickRate: TICK_RATE,
-      world: {
-        width: WORLD.width,
-        height: WORLD.height,
-        tileSize: WORLD.tileSize,
-        blockPx: BLOCK_PX,
-        roadStart: ROAD_START,
-        roadEnd: ROAD_END,
-        laneA: LANE_A,
-        laneB: LANE_B,
-        shops: SHOPS.map((shop) => ({
-          id: shop.id,
-          name: shop.name,
-          x: shop.x,
-          y: shop.y,
-          radius: shop.radius,
-          stock: SHOP_STOCK,
-        })),
-        hospital: {
-          id: HOSPITAL.id,
-          name: HOSPITAL.name,
-          x: HOSPITAL.x,
-          y: HOSPITAL.y,
-          radius: HOSPITAL.radius,
-        },
-      },
+      world: STATIC_WORLD_PAYLOAD,
     })
   );
 
@@ -3591,7 +3651,9 @@ for (let i = 0; i < COP_OFFICER_COUNT; i++) {
   makeCopUnit();
 }
 
+let tickCount = 0;
 setInterval(() => {
+  tickCount += 1;
   stepPlayers(DT);
   stepCars(DT);
   stepCarHitsByCars();
@@ -3607,7 +3669,9 @@ setInterval(() => {
   ensureCarPopulation();
   ensureNpcPopulation();
   ensureCopPopulation();
-  broadcastSnapshot();
+  if (tickCount % SNAPSHOT_EVERY_TICKS === 0) {
+    broadcastSnapshot();
+  }
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, () => {
