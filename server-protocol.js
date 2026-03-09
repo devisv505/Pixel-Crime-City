@@ -197,6 +197,15 @@ class Reader {
     this.offset += len;
     return text;
   }
+
+  string16() {
+    const len = this.u16();
+    if (len === 0) return '';
+    this.ensure(len);
+    const text = this.buffer.toString('utf8', this.offset, this.offset + len);
+    this.offset += len;
+    return text;
+  }
 }
 
 function clamp(value, min, max) {
@@ -257,6 +266,7 @@ function decodeClientFrame(raw) {
       opcode,
       name: reader.string8(),
       color: reader.color24(),
+      profileTicket: reader.string16(),
     };
   }
 
@@ -362,6 +372,8 @@ function encodeJoinedFrame(payload) {
     writer.u16(clamp(Math.round(hospital.radius || 0), 0, 65535));
   }
 
+  writer.string16(payload?.progressTicket || '');
+
   return writer.toBuffer();
 }
 
@@ -388,7 +400,8 @@ function encodeSnapshotFrame(payload) {
   const flags =
     (payload?.keyframe ? 1 : 0) |
     (payload?.stats ? 2 : 0) |
-    (payload?.scope ? 4 : 0);
+    (payload?.scope ? 4 : 0) |
+    (payload?.progressTicket ? 8 : 0);
 
   writer.u8(OPCODES.S2C_SNAPSHOT);
   writer.u32(payload?.serverTime >>> 0);
@@ -398,6 +411,9 @@ function encodeSnapshotFrame(payload) {
   writer.u32(payload?.ackInputSeq >>> 0);
   writer.u32(payload?.clientSendTimeEcho >>> 0);
   writer.u16(clamp(Math.round(payload?.interpolationDelayMs || 90), 0, 65535));
+  if (payload?.progressTicket) {
+    writer.string16(payload.progressTicket);
+  }
 
   const sections = payload?.sections || {};
   for (const name of SNAPSHOT_SECTION_ORDER) {

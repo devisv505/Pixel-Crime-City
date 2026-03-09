@@ -1,5 +1,6 @@
 const path = require('node:path');
 const http = require('node:http');
+const crypto = require('node:crypto');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 const {
@@ -45,6 +46,9 @@ const OPT_AOI = envFlag('OPT_AOI', true);
 const OPT_ZONE_LOD = envFlag('OPT_ZONE_LOD', true);
 const OPT_CLIENT_VFX = envFlag('OPT_CLIENT_VFX', true);
 const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(process.env.WORLD_REV) : 1;
+const PROGRESS_SECRET = String(process.env.PROGRESS_SECRET || 'pcc-progress-secret-v1');
+const PROGRESS_TOKEN_VERSION = 1;
+const PROGRESS_KEY = crypto.createHash('sha256').update(PROGRESS_SECRET).digest();
 
 const WORLD = {
   width: 3840,
@@ -513,6 +517,105 @@ function sanitizeChatText(raw) {
     .trim()
     .slice(0, CHAT_MAX_LENGTH);
   return cleaned;
+}
+
+function toBase64Url(buffer) {
+  return buffer
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function fromBase64Url(text) {
+  if (typeof text !== 'string' || !text) return null;
+  const safe = text.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (safe.length % 4)) % 4;
+  const padded = safe + '='.repeat(padLength);
+  try {
+    return Buffer.from(padded, 'base64');
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProgressPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (Number(payload.v) !== PROGRESS_TOKEN_VERSION) return null;
+  const name = sanitizeName(payload.name);
+  if (!name) return null;
+  return {
+    v: PROGRESS_TOKEN_VERSION,
+    name,
+    money: clamp(Math.round(Number(payload.money) || 0), 0, 0xffffffff),
+    ownedShotgun: !!payload.ownedShotgun,
+    ownedMachinegun: !!payload.ownedMachinegun,
+    ownedBazooka: !!payload.ownedBazooka,
+  };
+}
+
+function buildProgressPayloadFromPlayer(player) {
+  return normalizeProgressPayload({
+    v: PROGRESS_TOKEN_VERSION,
+    name: player.name,
+    money: player.money,
+    ownedShotgun: player.ownedShotgun,
+    ownedMachinegun: player.ownedMachinegun,
+    ownedBazooka: player.ownedBazooka,
+  });
+}
+
+function encodeProgressTicket(payload) {
+  const normalized = normalizeProgressPayload(payload);
+  if (!normalized) return '';
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', PROGRESS_KEY, iv);
+  const encoded = Buffer.concat([cipher.update(JSON.stringify(normalized), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return toBase64Url(Buffer.concat([iv, tag, encoded]));
+}
+
+function decodeProgressTicket(ticket) {
+  const raw = fromBase64Url(ticket);
+  if (!raw || raw.length < 29) return null;
+  const iv = raw.subarray(0, 12);
+  const tag = raw.subarray(12, 28);
+  const data = raw.subarray(28);
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', PROGRESS_KEY, iv);
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+    return normalizeProgressPayload(JSON.parse(plain));
+  } catch {
+    return null;
+  }
+}
+
+function createProgressTicketForPlayer(player) {
+  const payload = buildProgressPayloadFromPlayer(player);
+  if (!payload) return '';
+  return encodeProgressTicket(payload);
+}
+
+function progressSignatureFromPlayer(player) {
+  const safeName = sanitizeName(player?.name || '') || '';
+  const money = clamp(Math.round(Number(player?.money) || 0), 0, 0xffffffff);
+  return `${safeName}|${money}|${player?.ownedShotgun ? 1 : 0}|${player?.ownedMachinegun ? 1 : 0}|${player?.ownedBazooka ? 1 : 0}`;
+}
+
+function restoreProgressForPlayer(player, ticket, expectedName) {
+  if (!player || typeof ticket !== 'string' || !ticket) return false;
+  if (ticket.length > 2048) return false;
+  const decoded = decodeProgressTicket(ticket);
+  if (!decoded) return false;
+  if (decoded.name.toLowerCase() !== String(expectedName || '').toLowerCase()) return false;
+  player.money = decoded.money;
+  player.ownedShotgun = !!decoded.ownedShotgun;
+  player.ownedMachinegun = !!decoded.ownedMachinegun;
+  player.ownedBazooka = !!decoded.ownedBazooka;
+  player.weapon = 'pistol';
+  player.input.weaponSlot = 1;
+  return true;
 }
 
 function emitEvent(type, payload) {
@@ -4029,6 +4132,17 @@ function broadcastSnapshot(nowPerfMs = Math.round(performance.now())) {
     }
 
     const wireEvents = snapshot.events.map(toWireEventRecord);
+    const currentProgressSignature = progressSignatureFromPlayer(player);
+    let nextProgressTicket = '';
+    let progressTicketChanged = false;
+    if (currentProgressSignature !== client.lastProgressSignature) {
+      nextProgressTicket = createProgressTicketForPlayer(player);
+      if (nextProgressTicket) {
+        client.lastProgressSignature = currentProgressSignature;
+        client.lastProgressTicket = nextProgressTicket;
+        progressTicketChanged = true;
+      }
+    }
     const payload = encodeSnapshotFrame({
       serverTime: nowPerfMs >>> 0,
       worldRev: WORLD_REV,
@@ -4041,6 +4155,7 @@ function broadcastSnapshot(nowPerfMs = Math.round(performance.now())) {
       events: wireEvents,
       stats: snapshot.stats || null,
       scope: snapshot.scope || null,
+      progressTicket: progressTicketChanged ? nextProgressTicket : '',
     });
     pushMetricSample(snapshotBuildMsWindow, performance.now() - buildStart, 300);
     bytesSentSinceReport += payload.length;
@@ -4080,6 +4195,7 @@ function handleJoin(ws, data) {
 
   const name = sanitizeName(data.name);
   const color = sanitizeColor(data.color);
+  const profileTicket = typeof data.profileTicket === 'string' ? data.profileTicket : '';
 
   if (!name) {
     ws.send(encodeErrorFrame('Name must be 2-16 letters/numbers.'));
@@ -4142,8 +4258,17 @@ function handleJoin(ws, data) {
     },
   };
 
+  restoreProgressForPlayer(player, profileTicket, name);
+  const initialProgressSignature = progressSignatureFromPlayer(player);
+  const initialProgressTicket = createProgressTicketForPlayer(player);
+
   players.set(id, player);
-  clients.set(ws, { playerId: id, snapshotState: null });
+  clients.set(ws, {
+    playerId: id,
+    snapshotState: null,
+    lastProgressTicket: initialProgressTicket,
+    lastProgressSignature: initialProgressSignature,
+  });
 
   const playerProtocolId = protocolIdForEntity(id);
   ws.send(
@@ -4152,6 +4277,7 @@ function handleJoin(ws, data) {
       tickRate: TICK_RATE,
       worldRev: WORLD_REV,
       world: STATIC_WORLD_PAYLOAD,
+      progressTicket: initialProgressTicket,
     })
   );
 

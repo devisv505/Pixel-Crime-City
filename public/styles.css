@@ -197,6 +197,55 @@ button.secondary {
   margin-top: 12px;
 }
 
+.profile-hint {
+  min-height: 16px;
+  margin-top: 8px;
+  color: #b9cfde;
+  font-size: 12px;
+}
+
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 132px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding-right: 2px;
+}
+
+.profile-list.hidden {
+  display: none;
+}
+
+.profile-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid rgba(98, 137, 160, 0.45);
+  background: rgba(10, 20, 28, 0.56);
+  padding: 4px 6px;
+}
+
+.profile-row.active {
+  border-color: rgba(175, 222, 255, 0.72);
+  background: rgba(18, 34, 46, 0.78);
+}
+
+.profile-row-name {
+  font-size: 12px;
+  color: #eaf5ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-row button {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
 .error {
   min-height: 18px;
   margin: 10px 0 0;

@@ -14,7 +14,10 @@
         <section id="stepName" class="step active" aria-label="Step 1: enter name">
           <h2>1. Enter Name</h2>
           <label for="nameInput">Player Name</label>
-          <input id="nameInput" maxlength="16" placeholder="Street name" autocomplete="nickname" />
+          <input id="nameInput" maxlength="16" placeholder="Street name" autocomplete="nickname" list="profileNameList" />
+          <datalist id="profileNameList"></datalist>
+          <div id="profileHint" class="profile-hint"></div>
+          <div id="profileList" class="profile-list"></div>
           <button id="toColorBtn">Continue</button>
         </section>
 

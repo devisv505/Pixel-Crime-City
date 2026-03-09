@@ -12,6 +12,9 @@ const joinOverlay = document.getElementById('joinOverlay');
 const stepName = document.getElementById('stepName');
 const stepColor = document.getElementById('stepColor');
 const nameInput = document.getElementById('nameInput');
+const profileNameList = document.getElementById('profileNameList');
+const profileHint = document.getElementById('profileHint');
+const profileList = document.getElementById('profileList');
 const toColorBtn = document.getElementById('toColorBtn');
 const backBtn = document.getElementById('backBtn');
 const joinBtn = document.getElementById('joinBtn');
@@ -40,6 +43,10 @@ const settingsCancelBtn = document.getElementById('settingsCancelBtn');
 const chatBar = document.getElementById('chatBar');
 const chatInput = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
+
+const PROFILE_STORAGE_KEY = 'pcc_profiles_v1';
+const PROFILE_LAST_NAME_KEY = 'pcc_profiles_last_name_v1';
+const PROFILE_MAX_ENTRIES = 24;
 
 const COLOR_CHOICES = [
   '#58d2ff',
@@ -104,6 +111,8 @@ let joined = false;
 let playerId = null;
 let selectedName = '';
 let selectedColor = COLOR_CHOICES[0];
+let selectedProfileTicket = '';
+let localProfiles = [];
 let snapshots = [];
 let lastSnapshot = null;
 let lastFrameTime = performance.now();
@@ -222,6 +231,167 @@ const settingsDraft = {
   music: audioSettings.music,
   sfx: audioSettings.sfx,
 };
+
+function profileNameKey(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase();
+}
+
+function parseStoredProfiles(raw) {
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const cleaned = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = String(entry.name || '')
+      .trim()
+      .replace(/\s+/g, ' ');
+    if (name.length < 2 || name.length > 16) continue;
+    const ticket = typeof entry.ticket === 'string' ? entry.ticket : '';
+    const updatedAt = Number.isFinite(entry.updatedAt) ? Math.round(entry.updatedAt) : Date.now();
+    cleaned.push({ name, ticket, updatedAt });
+  }
+  cleaned.sort((a, b) => b.updatedAt - a.updatedAt);
+  return cleaned.slice(0, PROFILE_MAX_ENTRIES);
+}
+
+function saveProfilesToStorage() {
+  const payload = localProfiles.slice(0, PROFILE_MAX_ENTRIES);
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function findStoredProfileByName(name) {
+  const key = profileNameKey(name);
+  if (!key) return null;
+  for (const profile of localProfiles) {
+    if (profileNameKey(profile.name) === key) {
+      return profile;
+    }
+  }
+  return null;
+}
+
+function syncSelectedProfileFromName(name) {
+  const profile = findStoredProfileByName(name);
+  if (profile && profile.ticket) {
+    selectedProfileTicket = profile.ticket;
+    if (profileHint) {
+      profileHint.textContent = `Saved progress ready for "${profile.name}".`;
+    }
+  } else {
+    selectedProfileTicket = '';
+    if (profileHint) {
+      const text = String(name || '').trim();
+      profileHint.textContent = text ? 'No save found: this name starts fresh.' : '';
+    }
+  }
+}
+
+function renderProfileUi() {
+  if (profileNameList) {
+    profileNameList.innerHTML = '';
+    for (const profile of localProfiles) {
+      const option = document.createElement('option');
+      option.value = profile.name;
+      profileNameList.appendChild(option);
+    }
+  }
+
+  if (!profileList) return;
+  profileList.innerHTML = '';
+  if (localProfiles.length === 0) {
+    profileList.classList.add('hidden');
+    return;
+  }
+  profileList.classList.remove('hidden');
+
+  const activeKey = profileNameKey(nameInput?.value || '');
+  for (const profile of localProfiles) {
+    const row = document.createElement('div');
+    row.className = 'profile-row';
+    if (profileNameKey(profile.name) === activeKey) {
+      row.classList.add('active');
+    }
+
+    const label = document.createElement('span');
+    label.className = 'profile-row-name';
+    label.textContent = profile.name;
+    row.appendChild(label);
+
+    const useBtn = document.createElement('button');
+    useBtn.type = 'button';
+    useBtn.textContent = 'Use';
+    useBtn.addEventListener('click', () => {
+      nameInput.value = profile.name;
+      syncSelectedProfileFromName(profile.name);
+      renderProfileUi();
+      nameInput.focus();
+    });
+    row.appendChild(useBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'secondary';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => {
+      localProfiles = localProfiles.filter((entry) => profileNameKey(entry.name) !== profileNameKey(profile.name));
+      saveProfilesToStorage();
+      if (profileNameKey(nameInput.value) === profileNameKey(profile.name)) {
+        selectedProfileTicket = '';
+        if (profileHint) {
+          profileHint.textContent = 'Profile deleted. Current name will start fresh.';
+        }
+      }
+      renderProfileUi();
+    });
+    row.appendChild(deleteBtn);
+    profileList.appendChild(row);
+  }
+}
+
+function upsertStoredProfile(name, ticket) {
+  const cleanName = String(name || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (cleanName.length < 2 || cleanName.length > 16) return;
+  if (typeof ticket !== 'string' || !ticket) return;
+
+  const key = profileNameKey(cleanName);
+  localProfiles = localProfiles.filter((entry) => profileNameKey(entry.name) !== key);
+  localProfiles.unshift({
+    name: cleanName,
+    ticket,
+    updatedAt: Date.now(),
+  });
+  localProfiles = localProfiles.slice(0, PROFILE_MAX_ENTRIES);
+  saveProfilesToStorage();
+  localStorage.setItem(PROFILE_LAST_NAME_KEY, cleanName);
+  if (profileNameKey(nameInput.value) === key) {
+    selectedProfileTicket = ticket;
+  }
+  renderProfileUi();
+}
+
+function loadProfilesFromStorage() {
+  localProfiles = parseStoredProfiles(localStorage.getItem(PROFILE_STORAGE_KEY));
+  const remembered = String(localStorage.getItem(PROFILE_LAST_NAME_KEY) || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (remembered.length >= 2 && remembered.length <= 16) {
+    nameInput.value = remembered;
+  } else if (localProfiles.length > 0) {
+    nameInput.value = localProfiles[0].name;
+  }
+  syncSelectedProfileFromName(nameInput.value);
+  renderProfileUi();
+}
 
 function saveAudioSettings() {
   localStorage.setItem(AUDIO_PREF_MUSIC_KEY, String(audioSettings.music));
@@ -1989,6 +2159,8 @@ async function connectAndJoin() {
   setJoinError('');
   joinBtn.disabled = true;
   selectedName = normalizedName;
+  const matchedProfile = findStoredProfileByName(selectedName);
+  selectedProfileTicket = matchedProfile?.ticket || '';
 
   await audio.init();
 
@@ -2000,7 +2172,7 @@ async function connectAndJoin() {
   socket.binaryType = 'arraybuffer';
 
   socket.addEventListener('open', () => {
-    socket.send(encodeJoinFrame(selectedName, selectedColor));
+    socket.send(encodeJoinFrame(selectedName, selectedColor, selectedProfileTicket));
   });
 
   socket.addEventListener('message', (event) => {
@@ -2029,6 +2201,12 @@ async function connectAndJoin() {
       smoothedRttMs = 120;
       dynamicInterpDelayMs = SERVER_RENDER_DELAY_MS;
       cameraHardSnapPending = true;
+      if (typeof data.progressTicket === 'string' && data.progressTicket) {
+        selectedProfileTicket = data.progressTicket;
+        upsertStoredProfile(selectedName, data.progressTicket);
+      } else {
+        localStorage.setItem(PROFILE_LAST_NAME_KEY, selectedName);
+      }
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
       if (chatBar) {
@@ -2074,6 +2252,10 @@ async function connectAndJoin() {
 
       lastSnapshot = snapshot;
       processEvents(snapshot.events || []);
+      if (typeof data.progressTicket === 'string' && data.progressTicket) {
+        selectedProfileTicket = data.progressTicket;
+        upsertStoredProfile(selectedName, data.progressTicket);
+      }
       if (ENABLE_LOCAL_PREDICTION) {
         lastAckInputSeq = data.ackInputSeq >>> 0;
         reconcilePrediction(snapshot, lastAckInputSeq);
@@ -4038,6 +4220,8 @@ function attachUiEvents() {
     }
 
     selectedName = normalizedName;
+    syncSelectedProfileFromName(selectedName);
+    renderProfileUi();
     setJoinError('');
     setStep('color');
   });
@@ -4063,6 +4247,11 @@ function attachUiEvents() {
       event.preventDefault();
       toColorBtn.click();
     }
+  });
+
+  nameInput.addEventListener('input', () => {
+    syncSelectedProfileFromName(nameInput.value);
+    renderProfileUi();
   });
 
   window.addEventListener('keydown', (event) => {
@@ -4160,6 +4349,7 @@ function boot() {
   refreshSettingsPanel();
   populateColorGrid();
   selectColor(selectedColor);
+  loadProfilesFromStorage();
   setStep('name');
   resizeCanvas();
   attachUiEvents();

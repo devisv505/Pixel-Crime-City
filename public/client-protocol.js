@@ -141,6 +141,15 @@ class Writer {
     this.offset += len;
   }
 
+  string16(text) {
+    const bytes = TEXT_ENCODER.encode(String(text || ''));
+    const len = Math.min(bytes.length, 65535);
+    this.u16(len);
+    this.ensure(len);
+    new Uint8Array(this.buffer, this.offset, len).set(bytes.subarray(0, len));
+    this.offset += len;
+  }
+
   finish() {
     return this.buffer.slice(0, this.offset);
   }
@@ -398,7 +407,8 @@ function decodeServerFrame(raw) {
         radius: reader.u16(),
       };
     }
-    return { type: 'joined', playerId, tickRate, worldRev, world };
+    const progressTicket = reader.string16();
+    return { type: 'joined', playerId, tickRate, worldRev, world, progressTicket };
   }
 
   if (opcode === OPCODES.S2C_PRESENCE) {
@@ -427,9 +437,11 @@ function decodeServerFrame(raw) {
     const keyframe = !!(flags & 1);
     const hasStats = !!(flags & 2);
     const hasScope = !!(flags & 4);
+    const hasProgressTicket = !!(flags & 8);
     const ackInputSeq = reader.u32();
     const clientSendTimeEcho = reader.u32();
     const interpolationDelayMs = reader.u16();
+    const progressTicket = hasProgressTicket ? reader.string16() : '';
 
     const sections = {};
     for (const name of SECTION_ORDER) {
@@ -603,6 +615,7 @@ function decodeServerFrame(raw) {
       ackInputSeq,
       clientSendTimeEcho,
       interpolationDelayMs,
+      progressTicket,
       sections,
       events,
       stats,
@@ -613,11 +626,12 @@ function decodeServerFrame(raw) {
   throw new Error('Unknown opcode.');
 }
 
-function encodeJoinFrame(name, color) {
+function encodeJoinFrame(name, color, profileTicket = '') {
   const writer = new Writer(64);
   writer.u8(OPCODES.C2S_JOIN);
   writer.string8(name || '');
   writer.color24(color || '#ffffff');
+  writer.string16(profileTicket || '');
   return writer.finish();
 }
 
