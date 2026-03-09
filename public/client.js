@@ -128,6 +128,7 @@ const BUILDING_TEXTURE_SOURCES = [
   ...ARMORY_BUILDING_TEXTURE_SOURCES,
   HOSPITAL_BUILDING_TEXTURE_SOURCE,
 ];
+const BLOCK_TEXTURE_SOURCES = ['/assets/buildings/block_01.png'];
 const BASE_BUILDING_VARIANT_COUNT = BASE_BUILDING_TEXTURE_SOURCES.length;
 const ARMORY_VARIANT_START = BASE_BUILDING_VARIANT_COUNT;
 const HOSPITAL_VARIANT_INDEX = ARMORY_VARIANT_START + ARMORY_BUILDING_TEXTURE_SOURCES.length;
@@ -138,7 +139,15 @@ const buildingTextures = BUILDING_TEXTURE_SOURCES.map((src) => ({
   height: 0,
   image: null,
 }));
+const blockTextures = BLOCK_TEXTURE_SOURCES.map((src) => ({
+  src,
+  state: 'idle',
+  width: 0,
+  height: 0,
+  image: null,
+}));
 let buildingTexturesRequested = false;
+let blockTexturesRequested = false;
 
 function parseAudioPref(value, fallback) {
   const n = Number(value);
@@ -620,6 +629,43 @@ function ensureBuildingTexturesLoaded() {
   }
 }
 
+function loadBlockTexture(index) {
+  const target = blockTextures[index];
+  if (!target || target.state === 'loading' || target.state === 'ready') return;
+  target.state = 'loading';
+
+  const img = new Image();
+  img.decoding = 'async';
+  img.onload = () => {
+    try {
+      const buffer = document.createElement('canvas');
+      buffer.width = img.width;
+      buffer.height = img.height;
+      const g = buffer.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.drawImage(img, 0, 0);
+      target.width = img.width;
+      target.height = img.height;
+      target.image = buffer;
+      target.state = 'ready';
+    } catch {
+      target.state = 'missing';
+    }
+  };
+  img.onerror = () => {
+    target.state = 'missing';
+  };
+  img.src = target.src;
+}
+
+function ensureBlockTexturesLoaded() {
+  if (blockTexturesRequested) return;
+  blockTexturesRequested = true;
+  for (let i = 0; i < blockTextures.length; i += 1) {
+    loadBlockTexture(i);
+  }
+}
+
 function refreshMapToggleUi() {
   if (!mapBtn) return;
   mapBtn.classList.toggle('active', mapVisible);
@@ -680,8 +726,7 @@ function worldGroundTypeAt(x, y) {
 
   const blockX = Math.floor(x / WORLD.blockPx);
   const blockY = Math.floor(y / WORLD.blockPx);
-  const profile = hash2D(blockX, blockY);
-  if (profile < 0.2) {
+  if (!blockHasBuildings(blockX, blockY)) {
     return 'park';
   }
 
@@ -698,10 +743,19 @@ function worldGroundTypeAt(x, y) {
   return 'park';
 }
 
+function blockHasBuildings(blockX, blockY) {
+  return hash2D(blockX, blockY) >= 0.2;
+}
+
 function buildingVariantForPlot(blockX, blockY, plotIndex) {
   return Math.floor(
     hash2D(blockX * 31 + 17 + plotIndex * 7, blockY * 43 - 29 + plotIndex * 11) * BASE_BUILDING_VARIANT_COUNT
   );
+}
+
+function blockVariantForBlock(blockX, blockY) {
+  if (!blockTextures.length) return 0;
+  return Math.floor(hash2D(blockX * 53 + 11, blockY * 67 - 19) * blockTextures.length);
 }
 
 function plotIndexForLocalCoord(localX, localY) {
@@ -921,16 +975,64 @@ function drawCommonRoofMicroDetails(variant, sx, sy, tile, blockX, blockY, btX, 
   }
 }
 
-function drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY) {
+function drawBlockTextureTile(blockVariant, sx, sy, tile, localX, localY) {
+  const texture = blockTextures[blockVariant];
+  if (!texture || texture.state !== 'ready' || !texture.image || texture.width < 2 || texture.height < 2) {
+    return false;
+  }
+
+  const leftSpan = WORLD.roadStart;
+  const rightSpan = WORLD.blockPx - WORLD.roadEnd;
+  if (leftSpan <= 0 || rightSpan <= 0) return false;
+
+  const toLotNorm = (v) => {
+    if (v < WORLD.roadStart) return v / leftSpan;
+    if (v >= WORLD.roadEnd) return (v - WORLD.roadEnd) / rightSpan;
+    return null;
+  };
+
+  const endX = Math.min(WORLD.blockPx - 0.001, localX + tile - 0.001);
+  const endY = Math.min(WORLD.blockPx - 0.001, localY + tile - 0.001);
+  const u0 = toLotNorm(localX);
+  const v0 = toLotNorm(localY);
+  const u1 = toLotNorm(endX);
+  const v1 = toLotNorm(endY);
+  if (u0 === null || v0 === null || u1 === null || v1 === null) {
+    return false;
+  }
+
+  // Transparent pixels in block textures should reveal ground.
+  ctx.fillStyle = '#345a38';
+  ctx.fillRect(sx, sy, tile, tile);
+
+  const cu0 = clamp(u0, 0, 1);
+  const cv0 = clamp(v0, 0, 1);
+  const cu1 = clamp(u1, 0, 1);
+  const cv1 = clamp(v1, 0, 1);
+
+  const srcX = clamp(Math.floor(cu0 * (texture.width - 1)), 0, texture.width - 1);
+  const srcY = clamp(Math.floor(cv0 * (texture.height - 1)), 0, texture.height - 1);
+  const srcX2 = clamp(Math.ceil(cu1 * (texture.width - 1)), srcX + 1, texture.width);
+  const srcY2 = clamp(Math.ceil(cv1 * (texture.height - 1)), srcY + 1, texture.height);
+  const srcW = Math.max(1, srcX2 - srcX);
+  const srcH = Math.max(1, srcY2 - srcY);
+
+  ctx.drawImage(texture.image, srcX, srcY, srcW, srcH, sx, sy, tile, tile);
+  return true;
+}
+
+function drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY, hasUnderlay = false) {
   const texture = buildingTextures[variant];
   if (!texture || texture.state !== 'ready' || !texture.image || texture.width < 2 || texture.height < 2) {
     return false;
   }
   if (!plot) return false;
 
-  // Transparent pixels in source textures should reveal lot ground, not the frame-clear color.
-  ctx.fillStyle = '#345a38';
-  ctx.fillRect(sx, sy, tile, tile);
+  // Transparent pixels in source textures should reveal underlying lot ground.
+  if (!hasUnderlay) {
+    ctx.fillStyle = '#345a38';
+    ctx.fillRect(sx, sy, tile, tile);
+  }
 
   const spanX = Math.max(1, plot.x1 - plot.x0);
   const spanY = Math.max(1, plot.y1 - plot.y0);
@@ -1570,7 +1672,18 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     return;
   }
 
+  const blockWorldX = Math.floor(worldX / WORLD.blockPx);
+  const blockWorldY = Math.floor(worldY / WORLD.blockPx);
+  const localX = mod(worldX, WORLD.blockPx);
+  const localY = mod(worldY, WORLD.blockPx);
+  const blockVariant = blockVariantForBlock(blockWorldX, blockWorldY);
+  const hasBlockUnderlay = drawBlockTextureTile(blockVariant, sx, sy, tile, localX, localY);
+
   if (type === 'sidewalk') {
+    if (hasBlockUnderlay) {
+      return;
+    }
+
     ctx.fillStyle = '#70777f';
     ctx.fillRect(sx, sy, tile, tile);
 
@@ -1582,10 +1695,6 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
   }
 
   if (type === 'building') {
-    const blockWorldX = Math.floor(worldX / WORLD.blockPx);
-    const blockWorldY = Math.floor(worldY / WORLD.blockPx);
-    const localX = mod(worldX, WORLD.blockPx);
-    const localY = mod(worldY, WORLD.blockPx);
     const margin = 42 + Math.floor(hash2D(blockWorldX + 11, blockWorldY - 7) * 12);
     const plot = getBuildingPlotInfo(localX, localY, margin);
     const plotKey = plot ? `${blockWorldX},${blockWorldY},${plot.plotIndex}` : null;
@@ -1593,7 +1702,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     const variant = Number.isInteger(specialVariant)
       ? specialVariant
       : buildingVariantForPlot(blockWorldX, blockWorldY, plot ? plot.plotIndex : 0);
-    if (drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY)) {
+    if (drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY, hasBlockUnderlay)) {
       return;
     }
 
@@ -1626,6 +1735,12 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
     return;
   }
 
+  if (type === 'park') {
+    if (hasBlockUnderlay) {
+      return;
+    }
+  }
+
   ctx.fillStyle = '#345a38';
   ctx.fillRect(sx, sy, tile, tile);
   if (hash2D(Math.floor(worldX / tile), Math.floor(worldY / tile)) > 0.65) {
@@ -1636,6 +1751,7 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
 
 function drawWorld(state) {
   ensureBuildingTexturesLoaded();
+  ensureBlockTexturesLoaded();
   const specialPlotVariants = buildSpecialPlotVariantMap(state?.world);
   const viewW = canvas.width;
   const viewH = canvas.height;
@@ -2983,6 +3099,7 @@ function attachUiEvents() {
 function boot() {
   applyAudioSettings();
   ensureBuildingTexturesLoaded();
+  ensureBlockTexturesLoaded();
   refreshMapToggleUi();
   refreshSettingsPanel();
   populateColorGrid();
