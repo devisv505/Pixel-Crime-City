@@ -223,6 +223,28 @@ function makeId(prefix) {
   return `${prefix}_${nextId++}`;
 }
 
+function plotIndexForLocalCoord(localX, localY) {
+  const xSide = localX < ROAD_START ? 0 : localX >= ROAD_END ? 1 : null;
+  const ySide = localY < ROAD_START ? 0 : localY >= ROAD_END ? 1 : null;
+  if (xSide === null || ySide === null) return null;
+  return ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
+}
+
+function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
+  const xSide = plotIndex % 2;
+  const ySide = plotIndex > 1 ? 1 : 0;
+  const lotX0 = xSide === 0 ? 0 : ROAD_END;
+  const lotX1 = xSide === 0 ? ROAD_START : BLOCK_PX;
+  const lotY0 = ySide === 0 ? 0 : ROAD_END;
+  const lotY1 = ySide === 0 ? ROAD_START : BLOCK_PX;
+  const lotSize = Math.min(lotX1 - lotX0, lotY1 - lotY0);
+  const seed = hash2D(blockX * 71 + plotIndex * 17 + 11, blockY * 89 - plotIndex * 23 - 7);
+  const size = Math.max(56, Math.min(lotSize - 20, 72 + Math.floor(seed * 12)));
+  const x0 = Math.floor((lotX0 + lotX1 - size) * 0.5);
+  const y0 = Math.floor((lotY0 + lotY1 - size) * 0.5);
+  return { x0, y0, x1: x0 + size, y1: y0 + size };
+}
+
 function groundTypeAt(x, y) {
   const worldX = wrapWorldX(x);
   const worldY = wrapWorldY(y);
@@ -250,14 +272,12 @@ function groundTypeAt(x, y) {
     return 'park';
   }
 
-  const margin = 42 + Math.floor(hash2D(blockX + 11, blockY - 7) * 12);
-  if (
-    localX > margin &&
-    localX < BLOCK_PX - margin &&
-    localY > margin &&
-    localY < BLOCK_PX - margin
-  ) {
-    return 'building';
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex !== null) {
+    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+    if (localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1) {
+      return 'building';
+    }
   }
 
   return 'park';

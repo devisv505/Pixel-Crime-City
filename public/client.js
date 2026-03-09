@@ -730,21 +730,33 @@ function worldGroundTypeAt(x, y) {
     return 'park';
   }
 
-  const margin = 42 + Math.floor(hash2D(blockX + 11, blockY - 7) * 12);
-  if (
-    localX > margin &&
-    localX < WORLD.blockPx - margin &&
-    localY > margin &&
-    localY < WORLD.blockPx - margin
-  ) {
-    return 'building';
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex !== null) {
+    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+    if (localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1) {
+      return 'building';
+    }
   }
-
   return 'park';
 }
 
 function blockHasBuildings(blockX, blockY) {
   return hash2D(blockX, blockY) >= 0.2;
+}
+
+function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
+  const xSide = plotIndex % 2;
+  const ySide = plotIndex > 1 ? 1 : 0;
+  const lotX0 = xSide === 0 ? 0 : WORLD.roadEnd;
+  const lotX1 = xSide === 0 ? WORLD.roadStart : WORLD.blockPx;
+  const lotY0 = ySide === 0 ? 0 : WORLD.roadEnd;
+  const lotY1 = ySide === 0 ? WORLD.roadStart : WORLD.blockPx;
+  const lotSize = Math.min(lotX1 - lotX0, lotY1 - lotY0);
+  const seed = hash2D(blockX * 71 + plotIndex * 17 + 11, blockY * 89 - plotIndex * 23 - 7);
+  const size = Math.max(56, Math.min(lotSize - 20, 72 + Math.floor(seed * 12)));
+  const x0 = Math.floor((lotX0 + lotX1 - size) * 0.5);
+  const y0 = Math.floor((lotY0 + lotY1 - size) * 0.5);
+  return { x0, y0, x1: x0 + size, y1: y0 + size };
 }
 
 function buildingVariantForPlot(blockX, blockY, plotIndex) {
@@ -798,33 +810,16 @@ function buildSpecialPlotVariantMap(world) {
   return result;
 }
 
-function getBuildingPlotInfo(localX, localY, margin) {
-  const innerMin = margin;
-  const innerMax = WORLD.blockPx - margin;
+function getBuildingPlotInfo(localX, localY, blockX, blockY) {
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return null;
 
-  let xSide = null;
-  if (localX >= innerMin && localX < WORLD.roadStart) {
-    xSide = 0; // left
-  } else if (localX >= WORLD.roadEnd && localX < innerMax) {
-    xSide = 1; // right
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  if (localX <= rect.x0 || localX >= rect.x1 || localY <= rect.y0 || localY >= rect.y1) {
+    return null;
   }
 
-  let ySide = null;
-  if (localY >= innerMin && localY < WORLD.roadStart) {
-    ySide = 0; // top
-  } else if (localY >= WORLD.roadEnd && localY < innerMax) {
-    ySide = 1; // bottom
-  }
-
-  if (xSide === null || ySide === null) return null;
-
-  const x0 = xSide === 0 ? innerMin : WORLD.roadEnd;
-  const x1 = xSide === 0 ? WORLD.roadStart : innerMax;
-  const y0 = ySide === 0 ? innerMin : WORLD.roadEnd;
-  const y1 = ySide === 0 ? WORLD.roadStart : innerMax;
-  const plotIndex = ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
-
-  return { plotIndex, x0, x1, y0, y1 };
+  return { plotIndex, x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1 };
 }
 
 function drawSolarRoofTile(sx, sy, tile) {
@@ -1695,13 +1690,13 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
   }
 
   if (type === 'building') {
-    const margin = 42 + Math.floor(hash2D(blockWorldX + 11, blockWorldY - 7) * 12);
-    const plot = getBuildingPlotInfo(localX, localY, margin);
+    const plot = getBuildingPlotInfo(localX, localY, blockWorldX, blockWorldY);
     const plotKey = plot ? `${blockWorldX},${blockWorldY},${plot.plotIndex}` : null;
     const specialVariant = plotKey ? specialPlotVariants?.get(plotKey) : null;
+    const fallbackPlotIndex = plotIndexForLocalCoord(localX, localY) ?? 0;
     const variant = Number.isInteger(specialVariant)
       ? specialVariant
-      : buildingVariantForPlot(blockWorldX, blockWorldY, plot ? plot.plotIndex : 0);
+      : buildingVariantForPlot(blockWorldX, blockWorldY, plot ? plot.plotIndex : fallbackPlotIndex);
     if (drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY, hasBlockUnderlay)) {
       return;
     }
@@ -1850,16 +1845,34 @@ function drawFloatingHospitalSign(worldX, worldY, worldLeft, worldTop, yOffset, 
   ctx.fillRect(x + 4, y + 5, 8, 4);
 }
 
+function specialBuildingSignAnchor(worldX, worldY) {
+  const blockX = Math.floor(worldX / WORLD.blockPx);
+  const blockY = Math.floor(worldY / WORLD.blockPx);
+  const localX = mod(worldX, WORLD.blockPx);
+  const localY = mod(worldY, WORLD.blockPx);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) {
+    return { x: worldX, y: worldY };
+  }
+
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  const anchorX = blockX * WORLD.blockPx + (rect.x0 + rect.x1) * 0.5;
+  const anchorY = blockY * WORLD.blockPx + rect.y0 + 4;
+  return { x: anchorX, y: anchorY };
+}
+
 function drawSpecialBuildingSigns(state, worldLeft, worldTop) {
   const shops = state.world?.shops || [];
   for (let i = 0; i < shops.length; i += 1) {
     const shop = shops[i];
-    drawFloatingLabel(shop.x, shop.y, worldLeft, worldTop, 'GUNS', '#ffd477', -30, i * 0.9);
+    const anchor = specialBuildingSignAnchor(shop.x, shop.y);
+    drawFloatingLabel(anchor.x, anchor.y, worldLeft, worldTop, 'GUNS', '#ffd477', -12, i * 0.9);
   }
 
   const hospital = state.world?.hospital;
   if (hospital) {
-    drawFloatingHospitalSign(hospital.x, hospital.y, worldLeft, worldTop, -32, 1.4);
+    const anchor = specialBuildingSignAnchor(hospital.x, hospital.y);
+    drawFloatingHospitalSign(anchor.x, anchor.y, worldLeft, worldTop, -14, 1.4);
   }
 }
 
