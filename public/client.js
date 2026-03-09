@@ -153,8 +153,10 @@ const REMOTE_INTERP_MAX_MS = 100;
 const PREDICTION_HARD_SNAP_DIST = 64;
 const ENABLE_LOCAL_PREDICTION = false;
 const SERVER_RENDER_DELAY_MS = 90;
+const LOCAL_TELEPORT_SNAP_DIST = 220;
 let localPredictionAccumulator = 0;
 let lastMoveInputAtMs = 0;
+let cameraHardSnapPending = false;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
@@ -787,7 +789,7 @@ function normalizeAngle(angle) {
 }
 
 function wrappedLerp(from, to, t, size) {
-  return from + wrapDelta(to - from, size) * t;
+  return wrapCoord(from + wrapDelta(to - from, size) * t, size);
 }
 
 function approach(value, target, amount) {
@@ -1548,9 +1550,10 @@ function resetSessionState() {
   hasClockSync = false;
   serverClockOffsetMs = 0;
   smoothedRttMs = 120;
-  dynamicInterpDelayMs = 90;
+  dynamicInterpDelayMs = SERVER_RENDER_DELAY_MS;
   lastServerSnapshotTime = 0;
   localPredictionAccumulator = 0;
+  cameraHardSnapPending = false;
   snapshotEntityState.players.clear();
   snapshotEntityState.cars.clear();
   snapshotEntityState.npcs.clear();
@@ -1925,6 +1928,16 @@ function applyPredictionToInterpolatedState(state) {
   }
 }
 
+function snapCameraToLocal(local) {
+  if (!local) return;
+  const halfW = canvas.width * 0.5;
+  const halfH = canvas.height * 0.5;
+  camera.x = clamp(local.x, halfW, WORLD.width - halfW);
+  camera.y = clamp(local.y, halfH, WORLD.height - halfH);
+  camera.x = Math.round(camera.x);
+  camera.y = Math.round(camera.y);
+}
+
 function updateClockSync(snapshotMessage, receiveNowMs) {
   const echoed = snapshotMessage.clientSendTimeEcho >>> 0;
   if (echoed > 0) {
@@ -2014,7 +2027,8 @@ async function connectAndJoin() {
       hasClockSync = false;
       serverClockOffsetMs = 0;
       smoothedRttMs = 120;
-      dynamicInterpDelayMs = 90;
+      dynamicInterpDelayMs = SERVER_RENDER_DELAY_MS;
+      cameraHardSnapPending = true;
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
       if (chatBar) {
@@ -2031,10 +2045,33 @@ async function connectAndJoin() {
       }
       const receiveNow = performance.now();
       updateClockSync(data, receiveNow);
+      const previousLocal = lastSnapshot?.localPlayer || null;
       const snapshot = applySnapshotDelta(data);
+      const currentLocal = snapshot.localPlayer || null;
       snapshot.receivedAt = receiveNow;
-      snapshots.push(snapshot);
-      while (snapshots.length > 55) snapshots.shift();
+
+      let forceLocalSnap = false;
+      if (!ENABLE_LOCAL_PREDICTION && previousLocal && currentLocal) {
+        const rawDx = Math.abs(currentLocal.x - previousLocal.x);
+        const rawDy = Math.abs(currentLocal.y - previousLocal.y);
+        const crossedWrap = rawDx > WORLD.width * 0.5 || rawDy > WORLD.height * 0.5;
+        const dx = wrapDelta(currentLocal.x - previousLocal.x, WORLD.width);
+        const dy = wrapDelta(currentLocal.y - previousLocal.y, WORLD.height);
+        const travelDist = Math.hypot(dx, dy);
+        const respawned = (previousLocal.health || 0) <= 0 && (currentLocal.health || 0) > 0;
+        const teleported = travelDist > LOCAL_TELEPORT_SNAP_DIST;
+        forceLocalSnap = crossedWrap || respawned || teleported;
+      }
+
+      if (forceLocalSnap) {
+        snapshots.length = 0;
+        snapshots.push(snapshot);
+        cameraHardSnapPending = true;
+      } else {
+        snapshots.push(snapshot);
+        while (snapshots.length > 55) snapshots.shift();
+      }
+
       lastSnapshot = snapshot;
       processEvents(snapshot.events || []);
       if (ENABLE_LOCAL_PREDICTION) {
@@ -3600,6 +3637,9 @@ function renderState(state, dt) {
     // Keep local movement responsive and remove visual "rollback" caused by camera lag.
     camera.x = Math.round(state.localPlayer.x - halfW) + halfW;
     camera.y = Math.round(state.localPlayer.y - halfH) + halfH;
+  } else if (cameraHardSnapPending) {
+    snapCameraToLocal(state.localPlayer);
+    cameraHardSnapPending = false;
   } else {
     camera.x = lerp(camera.x, state.localPlayer.x, 0.18);
     camera.y = lerp(camera.y, state.localPlayer.y, 0.18);
