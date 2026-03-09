@@ -52,6 +52,7 @@ const mobileStickKnob = document.getElementById('mobileStickKnob');
 const mobileBtnE = document.getElementById('mobileBtnE');
 const mobileBtnO = document.getElementById('mobileBtnO');
 const mobileBtnMap = document.getElementById('mobileBtnMap');
+const mobileBtnFullscreen = document.getElementById('mobileBtnFullscreen');
 
 const PROFILE_STORAGE_KEY = 'pcc_profiles_v1';
 const PROFILE_LAST_NAME_KEY = 'pcc_profiles_last_name_v1';
@@ -1042,7 +1043,7 @@ function isMobilePortraitBlocked() {
 }
 
 function canAcceptGameplayInput() {
-  return !isMobilePortraitBlocked();
+  return !(joined && isMobilePortraitBlocked());
 }
 
 function isFullscreenActive() {
@@ -1206,13 +1207,18 @@ function toggleMapAction() {
   toggleMapOverlay();
 }
 
+function enterFullscreenAction() {
+  if (!isMobileUi || !joined) return;
+  tryEnterMobileFullscreen('gesture');
+}
+
 function refreshMobileUiState() {
   isMobileUi = detectMobileUiDevice();
   isMobileLandscape = window.innerWidth >= window.innerHeight;
 
   document.body.classList.toggle('mobile-ui', isMobileUi);
 
-  const blocked = isMobilePortraitBlocked();
+  const blocked = joined && isMobilePortraitBlocked();
   if (mobileRotateOverlay) {
     mobileRotateOverlay.classList.toggle('hidden', !blocked);
     mobileRotateOverlay.setAttribute('aria-hidden', blocked ? 'false' : 'true');
@@ -1229,8 +1235,6 @@ function refreshMobileUiState() {
     INPUT.horn = false;
     releaseMobileStick();
     releaseMobileShoot();
-  } else {
-    tryEnterMobileFullscreen('auto');
   }
 }
 
@@ -1918,7 +1922,6 @@ function bindMobileActionButton(button, onAction) {
       if (!isMobileUi) return;
       event.preventDefault();
       event.stopPropagation();
-      tryEnterMobileFullscreen('gesture');
       mobileSuppressMouseUntil = performance.now() + MOBILE_MOUSE_SUPPRESS_MS;
       onAction();
     },
@@ -1972,7 +1975,6 @@ function onMobileGlobalTouchEnd(event) {
 function onMobileStickTouchStart(event) {
   if (!isMobileUi || !joined) return;
   event.preventDefault();
-  tryEnterMobileFullscreen('gesture');
   if (!canAcceptGameplayInput()) {
     releaseMobileStick();
     return;
@@ -1987,7 +1989,6 @@ function onMobileStickTouchStart(event) {
 
 function onMobileCanvasTouchStart(event) {
   if (!isMobileUi || !joined) return;
-  tryEnterMobileFullscreen('gesture');
   if (!canAcceptGameplayInput()) {
     event.preventDefault();
     return;
@@ -4508,18 +4509,10 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
-  window.addEventListener(
-    'touchstart',
-    () => {
-      if (!isMobileUi || !isMobileLandscape || isFullscreenActive()) return;
-      tryEnterMobileFullscreen('gesture');
-    },
-    { passive: true }
-  );
-
   bindMobileActionButton(mobileBtnE, pulseEnterAction);
   bindMobileActionButton(mobileBtnO, toggleSettingsAction);
   bindMobileActionButton(mobileBtnMap, toggleMapAction);
+  bindMobileActionButton(mobileBtnFullscreen, enterFullscreenAction);
 
   if (mobileStickBase) {
     mobileStickBase.addEventListener('touchstart', onMobileStickTouchStart, { passive: false });
