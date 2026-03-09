@@ -703,6 +703,9 @@ function interpolateSnapshot(targetServerTime) {
 
   const cops = (newer.cops || []).map((next) => {
     const prev = olderCops.get(next.id) || next;
+    if (!next.alive || !prev.alive || next.inCarId) {
+      return { ...next };
+    }
     return {
       ...next,
       x: lerp(prev.x, next.x, t),
@@ -946,8 +949,8 @@ function drawBloodStains(state, worldLeft, worldTop) {
 function drawShopInterior(state) {
   const local = state.localPlayer;
   const shop = findShopByIdInWorld(state.world, local.insideShopId);
-  const pistolPrice = shop?.stock?.pistol ?? 260;
-  const shotgunPrice = shop?.stock?.shotgun ?? 720;
+  const shotgunPrice = shop?.stock?.shotgun ?? 500;
+  const bazookaPrice = shop?.stock?.bazooka ?? 1000;
 
   ctx.fillStyle = '#18120f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -974,21 +977,23 @@ function drawShopInterior(state) {
   ctx.font = '8px "Lucida Console", Monaco, monospace';
   ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
 
-  const pistolOwned = !!local.ownedPistol;
   const shotgunOwned = !!local.ownedShotgun;
+  const bazookaOwned = !!local.ownedBazooka;
   const weaponLabel = local.weapon || 'fist';
 
   ctx.fillStyle = '#d8d8d8';
-  ctx.fillText('3) Fists (always available)', panelX + 18, panelY + 62);
-  ctx.fillStyle = pistolOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`1) Buy Pistol  $${pistolPrice}  ${pistolOwned ? '(owned)' : ''}`, panelX + 18, panelY + 82);
+  ctx.fillText('You start with a Gun (slot 1)', panelX + 18, panelY + 62);
   ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`2) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
+  ctx.fillText(`1) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 82);
+  ctx.fillStyle = bazookaOwned ? '#8dff7c' : '#ffd3a2';
+  ctx.fillText(`2) Buy Bazooka $${bazookaPrice} ${bazookaOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
+  ctx.fillStyle = '#cbd3db';
+  ctx.fillText('3) Equip Gun', panelX + 18, panelY + 118);
 
   ctx.fillStyle = '#bfc8d6';
-  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 124);
+  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 136);
   ctx.fillStyle = '#e8e8e8';
-  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 146);
+  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 158);
 }
 
 const CAR_SPRITE_TEMPLATE_FALLBACK = [
@@ -1279,6 +1284,17 @@ function drawCar(car, worldLeft, worldTop) {
 
   ctx.drawImage(sprite, -halfW, -halfH);
 
+  if (car.type === 'cop') {
+    const sirenActive = !!car.sirenOn;
+    const flashStep = Math.floor(performance.now() / 120) % 2;
+    const blueOn = sirenActive && flashStep === 0;
+    const redOn = sirenActive && flashStep === 1;
+    ctx.fillStyle = blueOn ? '#6fb8ff' : '#24374a';
+    ctx.fillRect(-3, -halfH + 1, 3, 2);
+    ctx.fillStyle = redOn ? '#ff5c68' : '#3f262b';
+    ctx.fillRect(0, -halfH + 1, 3, 2);
+  }
+
   if (car.type === 'ambulance') {
     ctx.fillStyle = '#e6ebf7';
     ctx.fillRect(-6, -1, 12, 2);
@@ -1413,9 +1429,22 @@ function drawNpc(npc, worldLeft, worldTop) {
 }
 
 function drawCop(cop, worldLeft, worldTop) {
+  if (cop.inCarId) {
+    return;
+  }
   const x = Math.round(cop.x - worldLeft);
   const y = Math.round(cop.y - worldTop);
   if (x < -20 || y < -20 || x > canvas.width + 20 || y > canvas.height + 20) {
+    return;
+  }
+  if (!cop.alive) {
+    if (cop.corpseState === 'carried') return;
+    ctx.fillStyle = '#1f3157';
+    ctx.fillRect(x - 6, y - 2, 12, 4);
+    ctx.fillStyle = '#3e76d8';
+    ctx.fillRect(x - 5, y - 1, 10, 2);
+    ctx.fillStyle = '#efc39e';
+    ctx.fillRect(x + 3, y - 1, 3, 2);
     return;
   }
   const uniform = cop.mode === 'hunt' ? '#4a8dff' : '#3e76d8';
@@ -1644,9 +1673,11 @@ function updateHud(state) {
   localPlayerCache = { x: p.x, y: p.y };
 
   hudName.textContent = `Player: ${p.name}`;
-  hudHealth.textContent = `HP: ${Math.max(0, p.health | 0)}`;
+  const health = Math.max(0, Number.isFinite(p.health) ? p.health : 0);
+  const lives = Math.max(0, Math.min(5, Math.ceil(health / 20)));
+  hudHealth.textContent = `Lives: ${'♥'.repeat(lives)}${'♡'.repeat(5 - lives)}`;
   const weaponLabel =
-    p.weapon === 'shotgun' ? 'shotgun' : p.weapon === 'pistol' ? 'pistol' : 'fists';
+    p.weapon === 'bazooka' ? 'bazooka' : p.weapon === 'shotgun' ? 'shotgun' : p.weapon === 'pistol' ? 'gun' : 'fists';
   if (p.insideShopId) {
     hudMode.textContent = 'Mode: In Gun Shop';
   } else if (p.inCarId) {
@@ -1726,9 +1757,9 @@ function handleActionKey(event) {
 
   if (local.insideShopId) {
     if (event.code === 'Digit1') {
-      sendBuy('pistol');
-    } else if (event.code === 'Digit2') {
       sendBuy('shotgun');
+    } else if (event.code === 'Digit2') {
+      sendBuy('bazooka');
     } else if (event.code === 'Digit3') {
       INPUT.weaponSlot = 1;
     }

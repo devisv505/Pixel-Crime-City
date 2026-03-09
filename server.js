@@ -32,13 +32,17 @@ const DROP_LIFETIME = 22;
 const DROP_PICKUP_RADIUS = 14;
 const STAR_DECAY_PER_SECOND = 1 / 60;
 
-const NPC_COUNT = 132;
+const NPC_COUNT = 512;
 const NPC_RADIUS = 6;
+const COP_RADIUS = 7;
+const COP_HEALTH = 200;
+const COP_CAR_DISMOUNT_RADIUS = 92;
+const COP_CAR_RECALL_RADIUS = 320;
 
-const TRAFFIC_COUNT = 78;
-const COP_COUNT = 10;
-const COP_OFFICER_COUNT = 12;
-const AMBULANCE_COUNT = 1;
+const TRAFFIC_COUNT = 254;
+const COP_COUNT = 32;
+const COP_OFFICER_COUNT = 32;
+const AMBULANCE_COUNT = 8;
 const MAX_NAME_LENGTH = 16;
 const POLICE_WITNESS_RADIUS = 190;
 const BLOOD_STAIN_LIFETIME = 240;
@@ -59,8 +63,8 @@ const CAR_PALETTE = ['#f9ce4e', '#ff7a5e', '#83d3ff', '#8eff92', '#d9a5ff', '#f2
 const NPC_PALETTE = ['#f0c39a', '#f5d0b2', '#d2a67f', '#efba9f', '#c78f6f', '#e9c09a'];
 const NPC_SHIRT_PALETTE = ['#5a8ad6', '#66b47a', '#c46060', '#b085d8', '#dfa04f', '#61b8b7', '#808891'];
 const SHOP_STOCK = {
-  pistol: 260,
-  shotgun: 720,
+  shotgun: 500,
+  bazooka: 1000,
 };
 const SHOPS = [
   { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
@@ -104,6 +108,14 @@ const WEAPONS = {
     spread: 0.22,
     range: 225,
     damage: 58,
+    type: 'bullet',
+  },
+  bazooka: {
+    cooldown: 1.1,
+    pellets: 1,
+    spread: 0.02,
+    range: 360,
+    damage: 130,
     type: 'bullet',
   },
 };
@@ -384,6 +396,7 @@ function policeWitnessNear(x, y, radius = POLICE_WITNESS_RADIUS) {
   const r2 = radius * radius;
 
   for (const cop of cops.values()) {
+    if (!cop.alive || cop.inCarId) continue;
     const dx = cop.x - x;
     const dy = cop.y - y;
     if (dx * dx + dy * dy <= r2) {
@@ -434,8 +447,13 @@ function makeCar(type = 'civilian') {
     aiCooldown: randRange(0.35, 1.35),
     hornCooldown: randRange(0, 1),
     bodyHitCooldown: 0,
+    dismountCooldown: 0,
+    dismountCopIds: [],
+    dismountTargetPlayerId: null,
+    sirenOn: false,
     ambulanceMode: 'idle',
-    ambulanceTargetNpcId: null,
+    ambulanceTargetType: null,
+    ambulanceTargetId: null,
     color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
   };
   cars.set(car.id, car);
@@ -494,11 +512,101 @@ function makeCopUnit() {
     dir: randRange(-Math.PI, Math.PI),
     cooldown: randRange(0.4, 1.2),
     patrolTimer: randRange(0.4, 1.8),
+    health: COP_HEALTH,
+    alive: true,
+    corpseState: 'none',
+    bodyClaimedBy: null,
+    bodyCarriedBy: null,
+    reviveTimer: 0,
+    rejoinCarId: null,
+    assignedCarId: null,
+    inCarId: null,
     mode: 'patrol',
     targetPlayerId: null,
   };
   cops.set(cop.id, cop);
   return cop;
+}
+
+function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
+  const spawn = spawnOverride || randomCurbSpawn();
+  const desiredCarId = rejoinPreviousCar ? cop.rejoinCarId : null;
+  const desiredCar = desiredCarId ? cars.get(desiredCarId) : null;
+  const canRejoin = !!(desiredCar && desiredCar.type === 'cop');
+
+  cop.x = spawn.x;
+  cop.y = spawn.y;
+  cop.dir = randRange(-Math.PI, Math.PI);
+  cop.cooldown = randRange(0.35, 1.0);
+  cop.patrolTimer = randRange(0.6, 1.8);
+  cop.health = COP_HEALTH;
+  cop.alive = true;
+  cop.corpseState = 'none';
+  cop.bodyClaimedBy = null;
+  cop.bodyCarriedBy = null;
+  cop.reviveTimer = 0;
+  cop.rejoinCarId = canRejoin ? desiredCarId : null;
+  cop.assignedCarId = canRejoin ? desiredCarId : null;
+  cop.inCarId = null;
+  cop.mode = canRejoin ? 'return' : 'patrol';
+  cop.targetPlayerId = null;
+}
+
+function removeCopFromAssignedCar(cop) {
+  if (!cop || !cop.assignedCarId) return;
+  const car = cars.get(cop.assignedCarId);
+  if (car && Array.isArray(car.dismountCopIds)) {
+    car.dismountCopIds = car.dismountCopIds.filter((id) => id !== cop.id);
+    if (car.dismountCopIds.length === 0) {
+      car.dismountTargetPlayerId = null;
+    }
+  }
+  cop.assignedCarId = null;
+}
+
+function killCop(cop, killer = null) {
+  if (!cop || !cop.alive) return;
+
+  const recoveryCarId = cop.assignedCarId || cop.inCarId || cop.rejoinCarId || null;
+  cop.rejoinCarId = recoveryCarId;
+  if (recoveryCarId && !cop.assignedCarId) {
+    cop.assignedCarId = recoveryCarId;
+  }
+  cop.alive = false;
+  cop.health = 0;
+  cop.mode = 'down';
+  cop.corpseState = 'down';
+  cop.bodyClaimedBy = null;
+  cop.bodyCarriedBy = null;
+  cop.reviveTimer = 0;
+  cop.targetPlayerId = null;
+  cop.cooldown = 0;
+  cop.inCarId = null;
+  makeBloodStain(cop.x, cop.y);
+
+  if (killer && killer.health > 0) {
+    addStars(killer, 1.25, 34);
+  }
+  dispatchAmbulanceForCop(cop);
+  emitEvent('defeat', { x: cop.x, y: cop.y });
+}
+
+function damageCop(cop, amount, attacker = null) {
+  if (!cop || !cop.alive || amount <= 0) return;
+
+  cop.health -= amount;
+  cop.cooldown = Math.max(cop.cooldown, 0.12);
+  emitEvent('impact', { x: cop.x, y: cop.y });
+
+  if (attacker && attacker.health > 0) {
+    cop.targetPlayerId = attacker.id;
+    cop.mode = 'hunt';
+    addStars(attacker, 0.35, 18);
+  }
+
+  if (cop.health <= 0) {
+    killCop(cop, attacker);
+  }
 }
 
 function awardNpcKill(killerId, x, y) {
@@ -692,12 +800,12 @@ function exitShop(player) {
 
 function applyWeaponSelection(player) {
   const slot = player.input.weaponSlot;
-  if (slot === 1) {
-    player.weapon = 'fist';
-  } else if (slot === 2 && player.ownedPistol) {
+  if (slot === 1 && player.ownedPistol) {
     player.weapon = 'pistol';
-  } else if (slot === 3 && player.ownedShotgun) {
+  } else if (slot === 2 && player.ownedShotgun) {
     player.weapon = 'shotgun';
+  } else if (slot === 3 && player.ownedBazooka) {
+    player.weapon = 'bazooka';
   }
 }
 
@@ -711,22 +819,22 @@ function buyItemForPlayer(player, item) {
     return { ok: false, message: 'Unknown item.' };
   }
 
-  if (item === 'pistol' && player.ownedPistol) {
-    return { ok: false, message: 'Pistol already owned.' };
-  }
   if (item === 'shotgun' && player.ownedShotgun) {
     return { ok: false, message: 'Shotgun already owned.' };
+  }
+  if (item === 'bazooka' && player.ownedBazooka) {
+    return { ok: false, message: 'Bazooka already owned.' };
   }
   if (player.money < price) {
     return { ok: false, message: 'Not enough money.' };
   }
 
   player.money -= price;
-  if (item === 'pistol') {
-    player.ownedPistol = true;
-    player.input.weaponSlot = 2;
-  } else if (item === 'shotgun') {
+  if (item === 'shotgun') {
     player.ownedShotgun = true;
+    player.input.weaponSlot = 2;
+  } else if (item === 'bazooka') {
+    player.ownedBazooka = true;
     player.input.weaponSlot = 3;
   }
   player.weapon = item;
@@ -1008,14 +1116,154 @@ function nearestFiveStarPlayer(x, y) {
   return winner;
 }
 
+function pruneCopCarAssignments(car) {
+  if (!Array.isArray(car.dismountCopIds)) {
+    car.dismountCopIds = [];
+    return;
+  }
+  car.dismountCopIds = car.dismountCopIds.filter((copId) => {
+    const cop = cops.get(copId);
+    if (!cop) return false;
+    if (cop.inCarId === car.id) return false;
+    return cop.assignedCarId === car.id || cop.rejoinCarId === car.id;
+  });
+  if (car.dismountCopIds.length === 0) {
+    car.dismountTargetPlayerId = null;
+  }
+}
+
+function availableCopForCar(car, target, alreadySelected) {
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const cop of cops.values()) {
+    if (!cop.alive) continue;
+    if (cop.assignedCarId && cop.assignedCarId !== car.id) continue;
+    if (cop.inCarId && cop.inCarId !== car.id) continue;
+    if (alreadySelected.has(cop.id)) continue;
+    const score =
+      cop.inCarId === car.id ? -1 : (cop.x - car.x) * (cop.x - car.x) + (cop.y - car.y) * (cop.y - car.y);
+    if (score < bestScore) {
+      best = cop;
+      bestScore = score;
+    }
+  }
+
+  if (!best) return null;
+  const side = alreadySelected.size === 0 ? -1 : 1;
+  const offset = 12;
+  const sx = Math.sin(car.angle);
+  const sy = -Math.cos(car.angle);
+  best.x = clamp(car.x + sx * side * offset, 14, WORLD.width - 14);
+  best.y = clamp(car.y + sy * side * offset, 14, WORLD.height - 14);
+  best.dir = Math.atan2(target.y - best.y, target.x - best.x);
+  best.mode = 'hunt';
+  best.targetPlayerId = target.id;
+  best.rejoinCarId = null;
+  best.assignedCarId = car.id;
+  best.inCarId = null;
+  best.cooldown = randRange(0.15, 0.42);
+  best.patrolTimer = randRange(0.8, 1.6);
+  return best;
+}
+
+function tryDeployCopOfficers(car, target) {
+  if (!target || target.health <= 0 || target.stars < 5 || target.insideShopId) return;
+  if (car.dismountCooldown > 0) return;
+  if (Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_DISMOUNT_RADIUS) return;
+
+  pruneCopCarAssignments(car);
+  if (car.dismountCopIds.length > 0) {
+    car.dismountTargetPlayerId = target.id;
+    return;
+  }
+
+  const selected = new Set();
+  for (let i = 0; i < 2; i++) {
+    const cop = availableCopForCar(car, target, selected);
+    if (!cop) break;
+    selected.add(cop.id);
+  }
+  if (selected.size < 2) {
+    for (const copId of selected) {
+      const cop = cops.get(copId);
+      if (!cop) continue;
+      cop.assignedCarId = null;
+      cop.mode = 'patrol';
+      cop.targetPlayerId = null;
+    }
+    return;
+  }
+
+  car.dismountCopIds = Array.from(selected);
+  car.dismountTargetPlayerId = target.id;
+  car.dismountCooldown = randRange(4.2, 6.8);
+  car.speed = Math.min(car.speed, 18);
+}
+
+function resetCopCarDeployment(car) {
+  if (!car || car.type !== 'cop') return;
+  if (!Array.isArray(car.dismountCopIds) || car.dismountCopIds.length === 0) {
+    car.dismountCopIds = [];
+    car.dismountTargetPlayerId = null;
+    return;
+  }
+  for (const copId of car.dismountCopIds) {
+    const cop = cops.get(copId);
+    if (!cop || !cop.alive || cop.assignedCarId !== car.id) continue;
+    cop.assignedCarId = null;
+    cop.inCarId = null;
+    cop.mode = 'patrol';
+    cop.targetPlayerId = null;
+  }
+  car.dismountCopIds = [];
+  car.dismountTargetPlayerId = null;
+}
+
 function stepCopCar(car, dt) {
+  pruneCopCarAssignments(car);
+
+  if (car.dismountCopIds.length > 0) {
+    let target = car.dismountTargetPlayerId ? players.get(car.dismountTargetPlayerId) : null;
+    if (
+      !target ||
+      target.health <= 0 ||
+      target.stars < 5 ||
+      target.insideShopId ||
+      Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_RECALL_RADIUS
+    ) {
+      target = null;
+    }
+
+    if (target) {
+      car.dismountTargetPlayerId = target.id;
+      car.sirenOn = true;
+    } else {
+      car.dismountTargetPlayerId = null;
+      car.sirenOn = false;
+    }
+
+    // Officers are out: keep the cop car abandoned/stationary at the deployment point.
+    car.speed = approach(car.speed, 0, dt * 120);
+    if (Math.abs(car.speed) > 0.2) {
+      const prevX = car.x;
+      const prevY = car.y;
+      car.x += Math.cos(car.angle) * car.speed * dt;
+      car.y += Math.sin(car.angle) * car.speed * dt;
+      enforceCarCollisions(car, prevX, prevY);
+    }
+    return;
+  }
+
   const target = nearestFiveStarPlayer(car.x, car.y);
   if (!target) {
+    car.sirenOn = false;
     stepTrafficCar(car, dt);
     car.speed = clamp(car.speed, -80, 130);
     return;
   }
 
+  car.sirenOn = true;
   const desired = Math.atan2(target.y - car.y, target.x - car.x);
   car.angle = angleApproach(car.angle, desired, dt * 2.4);
   const dist = Math.hypot(target.x - car.x, target.y - car.y);
@@ -1028,6 +1276,8 @@ function stepCopCar(car, dt) {
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
   enforceCarCollisions(car, prevX, prevY);
+
+  tryDeployCopOfficers(car, target);
 }
 
 function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
@@ -1036,14 +1286,23 @@ function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
   let bestDistSq = bestStart;
 
   for (const npc of npcs.values()) {
-    if (npc.alive) continue;
-    if (npc.corpseState !== 'down') continue;
-    if (npc.bodyClaimedBy) continue;
+    if (npc.alive || npc.corpseState !== 'down' || npc.bodyClaimedBy) continue;
     const dx = npc.x - x;
     const dy = npc.y - y;
     const d2 = dx * dx + dy * dy;
     if (d2 < bestDistSq) {
-      best = npc;
+      best = { type: 'npc', id: npc.id, entity: npc };
+      bestDistSq = d2;
+    }
+  }
+
+  for (const cop of cops.values()) {
+    if (cop.alive || cop.corpseState !== 'down' || cop.bodyClaimedBy) continue;
+    const dx = cop.x - x;
+    const dy = cop.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      best = { type: 'cop', id: cop.id, entity: cop };
       bestDistSq = d2;
     }
   }
@@ -1067,33 +1326,60 @@ function driveAiToward(car, targetX, targetY, dt, farSpeed = 98, nearSpeed = 34)
   return dist;
 }
 
-function resetAmbulanceTask(car) {
-  const npc = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
-  if (npc && npc.bodyClaimedBy === car.id && npc.corpseState === 'down') {
-    npc.bodyClaimedBy = null;
+function getAmbulanceTarget(car) {
+  if (!car.ambulanceTargetType || !car.ambulanceTargetId) return null;
+  if (car.ambulanceTargetType === 'npc') {
+    const npc = npcs.get(car.ambulanceTargetId);
+    return npc ? { type: 'npc', id: npc.id, entity: npc } : null;
   }
-  car.ambulanceMode = 'idle';
-  car.ambulanceTargetNpcId = null;
+  if (car.ambulanceTargetType === 'cop') {
+    const cop = cops.get(car.ambulanceTargetId);
+    return cop ? { type: 'cop', id: cop.id, entity: cop } : null;
+  }
+  return null;
 }
 
-function assignAmbulanceTarget(car, npc) {
-  if (!car || !npc || npc.alive || npc.corpseState !== 'down') return;
+function resetAmbulanceTask(car) {
+  const target = getAmbulanceTarget(car);
+  if (target && target.entity.bodyClaimedBy === car.id && target.entity.corpseState === 'down') {
+    target.entity.bodyClaimedBy = null;
+  }
+  car.ambulanceMode = 'idle';
+  car.ambulanceTargetType = null;
+  car.ambulanceTargetId = null;
+}
 
-  if (car.ambulanceTargetNpcId && car.ambulanceTargetNpcId !== npc.id) {
-    const previous = npcs.get(car.ambulanceTargetNpcId);
-    if (previous && previous.corpseState === 'down' && previous.bodyClaimedBy === car.id) {
-      previous.bodyClaimedBy = null;
+function assignAmbulanceTarget(car, targetType, targetId) {
+  if (!car || !targetType || !targetId) return;
+
+  const target =
+    targetType === 'npc'
+      ? npcs.get(targetId)
+      : targetType === 'cop'
+        ? cops.get(targetId)
+        : null;
+  if (!target || target.alive || target.corpseState !== 'down') return;
+
+  if (
+    car.ambulanceTargetType &&
+    car.ambulanceTargetId &&
+    (car.ambulanceTargetType !== targetType || car.ambulanceTargetId !== targetId)
+  ) {
+    const previous = getAmbulanceTarget(car);
+    if (previous && previous.entity.corpseState === 'down' && previous.entity.bodyClaimedBy === car.id) {
+      previous.entity.bodyClaimedBy = null;
     }
   }
 
-  npc.bodyClaimedBy = car.id;
-  car.ambulanceTargetNpcId = npc.id;
+  target.bodyClaimedBy = car.id;
+  car.ambulanceTargetType = targetType;
+  car.ambulanceTargetId = targetId;
   car.ambulanceMode = 'to_body';
   car.aiCooldown = 0;
 }
 
-function dispatchAmbulanceForNpc(npc) {
-  if (!npc || npc.alive || npc.corpseState !== 'down') return;
+function dispatchAmbulanceForCorpse(targetType, entity) {
+  if (!entity || entity.alive || entity.corpseState !== 'down') return;
 
   let best = null;
   let bestScore = Infinity;
@@ -1101,8 +1387,8 @@ function dispatchAmbulanceForNpc(npc) {
   for (const car of cars.values()) {
     if (car.type !== 'ambulance' || car.driverId || !car.npcDriver) continue;
     if (car.ambulanceMode === 'to_hospital') continue;
-    const dx = car.x - npc.x;
-    const dy = car.y - npc.y;
+    const dx = car.x - entity.x;
+    const dy = car.y - entity.y;
     const d2 = dx * dx + dy * dy;
     const modePenalty = car.ambulanceMode === 'idle' ? 0 : 700000;
     const score = d2 + modePenalty;
@@ -1115,17 +1401,27 @@ function dispatchAmbulanceForNpc(npc) {
   if (!best) {
     best = makeCar('ambulance');
   }
-  assignAmbulanceTarget(best, npc);
+  assignAmbulanceTarget(best, targetType, entity.id);
+}
+
+function dispatchAmbulanceForNpc(npc) {
+  dispatchAmbulanceForCorpse('npc', npc);
+}
+
+function dispatchAmbulanceForCop(cop) {
+  dispatchAmbulanceForCorpse('cop', cop);
 }
 
 function stepAmbulanceCar(car, dt) {
-  let target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+  let targetRef = getAmbulanceTarget(car);
+  let target = targetRef ? targetRef.entity : null;
 
   if (car.ambulanceMode === 'idle') {
     if (!target || target.alive || target.corpseState !== 'down') {
-      target = nearestAvailableCorpse(car.x, car.y);
-      if (target) {
-        assignAmbulanceTarget(car, target);
+      targetRef = nearestAvailableCorpse(car.x, car.y);
+      if (targetRef) {
+        assignAmbulanceTarget(car, targetRef.type, targetRef.id);
+        target = targetRef.entity;
       }
     } else {
       car.ambulanceMode = 'to_body';
@@ -1133,7 +1429,8 @@ function stepAmbulanceCar(car, dt) {
   }
 
   if (car.ambulanceMode === 'to_body') {
-    target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+    targetRef = getAmbulanceTarget(car);
+    target = targetRef ? targetRef.entity : null;
     if (
       !target ||
       target.alive ||
@@ -1153,13 +1450,15 @@ function stepAmbulanceCar(car, dt) {
       target.bodyCarriedBy = car.id;
       target.bodyClaimedBy = car.id;
       car.ambulanceMode = 'to_hospital';
-      emitEvent('npcPickup', { npcId: target.id, x: target.x, y: target.y, carId: car.id });
+      const eventType = targetRef.type === 'cop' ? 'copPickup' : 'npcPickup';
+      emitEvent(eventType, { x: target.x, y: target.y, carId: car.id, victimId: target.id });
     }
     return;
   }
 
   if (car.ambulanceMode === 'to_hospital') {
-    target = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
+    targetRef = getAmbulanceTarget(car);
+    target = targetRef ? targetRef.entity : null;
     if (!target || target.alive || target.corpseState !== 'carried' || target.bodyCarriedBy !== car.id) {
       resetAmbulanceTask(car);
       stepTrafficCar(car, dt);
@@ -1180,9 +1479,11 @@ function stepAmbulanceCar(car, dt) {
       target.x = HOSPITAL.releaseX;
       target.y = HOSPITAL.releaseY;
       target.dir = Math.PI * 0.5;
-      emitEvent('npcHospital', { npcId: target.id, x: target.x, y: target.y });
+      const eventType = targetRef.type === 'cop' ? 'copHospital' : 'npcHospital';
+      emitEvent(eventType, { x: target.x, y: target.y, victimId: target.id });
       car.ambulanceMode = 'idle';
-      car.ambulanceTargetNpcId = null;
+      car.ambulanceTargetType = null;
+      car.ambulanceTargetId = null;
     }
     return;
   }
@@ -1297,6 +1598,18 @@ function fireShot(player) {
       }
     }
 
+    for (const cop of cops.values()) {
+      if (!cop.alive || cop.inCarId) continue;
+      const hit = pointToSegmentDistanceSq(cop.x, cop.y, sx, sy, ex, ey);
+      if (hit.distSq > (COP_RADIUS + 2) * (COP_RADIUS + 2)) continue;
+      const alongDist = hit.t * shotLength;
+      if (alongDist < bestDist) {
+        bestDist = alongDist;
+        bestHitType = 'cop';
+        bestHit = cop;
+      }
+    }
+
     if (bestHit) {
       shotLength = bestDist;
       ex = sx + Math.cos(pelletDir) * shotLength;
@@ -1309,6 +1622,8 @@ function fireShot(player) {
         }
       } else if (bestHitType === 'player') {
         damagePlayer(bestHit, weapon.damage, player);
+      } else if (bestHitType === 'cop') {
+        damageCop(bestHit, weapon.damage, player);
       }
     }
 
@@ -1405,20 +1720,26 @@ function stepCars(dt) {
   for (const car of cars.values()) {
     car.hornCooldown -= dt;
     car.bodyHitCooldown = Math.max(0, (car.bodyHitCooldown || 0) - dt);
+    car.dismountCooldown = Math.max(0, (car.dismountCooldown || 0) - dt);
 
     if (car.driverId) {
+      if (car.type === 'cop') {
+        resetCopCarDeployment(car);
+        car.sirenOn = false;
+      }
       const driver = players.get(car.driverId);
       if (!driver || driver.health <= 0 || driver.inCarId !== car.id) {
         releaseCarDriver(car);
       } else {
         if (car.type === 'ambulance' && car.ambulanceMode !== 'idle') {
-          const taskNpc = car.ambulanceTargetNpcId ? npcs.get(car.ambulanceTargetNpcId) : null;
-          if (taskNpc && taskNpc.corpseState === 'carried' && taskNpc.bodyCarriedBy === car.id) {
-            taskNpc.corpseState = 'down';
-            taskNpc.bodyCarriedBy = null;
-            taskNpc.bodyClaimedBy = null;
-            taskNpc.x = car.x;
-            taskNpc.y = car.y;
+          const targetRef = getAmbulanceTarget(car);
+          const target = targetRef ? targetRef.entity : null;
+          if (target && target.corpseState === 'carried' && target.bodyCarriedBy === car.id) {
+            target.corpseState = 'down';
+            target.bodyCarriedBy = null;
+            target.bodyClaimedBy = null;
+            target.x = car.x;
+            target.y = car.y;
           }
           resetAmbulanceTask(car);
         }
@@ -1448,6 +1769,10 @@ function stepCars(dt) {
       continue;
     }
 
+    if (car.type === 'cop') {
+      resetCopCarDeployment(car);
+      car.sirenOn = false;
+    }
     stepAbandonedCar(car, dt);
     car.abandonTimer += dt;
     if (car.abandonTimer > 12) {
@@ -1669,43 +1994,133 @@ function stepNpcs(dt) {
   }
 }
 
+function moveCop(cop, dir, speed, dt) {
+  cop.dir = angleApproach(cop.dir, dir, dt * 5.4);
+  const nx = cop.x + Math.cos(cop.dir) * speed * dt;
+  const ny = cop.y + Math.sin(cop.dir) * speed * dt;
+  if (!isSolidForPed(nx, cop.y)) cop.x = nx;
+  if (!isSolidForPed(cop.x, ny)) cop.y = ny;
+}
+
+function shootAtTargetFromCop(cop, target) {
+  const dist = Math.hypot(target.x - cop.x, target.y - cop.y);
+  if (dist >= 230 || cop.cooldown > 0) return;
+
+  cop.cooldown = randRange(0.52, 0.86);
+  const aim = Math.atan2(target.y - cop.y, target.x - cop.x) + randRange(-0.06, 0.06);
+  const maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
+  const ex = cop.x + Math.cos(aim) * maxDist;
+  const ey = cop.y + Math.sin(aim) * maxDist;
+  const directDist = Math.hypot(target.x - cop.x, target.y - cop.y);
+  if (directDist <= maxDist + 4) {
+    damagePlayer(target, 15, null);
+  }
+  emitEvent('bullet', {
+    playerId: `cop_${cop.id}`,
+    weapon: 'pistol',
+    x: cop.x,
+    y: cop.y,
+    toX: ex,
+    toY: ey,
+  });
+}
+
 function stepCops(dt) {
   for (const cop of cops.values()) {
-    const target = nearestFiveStarPlayer(cop.x, cop.y);
     cop.cooldown -= dt;
     cop.patrolTimer -= dt;
 
+    if (!cop.alive) {
+      if (cop.corpseState === 'carried') {
+        const carrier = cop.bodyCarriedBy ? cars.get(cop.bodyCarriedBy) : null;
+        if (carrier && carrier.type === 'ambulance') {
+          cop.x = carrier.x;
+          cop.y = carrier.y;
+          cop.dir = carrier.angle;
+        } else {
+          cop.corpseState = 'down';
+          cop.bodyCarriedBy = null;
+          cop.bodyClaimedBy = null;
+        }
+      } else if (cop.corpseState === 'reviving') {
+        cop.reviveTimer -= dt;
+        if (cop.reviveTimer <= 0) {
+          respawnCop(cop, hospitalReleaseSpawn(), true);
+        }
+      }
+      continue;
+    }
+
+    if (cop.inCarId) {
+      const car = cars.get(cop.inCarId);
+      if (!car || car.type !== 'cop') {
+        cop.inCarId = null;
+      } else {
+        cop.x = car.x;
+        cop.y = car.y;
+        cop.dir = car.angle;
+        continue;
+      }
+    }
+
+    if (cop.assignedCarId) {
+      const car = cars.get(cop.assignedCarId);
+      if (!car || car.type !== 'cop') {
+        cop.assignedCarId = null;
+        cop.mode = 'patrol';
+        cop.targetPlayerId = null;
+      } else {
+        let target = car.dismountTargetPlayerId ? players.get(car.dismountTargetPlayerId) : null;
+        if (
+          !target ||
+          target.health <= 0 ||
+          target.stars < 5 ||
+          target.insideShopId ||
+          Math.hypot(target.x - car.x, target.y - car.y) > COP_CAR_RECALL_RADIUS
+        ) {
+          target = null;
+        }
+
+        if (target) {
+          if (cop.rejoinCarId && cop.assignedCarId === cop.rejoinCarId) {
+            cop.mode = 'return';
+            cop.targetPlayerId = null;
+            moveCop(cop, Math.atan2(car.y - cop.y, car.x - cop.x), 106, dt);
+          } else {
+            cop.mode = 'hunt';
+            cop.targetPlayerId = target.id;
+            moveCop(cop, Math.atan2(target.y - cop.y, target.x - cop.x), 98, dt);
+            shootAtTargetFromCop(cop, target);
+          }
+        } else {
+          cop.mode = 'return';
+          cop.targetPlayerId = null;
+          moveCop(cop, Math.atan2(car.y - cop.y, car.x - cop.x), 106, dt);
+        }
+
+        const closeToCar = Math.hypot(car.x - cop.x, car.y - cop.y) < 16;
+        const mustRejoin = !!(cop.rejoinCarId && cop.assignedCarId === cop.rejoinCarId);
+        if (closeToCar && (!target || mustRejoin)) {
+          cop.inCarId = car.id;
+          cop.rejoinCarId = null;
+          cop.mode = 'in_car';
+          cop.targetPlayerId = null;
+          cop.cooldown = randRange(0.22, 0.6);
+          removeCopFromAssignedCar(cop);
+        }
+
+        cop.x = clamp(cop.x, 12, WORLD.width - 12);
+        cop.y = clamp(cop.y, 12, WORLD.height - 12);
+        continue;
+      }
+    }
+
+    const target = nearestFiveStarPlayer(cop.x, cop.y);
     if (target) {
       cop.mode = 'hunt';
       cop.targetPlayerId = target.id;
-      const toTarget = Math.atan2(target.y - cop.y, target.x - cop.x);
-      cop.dir = angleApproach(cop.dir, toTarget, dt * 5.2);
-      const speed = 94;
-      const nx = cop.x + Math.cos(cop.dir) * speed * dt;
-      const ny = cop.y + Math.sin(cop.dir) * speed * dt;
-      if (!isSolidForPed(nx, cop.y)) cop.x = nx;
-      if (!isSolidForPed(cop.x, ny)) cop.y = ny;
-
-      const dist = Math.hypot(target.x - cop.x, target.y - cop.y);
-      if (dist < 230 && cop.cooldown <= 0) {
-        cop.cooldown = randRange(0.52, 0.86);
-        const aim = Math.atan2(target.y - cop.y, target.x - cop.x) + randRange(-0.06, 0.06);
-        const maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
-        const ex = cop.x + Math.cos(aim) * maxDist;
-        const ey = cop.y + Math.sin(aim) * maxDist;
-        const directDist = Math.hypot(target.x - cop.x, target.y - cop.y);
-        if (directDist <= maxDist + 4) {
-          damagePlayer(target, 15, null);
-        }
-        emitEvent('bullet', {
-          playerId: `cop_${cop.id}`,
-          weapon: 'pistol',
-          x: cop.x,
-          y: cop.y,
-          toX: ex,
-          toY: ey,
-        });
-      }
+      moveCop(cop, Math.atan2(target.y - cop.y, target.x - cop.x), 94, dt);
+      shootAtTargetFromCop(cop, target);
     } else {
       cop.mode = 'patrol';
       cop.targetPlayerId = null;
@@ -1713,11 +2128,7 @@ function stepCops(dt) {
         cop.patrolTimer = randRange(0.6, 1.7);
         cop.dir += randRange(-1.3, 1.3);
       }
-      const speed = 56;
-      const nx = cop.x + Math.cos(cop.dir) * speed * dt;
-      const ny = cop.y + Math.sin(cop.dir) * speed * dt;
-      if (!isSolidForPed(nx, cop.y)) cop.x = nx;
-      if (!isSolidForPed(cop.x, ny)) cop.y = ny;
+      moveCop(cop, cop.dir, 56, dt);
     }
 
     cop.x = clamp(cop.x, 12, WORLD.width - 12);
@@ -1814,8 +2225,19 @@ function resetAmbientSceneWhenEmpty() {
   }
 
   for (const car of cars.values()) {
-    if (car.type === 'ambulance' && (car.ambulanceMode !== 'idle' || car.ambulanceTargetNpcId)) {
+    if (car.type === 'ambulance' && (car.ambulanceMode !== 'idle' || car.ambulanceTargetId)) {
       resetAmbulanceTask(car);
+    } else if (car.type === 'cop') {
+      resetCopCarDeployment(car);
+    }
+  }
+
+  for (const cop of cops.values()) {
+    if (!cop.alive || cop.inCarId || cop.assignedCarId) {
+      respawnCop(cop);
+    } else {
+      cop.mode = 'patrol';
+      cop.targetPlayerId = null;
     }
   }
 }
@@ -1878,6 +2300,7 @@ function serializeSnapshot() {
       weapon: player.weapon,
       ownedPistol: player.ownedPistol,
       ownedShotgun: player.ownedShotgun,
+      ownedBazooka: player.ownedBazooka,
     });
   }
 
@@ -1893,6 +2316,7 @@ function serializeSnapshot() {
       color: car.color,
       driverId: car.driverId,
       npcDriver: car.npcDriver,
+      sirenOn: !!car.sirenOn,
     });
   }
 
@@ -1928,6 +2352,10 @@ function serializeSnapshot() {
       x: Math.round(cop.x * 100) / 100,
       y: Math.round(cop.y * 100) / 100,
       dir: Math.round(cop.dir * 1000) / 1000,
+      health: Math.round(cop.health || 0),
+      alive: !!cop.alive,
+      inCarId: cop.inCarId || null,
+      corpseState: cop.corpseState || 'none',
       mode: cop.mode,
     });
   }
@@ -2051,9 +2479,10 @@ function handleJoin(ws, data) {
     hitCooldown: 0,
     shootCooldown: 0,
     lastShootSeq: 0,
-    weapon: 'fist',
-    ownedPistol: false,
+    weapon: 'pistol',
+    ownedPistol: true,
     ownedShotgun: false,
+    ownedBazooka: false,
     prevEnter: false,
     input: {
       up: false,
