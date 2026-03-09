@@ -19,6 +19,8 @@ const hudHealth = document.getElementById('hudHealth');
 const hudMode = document.getElementById('hudMode');
 const hudMoney = document.getElementById('hudMoney');
 const hudWanted = document.getElementById('hudWanted');
+const hudOnline = document.getElementById('hudOnline');
+const mapBtn = document.getElementById('mapBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsOverlay = document.getElementById('settingsOverlay');
 const settingsPanel = document.getElementById('settingsPanel');
@@ -96,6 +98,7 @@ let localPlayerCache = null;
 let latestState = null;
 let statusNotice = '';
 let statusNoticeUntil = 0;
+let mapVisible = false;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
@@ -548,6 +551,17 @@ function saveSettingsPanel() {
   closeSettingsPanel();
 }
 
+function refreshMapToggleUi() {
+  if (!mapBtn) return;
+  mapBtn.classList.toggle('active', mapVisible);
+  mapBtn.textContent = mapVisible ? 'Map ON' : 'Map';
+}
+
+function toggleMapOverlay() {
+  mapVisible = !mapVisible;
+  refreshMapToggleUi();
+}
+
 function mod(value, by) {
   return ((value % by) + by) % by;
 }
@@ -758,6 +772,8 @@ function resetSessionState() {
   statusNotice = '';
   statusNoticeUntil = 0;
   latestState = null;
+  mapVisible = false;
+  refreshMapToggleUi();
 }
 
 async function connectAndJoin() {
@@ -1935,6 +1951,122 @@ function drawCrosshair(worldLeft, worldTop, state) {
   ctx.stroke();
 }
 
+function drawMapOverlay(state) {
+  if (!mapVisible || !state || !state.localPlayer) return;
+
+  const world = state.world || WORLD;
+  const mapSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.4), 130, 220);
+  const mapW = mapSize;
+  const mapH = Math.max(96, Math.round((world.height / Math.max(1, world.width)) * mapSize));
+  const panelPadding = 6;
+  const headerH = 10;
+  const legendH = 18;
+  const panelW = mapW + panelPadding * 2;
+  const panelH = mapH + panelPadding * 2 + headerH + legendH;
+  const px = canvas.width - panelW - 8;
+  const py = 8;
+  const mapX = px + panelPadding;
+  const mapY = py + panelPadding + headerH;
+
+  const sx = mapW / Math.max(1, world.width);
+  const sy = mapH / Math.max(1, world.height);
+  const toMapX = (x) => mapX + clamp(x, 0, world.width) * sx;
+  const toMapY = (y) => mapY + clamp(y, 0, world.height) * sy;
+
+  ctx.fillStyle = 'rgba(7, 12, 17, 0.84)';
+  ctx.fillRect(px, py, panelW, panelH);
+  ctx.strokeStyle = 'rgba(178, 216, 236, 0.8)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px + 0.5, py + 0.5, panelW - 1, panelH - 1);
+
+  ctx.fillStyle = '#90c9e8';
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  ctx.fillText('CITY MAP (M)', px + 6, py + 8);
+  const onlineCount = (state.players || []).length;
+  const onlineText = `Online:${onlineCount}`;
+  const onlineWidth = ctx.measureText(onlineText).width;
+  ctx.fillStyle = '#d9f2ff';
+  ctx.fillText(onlineText, px + panelW - 6 - onlineWidth, py + 8);
+
+  ctx.fillStyle = '#1e2f3c';
+  ctx.fillRect(mapX, mapY, mapW, mapH);
+
+  ctx.fillStyle = '#33444f';
+  const roadW = Math.max(1, Math.round((world.roadEnd - world.roadStart) * sx));
+  for (let bx = 0; bx <= world.width; bx += world.blockPx) {
+    const rx = Math.round(mapX + (bx + world.roadStart) * sx);
+    ctx.fillRect(rx, mapY, roadW, mapH);
+  }
+  for (let by = 0; by <= world.height; by += world.blockPx) {
+    const ry = Math.round(mapY + (by + world.roadStart) * sy);
+    ctx.fillRect(mapX, ry, mapW, roadW);
+  }
+
+  const shops = world.shops || [];
+  for (const shop of shops) {
+    const x = Math.round(toMapX(shop.x));
+    const y = Math.round(toMapY(shop.y));
+    ctx.fillStyle = '#58d979';
+    ctx.fillRect(x - 2, y - 2, 4, 4);
+  }
+
+  if (world.hospital) {
+    const hx = Math.round(toMapX(world.hospital.x));
+    const hy = Math.round(toMapY(world.hospital.y));
+    ctx.fillStyle = '#f6f6f6';
+    ctx.fillRect(hx - 1, hy - 3, 2, 6);
+    ctx.fillRect(hx - 3, hy - 1, 6, 2);
+    ctx.fillStyle = '#ea6363';
+    ctx.fillRect(hx - 1, hy - 2, 2, 4);
+    ctx.fillRect(hx - 2, hy - 1, 4, 2);
+  }
+
+  for (const p of state.players || []) {
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+    const x = Math.round(toMapX(p.x));
+    const y = Math.round(toMapY(p.y));
+    const isLocal = p.id === state.localPlayer.id;
+    const baseColor = typeof p.color === 'string' && p.color ? p.color : '#7cc8ff';
+    const size = isLocal ? 5 : 4;
+    const half = Math.floor(size * 0.5);
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(x - half, y - half, size, size);
+    ctx.fillStyle = '#020406';
+    ctx.fillRect(x - 1, y - 1, 2, 2);
+    if (isLocal) {
+      ctx.strokeStyle = '#fff0a0';
+      ctx.strokeRect(x - half - 1 + 0.5, y - half - 1 + 0.5, size + 2, size + 2);
+    }
+  }
+
+  const viewW = Math.max(4, Math.round(canvas.width * sx));
+  const viewH = Math.max(4, Math.round(canvas.height * sy));
+  const viewX = Math.round(toMapX(camera.x - canvas.width * 0.5));
+  const viewY = Math.round(toMapY(camera.y - canvas.height * 0.5));
+  ctx.strokeStyle = 'rgba(243, 225, 130, 0.92)';
+  ctx.strokeRect(viewX, viewY, viewW, viewH);
+
+  const legendY = mapY + mapH + 6;
+  ctx.font = '5px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = '#58d979';
+  ctx.fillRect(px + 8, legendY, 4, 4);
+  ctx.fillStyle = '#d7edf9';
+  ctx.fillText('Shop', px + 14, legendY + 4);
+
+  ctx.fillStyle = '#f6f6f6';
+  ctx.fillRect(px + 40, legendY + 1, 2, 4);
+  ctx.fillRect(px + 39, legendY + 2, 4, 2);
+  ctx.fillStyle = '#d7edf9';
+  ctx.fillText('Hospital', px + 45, legendY + 4);
+
+  ctx.fillStyle = '#7cc8ff';
+  ctx.fillRect(px + 81, legendY, 4, 4);
+  ctx.fillStyle = '#020406';
+  ctx.fillRect(px + 82, legendY + 1, 2, 2);
+  ctx.fillStyle = '#d7edf9';
+  ctx.fillText('Player', px + 87, legendY + 4);
+}
+
 function renderState(state, dt) {
   updateEffects(dt);
   latestState = state;
@@ -1959,6 +2091,7 @@ function renderState(state, dt) {
 
   if (state.localPlayer.insideShopId) {
     drawShopInterior(state);
+    drawMapOverlay(state);
     if (statusNotice && performance.now() < statusNoticeUntil) {
       ctx.fillStyle = '#f6e7b9';
       ctx.font = '8px "Lucida Console", Monaco, monospace';
@@ -2006,6 +2139,7 @@ function renderState(state, dt) {
 
   drawEffects(worldLeft, worldTop);
   drawCrosshair(worldLeft, worldTop, state);
+  drawMapOverlay(state);
 
   const local = state.localPlayer;
   if (local.health < 35) {
@@ -2062,6 +2196,9 @@ function updateHud(state) {
   }
   hudMoney.textContent = `Money: $${p.money || 0}`;
   hudWanted.textContent = p.stars > 0 ? `Stars: ${'*'.repeat(p.stars)}` : 'Stars: none';
+  if (hudOnline) {
+    hudOnline.textContent = `Online: ${(state.players || []).length}`;
+  }
 }
 function resizeCanvas() {
   const w = window.innerWidth;
@@ -2203,6 +2340,13 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
+  if (mapBtn) {
+    mapBtn.addEventListener('click', () => {
+      if (!joined) return;
+      toggleMapOverlay();
+    });
+  }
+
   if (settingsBtn) {
     settingsBtn.addEventListener('click', () => {
       if (!joined) return;
@@ -2287,6 +2431,14 @@ function attachUiEvents() {
   });
 
   window.addEventListener('keydown', (event) => {
+    if (joined && event.code === 'KeyM' && !event.repeat) {
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
+      if (isSettingsOpen()) return;
+      toggleMapOverlay();
+      event.preventDefault();
+      return;
+    }
+
     if (joined && event.code === 'KeyO' && !event.repeat) {
       if (isSettingsOpen()) {
         closeSettingsPanel();
@@ -2358,6 +2510,7 @@ function attachUiEvents() {
 
 function boot() {
   applyAudioSettings();
+  refreshMapToggleUi();
   refreshSettingsPanel();
   populateColorGrid();
   selectColor(selectedColor);

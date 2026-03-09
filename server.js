@@ -389,6 +389,35 @@ function randomPedSpawn() {
   return { x: WORLD.width * 0.5, y: WORLD.height * 0.5 };
 }
 
+function findSafePedSpawnNear(x, y, maxRadius = 140, preferSafeGround = true) {
+  const baseX = wrapWorldX(x);
+  const baseY = wrapWorldY(y);
+  const dirs = [
+    0,
+    Math.PI * 0.5,
+    Math.PI,
+    -Math.PI * 0.5,
+    Math.PI * 0.25,
+    Math.PI * 0.75,
+    -Math.PI * 0.25,
+    -Math.PI * 0.75,
+  ];
+  const radii = [0, 8, 14, 20, 28, 38, 50, 64, 82, 104, 128, 156];
+
+  for (const radius of radii) {
+    if (radius > maxRadius) continue;
+    for (const dir of dirs) {
+      const px = wrapWorldX(baseX + Math.cos(dir) * radius + randRange(-2, 2));
+      const py = wrapWorldY(baseY + Math.sin(dir) * radius + randRange(-2, 2));
+      if (isSolidForPed(px, py)) continue;
+      if (preferSafeGround && !isPreferredPedGround(groundTypeAt(px, py))) continue;
+      return { x: px, y: py };
+    }
+  }
+
+  return null;
+}
+
 function findShopById(id) {
   if (!id) return null;
   for (const shop of SHOPS) {
@@ -895,19 +924,47 @@ function exitShop(player) {
   const shop = findShopById(player.insideShopId);
   player.insideShopId = null;
 
-  if (shop) {
-    player.x = wrapWorldX(shop.x + 24);
-    player.y = wrapWorldY(shop.y);
-  } else {
-    player.x = wrapWorldX(player.shopExitX || player.x);
-    player.y = wrapWorldY(player.shopExitY || player.y);
+  let spawn = null;
+  const hasStoredExit = Number.isFinite(player.shopExitX) && Number.isFinite(player.shopExitY);
+
+  if (shop && hasStoredExit) {
+    const nearShopSq = wrappedDistanceSq(player.shopExitX, player.shopExitY, shop.x, shop.y);
+    if (nearShopSq <= 260 * 260) {
+      spawn = findSafePedSpawnNear(player.shopExitX, player.shopExitY, 64, true);
+    }
   }
 
-  if (isSolidForPed(player.x, player.y)) {
-    const spawn = randomPedSpawn();
-    player.x = spawn.x;
-    player.y = spawn.y;
+  if (!spawn && shop) {
+    const anchors = [
+      { x: shop.x + 24, y: shop.y },
+      { x: shop.x - 24, y: shop.y },
+      { x: shop.x, y: shop.y + 24 },
+      { x: shop.x, y: shop.y - 24 },
+      { x: shop.x + 36, y: shop.y + 12 },
+      { x: shop.x - 36, y: shop.y - 12 },
+    ];
+    for (const anchor of anchors) {
+      spawn = findSafePedSpawnNear(anchor.x, anchor.y, 96, true);
+      if (spawn) break;
+    }
+    if (!spawn) {
+      spawn = findSafePedSpawnNear(shop.x, shop.y, 200, false);
+    }
   }
+
+  if (!spawn && hasStoredExit) {
+    spawn = findSafePedSpawnNear(player.shopExitX, player.shopExitY, 140, true);
+    if (!spawn) {
+      spawn = findSafePedSpawnNear(player.shopExitX, player.shopExitY, 200, false);
+    }
+  }
+
+  if (!spawn) {
+    spawn = randomPedSpawn();
+  }
+
+  player.x = spawn.x;
+  player.y = spawn.y;
 
   emitEvent('exitShop', {
     playerId: player.id,
