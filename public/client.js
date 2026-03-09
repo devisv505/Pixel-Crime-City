@@ -19,6 +19,15 @@ const hudHealth = document.getElementById('hudHealth');
 const hudMode = document.getElementById('hudMode');
 const hudMoney = document.getElementById('hudMoney');
 const hudWanted = document.getElementById('hudWanted');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsPanel = document.getElementById('settingsPanel');
+const settingsMusicVol = document.getElementById('settingsMusicVol');
+const settingsSfxVol = document.getElementById('settingsSfxVol');
+const settingsMusicVolValue = document.getElementById('settingsMusicVolValue');
+const settingsSfxVolValue = document.getElementById('settingsSfxVolValue');
+const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+const settingsCancelBtn = document.getElementById('settingsCancelBtn');
 
 const COLOR_CHOICES = [
   '#58d2ff',
@@ -46,8 +55,11 @@ const INPUT = {
   right: false,
   enter: false,
   horn: false,
+  shootHeld: false,
   shootSeq: 0,
   weaponSlot: 1,
+  clickAimX: 0,
+  clickAimY: 0,
 };
 
 const POINTER = {
@@ -90,6 +102,28 @@ const seenEventQueue = [];
 const MAX_SEEN_EVENTS = 650;
 
 const visualEffects = [];
+const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
+const AUDIO_PREF_SFX_KEY = 'pcc_sfx_volume';
+
+function parseAudioPref(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return clamp(n, 0, 1);
+}
+
+const audioSettings = {
+  music: parseAudioPref(localStorage.getItem(AUDIO_PREF_MUSIC_KEY), 0.65),
+  sfx: parseAudioPref(localStorage.getItem(AUDIO_PREF_SFX_KEY), 0.8),
+};
+const settingsDraft = {
+  music: audioSettings.music,
+  sfx: audioSettings.sfx,
+};
+
+function saveAudioSettings() {
+  localStorage.setItem(AUDIO_PREF_MUSIC_KEY, String(audioSettings.music));
+  localStorage.setItem(AUDIO_PREF_SFX_KEY, String(audioSettings.sfx));
+}
 
 class GameAudio {
   constructor() {
@@ -101,9 +135,157 @@ class GameAudio {
     this.ambienceGain = null;
     this.ambienceOsc = null;
     this.lastFootstepAt = 0;
+    this.cityLoop = null;
+    this.cityLoopPlaying = false;
+    this.sirenLoop = null;
+    this.sirenLoopPlaying = false;
+    this.starFiveCue = null;
+    this.lastStars = 0;
+    this.masterBase = 0.24;
+    this.cityBase = 0.16;
+    this.sfxLevel = audioSettings.sfx;
+    this.musicLevel = audioSettings.music;
+    this.currentSirenVolume = 0;
+    this.effectClips = new Map();
+    this.effectLastAt = new Map();
+  }
+
+  ensureCityLoop() {
+    if (this.cityLoop) {
+      return;
+    }
+
+    const loop = new Audio('/assets/audio/city_bg.mp3');
+    loop.loop = true;
+    loop.preload = 'auto';
+    loop.volume = this.cityBase * this.musicLevel;
+    loop.addEventListener('ended', () => {
+      loop.currentTime = 0;
+      void loop.play().catch(() => {});
+    });
+    loop.addEventListener('error', () => {
+      this.cityLoop = null;
+      this.cityLoopPlaying = false;
+    });
+    this.cityLoop = loop;
+  }
+
+  tryStartCityLoop() {
+    this.ensureCityLoop();
+    if (!this.cityLoop || this.cityLoopPlaying) {
+      return;
+    }
+
+    const maybePromise = this.cityLoop.play();
+    if (maybePromise && typeof maybePromise.then === 'function') {
+      maybePromise
+        .then(() => {
+          this.cityLoopPlaying = true;
+        })
+        .catch(() => {});
+    } else {
+      this.cityLoopPlaying = true;
+    }
+  }
+
+  ensureSirenLoop() {
+    if (this.sirenLoop) {
+      return;
+    }
+
+    const loop = new Audio('/assets/audio/police_sirene.mp3');
+    loop.loop = true;
+    loop.preload = 'auto';
+    loop.volume = 0;
+    loop.addEventListener('error', () => {
+      this.sirenLoop = null;
+      this.sirenLoopPlaying = false;
+    });
+    this.sirenLoop = loop;
+  }
+
+  setSirenVolume(volume) {
+    this.ensureSirenLoop();
+    if (!this.sirenLoop) return;
+
+    this.currentSirenVolume = clamp(volume, 0, 0.32);
+    const v = this.currentSirenVolume * this.sfxLevel;
+    this.sirenLoop.volume = v;
+
+    if (v > 0.01) {
+      if (!this.sirenLoopPlaying) {
+        const maybePromise = this.sirenLoop.play();
+        if (maybePromise && typeof maybePromise.then === 'function') {
+          maybePromise
+            .then(() => {
+              this.sirenLoopPlaying = true;
+            })
+            .catch(() => {});
+        } else {
+          this.sirenLoopPlaying = true;
+        }
+      }
+      return;
+    }
+
+    if (this.sirenLoopPlaying) {
+      this.sirenLoop.pause();
+      this.sirenLoopPlaying = false;
+      this.sirenLoop.currentTime = 0;
+    }
+  }
+
+  ensureFiveStarCue() {
+    if (this.starFiveCue) {
+      return;
+    }
+
+    const cue = new Audio('/assets/audio/5_stars.mp3');
+    cue.preload = 'auto';
+    cue.volume = 0.3 * this.sfxLevel;
+    cue.addEventListener('error', () => {
+      this.starFiveCue = null;
+    });
+    this.starFiveCue = cue;
+  }
+
+  playFiveStarCue() {
+    this.ensureFiveStarCue();
+    if (!this.starFiveCue) return;
+
+    this.starFiveCue.currentTime = 0;
+    const maybePromise = this.starFiveCue.play();
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      maybePromise.catch(() => {});
+    }
+  }
+
+  resetSessionAudioState() {
+    this.lastStars = 0;
+    this.setSirenVolume(0);
+  }
+
+  setLevels(musicLevel, sfxLevel) {
+    this.musicLevel = clamp(musicLevel, 0, 1);
+    this.sfxLevel = clamp(sfxLevel, 0, 1);
+
+    if (this.masterGain) {
+      this.masterGain.gain.value = this.masterBase * this.sfxLevel;
+    }
+    if (this.cityLoop) {
+      this.cityLoop.volume = this.cityBase * this.musicLevel;
+    }
+    if (this.starFiveCue) {
+      this.starFiveCue.volume = 0.3 * this.sfxLevel;
+    }
+    if (this.sirenLoop) {
+      this.setSirenVolume(this.currentSirenVolume);
+    }
   }
 
   async init() {
+    this.tryStartCityLoop();
+
     if (this.ctx) {
       if (this.ctx.state === 'suspended') {
         await this.ctx.resume();
@@ -116,7 +298,7 @@ class GameAudio {
 
     this.ctx = new AudioCtx();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.24;
+    this.masterGain.gain.value = this.masterBase * this.sfxLevel;
     this.masterGain.connect(this.ctx.destination);
 
     this.engineFilter = this.ctx.createBiquadFilter();
@@ -193,8 +375,71 @@ class GameAudio {
     this.triggerTone('triangle', 920, 0.08, 0.05, 1);
   }
 
+  ensureEffectClip(id, src) {
+    if (this.effectClips.has(id)) {
+      return this.effectClips.get(id);
+    }
+    const clip = new Audio(src);
+    clip.preload = 'auto';
+    clip.addEventListener('error', () => {
+      this.effectClips.delete(id);
+    });
+    this.effectClips.set(id, clip);
+    return clip;
+  }
+
+  playEffectClip(id, src, distance, baseVolume, maxDistance = 900, minAttenuation = 0.08, cooldownMs = 0) {
+    const now = performance.now();
+    const lastAt = this.effectLastAt.get(id) || 0;
+    if (cooldownMs > 0 && now - lastAt < cooldownMs) {
+      return false;
+    }
+    this.effectLastAt.set(id, now);
+
+    const template = this.ensureEffectClip(id, src);
+    if (!template) return false;
+
+    const attenuation = clamp(1 - distance / maxDistance, minAttenuation, 1);
+    const instance = template.cloneNode();
+    instance.volume = clamp(baseVolume * attenuation * this.sfxLevel, 0, 1);
+    const maybePromise = instance.play();
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      maybePromise.catch(() => {});
+    }
+    return true;
+  }
+
+  playWeaponShot(weapon, distance = 0) {
+    if (weapon === 'shotgun') {
+      if (this.playEffectClip('shotgun_blast', '/assets/audio/shotgun_blast.mp3', distance, 0.42, 1100, 0.1, 70)) {
+        return;
+      }
+    } else if (weapon === 'machinegun') {
+      if (this.playEffectClip('gun_pistol', '/assets/audio/gun_pistol.mp3', distance, 0.3, 1000, 0.08, 45)) {
+        return;
+      }
+    } else if (weapon === 'pistol') {
+      if (this.playEffectClip('gun_pistol', '/assets/audio/gun_pistol.mp3', distance, 0.34, 980, 0.08, 55)) {
+        return;
+      }
+    }
+
+    this.playShot(distance);
+  }
+
+  playExplosion(distance = 0) {
+    if (this.playEffectClip('explosion', '/assets/audio/explosion.mp3', distance, 0.46, 1300, 0.1, 80)) {
+      return;
+    }
+    this.playImpact(distance);
+  }
+
   update(state, now) {
     if (!this.ctx || !state || !state.localPlayer) return;
+
+    if (!this.cityLoopPlaying) {
+      this.tryStartCityLoop();
+    }
 
     const localPlayer = state.localPlayer;
     const localCar = localPlayer.inCarId ? state.carsById.get(localPlayer.inCarId) : null;
@@ -218,10 +463,91 @@ class GameAudio {
       this.lastFootstepAt = now;
       this.playFootstep();
     }
+
+    const currentStars = Number(localPlayer.stars) || 0;
+    if (this.lastStars < 5 && currentStars >= 5) {
+      this.playFiveStarCue();
+    }
+    this.lastStars = currentStars;
+
+    let nearestSiren = Infinity;
+    for (const car of state.cars || []) {
+      if ((car.type !== 'cop' && car.type !== 'ambulance') || !car.sirenOn) continue;
+      const dxRaw = Math.abs((car.x || 0) - (localPlayer.x || 0));
+      const dyRaw = Math.abs((car.y || 0) - (localPlayer.y || 0));
+      const dx = Math.min(dxRaw, Math.max(0, WORLD.width - dxRaw));
+      const dy = Math.min(dyRaw, Math.max(0, WORLD.height - dyRaw));
+      const dist = Math.hypot(dx, dy);
+      if (dist < nearestSiren) nearestSiren = dist;
+    }
+    if (Number.isFinite(nearestSiren)) {
+      const sirenVolume = clamp(1 - nearestSiren / 920, 0, 1) * 0.28;
+      this.setSirenVolume(sirenVolume);
+    } else {
+      this.setSirenVolume(0);
+    }
   }
 }
 
 const audio = new GameAudio();
+function refreshSettingsPanel() {
+  if (settingsMusicVol) {
+    settingsMusicVol.value = String(Math.round(settingsDraft.music * 100));
+  }
+  if (settingsSfxVol) {
+    settingsSfxVol.value = String(Math.round(settingsDraft.sfx * 100));
+  }
+  if (settingsMusicVolValue) {
+    settingsMusicVolValue.textContent = `${Math.round(settingsDraft.music * 100)}%`;
+  }
+  if (settingsSfxVolValue) {
+    settingsSfxVolValue.textContent = `${Math.round(settingsDraft.sfx * 100)}%`;
+  }
+}
+
+function applyAudioSettings() {
+  audio.setLevels(audioSettings.music, audioSettings.sfx);
+}
+
+function isSettingsOpen() {
+  return !!settingsOverlay && !settingsOverlay.classList.contains('hidden');
+}
+
+function stopMovementInput() {
+  INPUT.up = false;
+  INPUT.down = false;
+  INPUT.left = false;
+  INPUT.right = false;
+  INPUT.enter = false;
+  INPUT.horn = false;
+  INPUT.shootHeld = false;
+}
+
+function openSettingsPanel() {
+  if (!settingsOverlay) return;
+  settingsDraft.music = audioSettings.music;
+  settingsDraft.sfx = audioSettings.sfx;
+  refreshSettingsPanel();
+  settingsOverlay.classList.remove('hidden');
+  settingsOverlay.setAttribute('aria-hidden', 'false');
+  stopMovementInput();
+}
+
+function closeSettingsPanel() {
+  if (!settingsOverlay) return;
+  settingsOverlay.classList.add('hidden');
+  settingsOverlay.setAttribute('aria-hidden', 'true');
+  stopMovementInput();
+}
+
+function saveSettingsPanel() {
+  audioSettings.music = settingsDraft.music;
+  audioSettings.sfx = settingsDraft.sfx;
+  applyAudioSettings();
+  saveAudioSettings();
+  closeSettingsPanel();
+}
+
 function mod(value, by) {
   return ((value % by) + by) % by;
 }
@@ -386,10 +712,13 @@ function sendInput() {
         right: INPUT.right,
         enter: INPUT.enter,
         horn: INPUT.horn,
+        shootHeld: INPUT.shootHeld,
         shootSeq: INPUT.shootSeq,
         weaponSlot: INPUT.weaponSlot,
         aimX: Math.round(POINTER.worldX * 100) / 100,
         aimY: Math.round(POINTER.worldY * 100) / 100,
+        clickAimX: Math.round(INPUT.clickAimX * 100) / 100,
+        clickAimY: Math.round(INPUT.clickAimY * 100) / 100,
       },
     })
   );
@@ -413,13 +742,19 @@ function resetSessionState() {
   snapshots = [];
   lastSnapshot = null;
   localPlayerCache = null;
+  closeSettingsPanel();
+  audio.resetSessionAudioState();
   INPUT.up = false;
   INPUT.down = false;
   INPUT.left = false;
   INPUT.right = false;
   INPUT.enter = false;
   INPUT.horn = false;
+  INPUT.shootHeld = false;
+  INPUT.shootSeq = 0;
   INPUT.weaponSlot = 1;
+  INPUT.clickAimX = WORLD.width * 0.5;
+  INPUT.clickAimY = WORLD.height * 0.5;
   statusNotice = '';
   statusNoticeUntil = 0;
   latestState = null;
@@ -545,7 +880,7 @@ function processEvents(events) {
       audio.playImpact(distance);
       pushEffect({ type: 'spark', x: ex, y: ey, ttl: 0.25 });
     } else if (ev.type === 'bullet') {
-      audio.playShot(distance);
+      audio.playWeaponShot(ev.weapon, distance);
       pushEffect({
         type: 'bullet',
         x: ev.x,
@@ -553,8 +888,18 @@ function processEvents(events) {
         toX: ev.toX ?? ev.x,
         toY: ev.toY ?? ev.y,
         progress: 0,
-        speed: ev.weapon === 'shotgun' ? 3.6 : 4.8,
+        speed:
+          ev.weapon === 'shotgun' ? 3.6 : ev.weapon === 'machinegun' ? 6.0 : ev.weapon === 'bazooka' ? 2.4 : 4.8,
         ttl: 0.18,
+      });
+    } else if (ev.type === 'explosion') {
+      audio.playExplosion(distance);
+      pushEffect({
+        type: 'explosion',
+        x: ev.x,
+        y: ev.y,
+        radius: ev.radius || 144,
+        ttl: 0.38,
       });
     } else if (ev.type === 'melee') {
       pushEffect({
@@ -950,7 +1295,8 @@ function drawShopInterior(state) {
   const local = state.localPlayer;
   const shop = findShopByIdInWorld(state.world, local.insideShopId);
   const shotgunPrice = shop?.stock?.shotgun ?? 500;
-  const bazookaPrice = shop?.stock?.bazooka ?? 1000;
+  const machinegunPrice = shop?.stock?.machinegun ?? 1000;
+  const bazookaPrice = shop?.stock?.bazooka ?? 5000;
 
   ctx.fillStyle = '#18120f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -978,6 +1324,7 @@ function drawShopInterior(state) {
   ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
 
   const shotgunOwned = !!local.ownedShotgun;
+  const machinegunOwned = !!local.ownedMachinegun;
   const bazookaOwned = !!local.ownedBazooka;
   const weaponLabel = local.weapon || 'fist';
 
@@ -985,15 +1332,17 @@ function drawShopInterior(state) {
   ctx.fillText('You start with a Gun (slot 1)', panelX + 18, panelY + 62);
   ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
   ctx.fillText(`1) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 82);
+  ctx.fillStyle = machinegunOwned ? '#8dff7c' : '#ffd3a2';
+  ctx.fillText(`2) Buy Machinegun $${machinegunPrice} ${machinegunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
   ctx.fillStyle = bazookaOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`2) Buy Bazooka $${bazookaPrice} ${bazookaOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
+  ctx.fillText(`3) Buy Bazooka $${bazookaPrice} ${bazookaOwned ? '(owned)' : ''}`, panelX + 18, panelY + 118);
   ctx.fillStyle = '#cbd3db';
-  ctx.fillText('3) Equip Gun', panelX + 18, panelY + 118);
+  ctx.fillText('4) Equip Gun', panelX + 18, panelY + 136);
 
   ctx.fillStyle = '#bfc8d6';
-  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 136);
+  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 154);
   ctx.fillStyle = '#e8e8e8';
-  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 158);
+  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 172);
 }
 
 const CAR_SPRITE_TEMPLATE_FALLBACK = [
@@ -1296,14 +1645,18 @@ function drawCar(car, worldLeft, worldTop) {
   }
 
   if (car.type === 'ambulance') {
+    const sirenActive = !!car.sirenOn;
+    const flashStep = Math.floor(performance.now() / 120) % 2;
+    const blueOn = sirenActive && flashStep === 0;
+    const redOn = sirenActive && flashStep === 1;
     ctx.fillStyle = '#e6ebf7';
     ctx.fillRect(-6, -1, 12, 2);
     ctx.fillStyle = '#c8343e';
     ctx.fillRect(-1, -4, 2, 8);
     ctx.fillRect(-4, -1, 8, 2);
-    ctx.fillStyle = '#5ea7ff';
+    ctx.fillStyle = blueOn ? '#6fb8ff' : '#233747';
     ctx.fillRect(-3, -halfH + 1, 3, 2);
-    ctx.fillStyle = '#ef4f5a';
+    ctx.fillStyle = redOn ? '#ff5c68' : '#3f262b';
     ctx.fillRect(0, -halfH + 1, 3, 2);
   }
 
@@ -1534,6 +1887,20 @@ function drawEffects(worldLeft, worldTop) {
       ctx.moveTo(sx, sy);
       ctx.lineTo(tx, ty);
       ctx.stroke();
+    } else if (effect.type === 'explosion') {
+      const sx = Math.round(effect.x - worldLeft);
+      const sy = Math.round(effect.y - worldTop);
+      const life = clamp(effect.ttl / 0.38, 0, 1);
+      const r = Math.max(8, (effect.radius || 144) * (1 - life));
+      ctx.fillStyle = 'rgba(255, 172, 88, 0.26)';
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 228, 158, 0.92)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(4, r * 0.72), 0, Math.PI * 2);
+      ctx.stroke();
     }
   }
 }
@@ -1677,7 +2044,15 @@ function updateHud(state) {
   const lives = Math.max(0, Math.min(5, Math.ceil(health / 20)));
   hudHealth.textContent = `Lives: ${'♥'.repeat(lives)}${'♡'.repeat(5 - lives)}`;
   const weaponLabel =
-    p.weapon === 'bazooka' ? 'bazooka' : p.weapon === 'shotgun' ? 'shotgun' : p.weapon === 'pistol' ? 'gun' : 'fists';
+    p.weapon === 'bazooka'
+      ? 'bazooka'
+      : p.weapon === 'machinegun'
+        ? 'machinegun'
+        : p.weapon === 'shotgun'
+          ? 'shotgun'
+          : p.weapon === 'pistol'
+            ? 'gun'
+            : 'fists';
   if (p.insideShopId) {
     hudMode.textContent = 'Mode: In Gun Shop';
   } else if (p.inCarId) {
@@ -1706,7 +2081,15 @@ function resizeCanvas() {
 function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') {
+  if (tag === 'INPUT') {
+    const type = String(target.getAttribute('type') || '').toLowerCase();
+    // HUD sliders should not block gameplay keys (WASD/1..4/etc.).
+    if (type === 'range') {
+      return false;
+    }
+    return true;
+  }
+  if (tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') {
     return true;
   }
   return target.isContentEditable;
@@ -1715,6 +2098,7 @@ function isEditableTarget(target) {
 function shouldHandleGameKey(event) {
   if (!joined) return false;
   if (!joinOverlay.classList.contains('hidden')) return false;
+  if (isSettingsOpen()) return false;
   if (isEditableTarget(event.target)) return false;
   if (isEditableTarget(document.activeElement)) return false;
   return true;
@@ -1746,7 +2130,12 @@ function setKeyState(event, isDown) {
 }
 
 function handleActionKey(event) {
-  if (event.code !== 'Digit1' && event.code !== 'Digit2' && event.code !== 'Digit3') {
+  if (
+    event.code !== 'Digit1' &&
+    event.code !== 'Digit2' &&
+    event.code !== 'Digit3' &&
+    event.code !== 'Digit4'
+  ) {
     return false;
   }
 
@@ -1759,8 +2148,10 @@ function handleActionKey(event) {
     if (event.code === 'Digit1') {
       sendBuy('shotgun');
     } else if (event.code === 'Digit2') {
-      sendBuy('bazooka');
+      sendBuy('machinegun');
     } else if (event.code === 'Digit3') {
+      sendBuy('bazooka');
+    } else if (event.code === 'Digit4') {
       INPUT.weaponSlot = 1;
     }
     event.preventDefault();
@@ -1773,6 +2164,8 @@ function handleActionKey(event) {
     INPUT.weaponSlot = 2;
   } else if (event.code === 'Digit3') {
     INPUT.weaponSlot = 3;
+  } else if (event.code === 'Digit4') {
+    INPUT.weaponSlot = 4;
   }
   event.preventDefault();
   return true;
@@ -1810,6 +2203,54 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      if (!joined) return;
+      if (isSettingsOpen()) {
+        closeSettingsPanel();
+      } else {
+        openSettingsPanel();
+      }
+    });
+  }
+
+  if (settingsMusicVol) {
+    settingsMusicVol.addEventListener('input', (event) => {
+      const value = Number(event.target.value);
+      settingsDraft.music = clamp(value / 100, 0, 1);
+      refreshSettingsPanel();
+    });
+  }
+
+  if (settingsSfxVol) {
+    settingsSfxVol.addEventListener('input', (event) => {
+      const value = Number(event.target.value);
+      settingsDraft.sfx = clamp(value / 100, 0, 1);
+      refreshSettingsPanel();
+    });
+  }
+
+  if (settingsCancelBtn) {
+    settingsCancelBtn.addEventListener('click', () => {
+      closeSettingsPanel();
+    });
+  }
+
+  if (settingsSaveBtn) {
+    settingsSaveBtn.addEventListener('click', () => {
+      saveSettingsPanel();
+    });
+  }
+
+  if (settingsOverlay) {
+    settingsOverlay.addEventListener('mousedown', (event) => {
+      if (!settingsPanel) return;
+      if (event.target === settingsOverlay) {
+        closeSettingsPanel();
+      }
+    });
+  }
+
   toColorBtn.addEventListener('click', () => {
     const normalizedName = nameInput.value.trim().replace(/\s+/g, ' ');
     if (normalizedName.length < 2 || normalizedName.length > 16) {
@@ -1846,6 +2287,22 @@ function attachUiEvents() {
   });
 
   window.addEventListener('keydown', (event) => {
+    if (joined && event.code === 'KeyO' && !event.repeat) {
+      if (isSettingsOpen()) {
+        closeSettingsPanel();
+      } else {
+        openSettingsPanel();
+      }
+      event.preventDefault();
+      return;
+    }
+
+    if (isSettingsOpen() && event.code === 'Escape') {
+      closeSettingsPanel();
+      event.preventDefault();
+      return;
+    }
+
     if (!shouldHandleGameKey(event)) return;
     if (handleActionKey(event)) return;
     if (event.repeat) return;
@@ -1868,9 +2325,16 @@ function attachUiEvents() {
     if (!local || local.insideShopId || !local.weapon) return;
 
     updatePointer(event.clientX, event.clientY);
+    INPUT.clickAimX = POINTER.worldX;
+    INPUT.clickAimY = POINTER.worldY;
+    INPUT.shootHeld = true;
     INPUT.shootSeq = (INPUT.shootSeq + 1) >>> 0;
-    audio.playShot(0);
     event.preventDefault();
+  });
+
+  window.addEventListener('mouseup', (event) => {
+    if (event.button !== 0) return;
+    INPUT.shootHeld = false;
   });
 
   canvas.addEventListener('contextmenu', (event) => {
@@ -1886,12 +2350,15 @@ function attachUiEvents() {
     INPUT.right = false;
     INPUT.enter = false;
     INPUT.horn = false;
+    INPUT.shootHeld = false;
   });
 
   window.addEventListener('resize', resizeCanvas);
 }
 
 function boot() {
+  applyAudioSettings();
+  refreshSettingsPanel();
   populateColorGrid();
   selectColor(selectedColor);
   setStep('name');

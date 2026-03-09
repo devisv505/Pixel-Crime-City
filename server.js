@@ -43,6 +43,8 @@ const TRAFFIC_COUNT = 254;
 const COP_COUNT = 32;
 const COP_OFFICER_COUNT = 32;
 const AMBULANCE_COUNT = 8;
+const AMBULANCE_CAPACITY = 3;
+const CAR_STUCK_RESPAWN_SECONDS = 5;
 const MAX_NAME_LENGTH = 16;
 const POLICE_WITNESS_RADIUS = 190;
 const BLOOD_STAIN_LIFETIME = 240;
@@ -64,7 +66,8 @@ const NPC_PALETTE = ['#f0c39a', '#f5d0b2', '#d2a67f', '#efba9f', '#c78f6f', '#e9
 const NPC_SHIRT_PALETTE = ['#5a8ad6', '#66b47a', '#c46060', '#b085d8', '#dfa04f', '#61b8b7', '#808891'];
 const SHOP_STOCK = {
   shotgun: 500,
-  bazooka: 1000,
+  machinegun: 1000,
+  bazooka: 5000,
 };
 const SHOPS = [
   { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
@@ -82,8 +85,8 @@ const HOSPITAL = {
   radius: 42,
   dropX: BLOCK_PX * 5 + LANE_B,
   dropY: BLOCK_PX * 0 + ROAD_END + 16,
-  releaseX: BLOCK_PX * 5 + 214,
-  releaseY: BLOCK_PX * 0 + ROAD_END + 24,
+  releaseX: BLOCK_PX * 5 + ROAD_END + 8,
+  releaseY: BLOCK_PX * 0 + ROAD_END + 8,
 };
 const WEAPONS = {
   fist: {
@@ -110,6 +113,14 @@ const WEAPONS = {
     damage: 58,
     type: 'bullet',
   },
+  machinegun: {
+    cooldown: 0.1,
+    pellets: 1,
+    spread: 0.03,
+    range: 330,
+    damage: 45,
+    type: 'bullet',
+  },
   bazooka: {
     cooldown: 1.1,
     pellets: 1,
@@ -128,6 +139,38 @@ function mod(value, by) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function wrapCoord(value, size) {
+  if (!Number.isFinite(value)) return 0;
+  return mod(value, size);
+}
+
+function wrapWorldX(x) {
+  return wrapCoord(x, WORLD.width);
+}
+
+function wrapWorldY(y) {
+  return wrapCoord(y, WORLD.height);
+}
+
+function wrapWorldPosition(entity) {
+  entity.x = wrapWorldX(entity.x);
+  entity.y = wrapWorldY(entity.y);
+}
+
+function wrapDelta(delta, size) {
+  return mod(delta + size * 0.5, size) - size * 0.5;
+}
+
+function wrappedLerp(from, to, t, size) {
+  return wrapCoord(from + wrapDelta(to - from, size) * t, size);
+}
+
+function wrappedDistanceSq(x1, y1, x2, y2) {
+  const dx = wrapDelta(x2 - x1, WORLD.width);
+  const dy = wrapDelta(y2 - y1, WORLD.height);
+  return dx * dx + dy * dy;
 }
 
 function lerp(a, b, t) {
@@ -181,12 +224,11 @@ function makeId(prefix) {
 }
 
 function groundTypeAt(x, y) {
-  if (x < 0 || y < 0 || x >= WORLD.width || y >= WORLD.height) {
-    return 'void';
-  }
+  const worldX = wrapWorldX(x);
+  const worldY = wrapWorldY(y);
 
-  const localX = mod(x, BLOCK_PX);
-  const localY = mod(y, BLOCK_PX);
+  const localX = mod(worldX, BLOCK_PX);
+  const localY = mod(worldY, BLOCK_PX);
   const inVerticalRoad = localX >= ROAD_START && localX < ROAD_END;
   const inHorizontalRoad = localY >= ROAD_START && localY < ROAD_END;
 
@@ -201,8 +243,8 @@ function groundTypeAt(x, y) {
     return 'sidewalk';
   }
 
-  const blockX = Math.floor(x / BLOCK_PX);
-  const blockY = Math.floor(y / BLOCK_PX);
+  const blockX = Math.floor(worldX / BLOCK_PX);
+  const blockY = Math.floor(worldY / BLOCK_PX);
   const profile = hash2D(blockX, blockY);
   if (profile < 0.2) {
     return 'park';
@@ -299,6 +341,38 @@ function randomRoadSpawn() {
   return { x, y, angle };
 }
 
+function randomRoadSpawnNear(x, y) {
+  const blocksX = Math.floor(WORLD.width / BLOCK_PX);
+  const blocksY = Math.floor(WORLD.height / BLOCK_PX);
+  const originX = wrapWorldX(x);
+  const originY = wrapWorldY(y);
+  const originBlockX = Math.floor(originX / BLOCK_PX);
+  const originBlockY = Math.floor(originY / BLOCK_PX);
+
+  for (let i = 0; i < 36; i += 1) {
+    const horizontal = Math.random() < 0.5;
+    if (horizontal) {
+      const blockY = mod(originBlockY + randInt(-2, 3), blocksY);
+      const spawnY = blockY * BLOCK_PX + (Math.random() < 0.5 ? LANE_A : LANE_B);
+      const spawnX = wrapWorldX(originX + randRange(-BLOCK_PX * 1.8, BLOCK_PX * 1.8));
+      const angle = Math.random() < 0.5 ? 0 : Math.PI;
+      if (!isSolidForCar(spawnX, spawnY)) {
+        return { x: spawnX, y: spawnY, angle };
+      }
+    } else {
+      const blockX = mod(originBlockX + randInt(-2, 3), blocksX);
+      const spawnX = blockX * BLOCK_PX + (Math.random() < 0.5 ? LANE_A : LANE_B);
+      const spawnY = wrapWorldY(originY + randRange(-BLOCK_PX * 1.8, BLOCK_PX * 1.8));
+      const angle = Math.random() < 0.5 ? Math.PI * 0.5 : -Math.PI * 0.5;
+      if (!isSolidForCar(spawnX, spawnY)) {
+        return { x: spawnX, y: spawnY, angle };
+      }
+    }
+  }
+
+  return randomRoadSpawn();
+}
+
 function randomPedSpawn() {
   for (let i = 0; i < 140; i++) {
     const fromRoad = randomRoadSpawn();
@@ -366,12 +440,45 @@ function makeBloodStain(x, y) {
 }
 
 function hospitalReleaseSpawn() {
-  const jitterX = randRange(-14, 14);
-  const jitterY = randRange(-10, 10);
-  const x = clamp(HOSPITAL.releaseX + jitterX, 24, WORLD.width - 24);
-  const y = clamp(HOSPITAL.releaseY + jitterY, 24, WORLD.height - 24);
-  if (!isSolidForPed(x, y)) {
-    return { x, y };
+  const anchors = [
+    { x: HOSPITAL.releaseX, y: HOSPITAL.releaseY },
+    { x: HOSPITAL.dropX, y: HOSPITAL.dropY },
+    { x: HOSPITAL.x, y: HOSPITAL.y },
+  ];
+  const radii = [0, 8, 14, 20, 28, 36, 48, 64, 86];
+  const dirs = [
+    0,
+    Math.PI * 0.5,
+    Math.PI,
+    -Math.PI * 0.5,
+    Math.PI * 0.25,
+    Math.PI * 0.75,
+    -Math.PI * 0.25,
+    -Math.PI * 0.75,
+  ];
+
+  for (const anchor of anchors) {
+    for (const radius of radii) {
+      for (const dir of dirs) {
+        const x = wrapWorldX(anchor.x + Math.cos(dir) * radius + randRange(-2, 2));
+        const y = wrapWorldY(anchor.y + Math.sin(dir) * radius + randRange(-2, 2));
+        if (!isSolidForPed(x, y) && isPreferredPedGround(groundTypeAt(x, y))) {
+          return { x, y };
+        }
+      }
+    }
+  }
+
+  for (const anchor of anchors) {
+    for (const radius of radii) {
+      for (const dir of dirs) {
+        const x = wrapWorldX(anchor.x + Math.cos(dir) * radius);
+        const y = wrapWorldY(anchor.y + Math.sin(dir) * radius);
+        if (!isSolidForPed(x, y)) {
+          return { x, y };
+        }
+      }
+    }
   }
   return randomPedSpawn();
 }
@@ -454,6 +561,10 @@ function makeCar(type = 'civilian') {
     ambulanceMode: 'idle',
     ambulanceTargetType: null,
     ambulanceTargetId: null,
+    ambulanceLoad: [],
+    stuckTimer: 0,
+    lastMoveX: spawn.x,
+    lastMoveY: spawn.y,
     color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
   };
   cars.set(car.id, car);
@@ -586,6 +697,14 @@ function killCop(cop, killer = null) {
 
   if (killer && killer.health > 0) {
     addStars(killer, 1.25, 34);
+    const reward = randInt(4, 21);
+    const drop = makeCashDrop(cop.x, cop.y, reward);
+    emitEvent('cashDrop', {
+      dropId: drop.id,
+      amount: reward,
+      x: drop.x,
+      y: drop.y,
+    });
   }
   dispatchAmbulanceForCop(cop);
   emitEvent('defeat', { x: cop.x, y: cop.y });
@@ -694,7 +813,7 @@ function tryRespawn(player) {
   player.respawnTimer -= DT;
   if (player.respawnTimer > 0) return;
 
-  const spawn = randomPedSpawn();
+  const spawn = hospitalReleaseSpawn();
   player.x = spawn.x;
   player.y = spawn.y;
   player.health = 100;
@@ -733,8 +852,8 @@ function findSafeExit(car) {
   ];
 
   for (const p of options) {
-    const x = clamp(p.x, 12, WORLD.width - 12);
-    const y = clamp(p.y, 12, WORLD.height - 12);
+    const x = wrapWorldX(p.x);
+    const y = wrapWorldY(p.y);
     if (!isSolidForPed(x, y)) {
       return { x, y };
     }
@@ -777,11 +896,11 @@ function exitShop(player) {
   player.insideShopId = null;
 
   if (shop) {
-    player.x = clamp(shop.x + 24, 16, WORLD.width - 16);
-    player.y = clamp(shop.y, 16, WORLD.height - 16);
+    player.x = wrapWorldX(shop.x + 24);
+    player.y = wrapWorldY(shop.y);
   } else {
-    player.x = clamp(player.shopExitX || player.x, 16, WORLD.width - 16);
-    player.y = clamp(player.shopExitY || player.y, 16, WORLD.height - 16);
+    player.x = wrapWorldX(player.shopExitX || player.x);
+    player.y = wrapWorldY(player.shopExitY || player.y);
   }
 
   if (isSolidForPed(player.x, player.y)) {
@@ -804,7 +923,9 @@ function applyWeaponSelection(player) {
     player.weapon = 'pistol';
   } else if (slot === 2 && player.ownedShotgun) {
     player.weapon = 'shotgun';
-  } else if (slot === 3 && player.ownedBazooka) {
+  } else if (slot === 3 && player.ownedMachinegun) {
+    player.weapon = 'machinegun';
+  } else if (slot === 4 && player.ownedBazooka) {
     player.weapon = 'bazooka';
   }
 }
@@ -822,6 +943,9 @@ function buyItemForPlayer(player, item) {
   if (item === 'shotgun' && player.ownedShotgun) {
     return { ok: false, message: 'Shotgun already owned.' };
   }
+  if (item === 'machinegun' && player.ownedMachinegun) {
+    return { ok: false, message: 'Machinegun already owned.' };
+  }
   if (item === 'bazooka' && player.ownedBazooka) {
     return { ok: false, message: 'Bazooka already owned.' };
   }
@@ -833,9 +957,12 @@ function buyItemForPlayer(player, item) {
   if (item === 'shotgun') {
     player.ownedShotgun = true;
     player.input.weaponSlot = 2;
+  } else if (item === 'machinegun') {
+    player.ownedMachinegun = true;
+    player.input.weaponSlot = 3;
   } else if (item === 'bazooka') {
     player.ownedBazooka = true;
-    player.input.weaponSlot = 3;
+    player.input.weaponSlot = 4;
   }
   player.weapon = item;
 
@@ -919,8 +1046,8 @@ function movePedestrian(player, dt) {
     mx /= length;
     my /= length;
 
-    const nx = player.x + mx * PLAYER_SPEED * dt;
-    const ny = player.y + my * PLAYER_SPEED * dt;
+    const nx = wrapWorldX(player.x + mx * PLAYER_SPEED * dt);
+    const ny = wrapWorldY(player.y + my * PLAYER_SPEED * dt);
 
     if (!isSolidForPed(nx, player.y)) {
       player.x = nx;
@@ -930,8 +1057,7 @@ function movePedestrian(player, dt) {
     }
   }
 
-  player.x = clamp(player.x, PLAYER_RADIUS + 2, WORLD.width - PLAYER_RADIUS - 2);
-  player.y = clamp(player.y, PLAYER_RADIUS + 2, WORLD.height - PLAYER_RADIUS - 2);
+  wrapWorldPosition(player);
 }
 
 function carBodyPoints(car) {
@@ -966,8 +1092,8 @@ function carCollidesSolid(car) {
 }
 
 function enforceCarCollisions(car, prevX = car.x, prevY = car.y) {
-  car.x = clamp(car.x, 12, WORLD.width - 12);
-  car.y = clamp(car.y, 12, WORLD.height - 12);
+  car.x = wrapWorldX(car.x);
+  car.y = wrapWorldY(car.y);
 
   if (carCollidesSolid(car)) {
     let resolved = false;
@@ -977,8 +1103,8 @@ function enforceCarCollisions(car, prevX = car.x, prevY = car.y) {
       const cy = car.y;
       for (let i = 1; i <= 8; i++) {
         const t = i / 8;
-        car.x = clamp(lerp(cx, prevX, t), 12, WORLD.width - 12);
-        car.y = clamp(lerp(cy, prevY, t), 12, WORLD.height - 12);
+        car.x = wrappedLerp(cx, prevX, t, WORLD.width);
+        car.y = wrappedLerp(cy, prevY, t, WORLD.height);
         if (!carCollidesSolid(car)) {
           resolved = true;
           break;
@@ -989,8 +1115,8 @@ function enforceCarCollisions(car, prevX = car.x, prevY = car.y) {
     if (!resolved) {
       const retreatSteps = [6, 10, 14, 18];
       for (const retreat of retreatSteps) {
-        const tx = clamp(car.x + Math.cos(car.angle + Math.PI) * retreat, 12, WORLD.width - 12);
-        const ty = clamp(car.y + Math.sin(car.angle + Math.PI) * retreat, 12, WORLD.height - 12);
+        const tx = wrapWorldX(car.x + Math.cos(car.angle + Math.PI) * retreat);
+        const ty = wrapWorldY(car.y + Math.sin(car.angle + Math.PI) * retreat);
         car.x = tx;
         car.y = ty;
         if (!carCollidesSolid(car)) {
@@ -1001,13 +1127,71 @@ function enforceCarCollisions(car, prevX = car.x, prevY = car.y) {
     }
 
     if (!resolved) {
-      car.x = clamp(prevX, 12, WORLD.width - 12);
-      car.y = clamp(prevY, 12, WORLD.height - 12);
+      car.x = wrapWorldX(prevX);
+      car.y = wrapWorldY(prevY);
     }
 
     car.speed *= -0.24;
     emitEvent('impact', { x: car.x, y: car.y });
   }
+
+  wrapWorldPosition(car);
+}
+
+function carProbeBlocked(car, angle, distance) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const sideX = -s;
+  const sideY = c;
+  const halfWidth = car.height * 0.62;
+
+  const probeCenterX = wrapWorldX(car.x + c * distance);
+  const probeCenterY = wrapWorldY(car.y + s * distance);
+  const probeLeftX = wrapWorldX(probeCenterX + sideX * halfWidth);
+  const probeLeftY = wrapWorldY(probeCenterY + sideY * halfWidth);
+  const probeRightX = wrapWorldX(probeCenterX - sideX * halfWidth);
+  const probeRightY = wrapWorldY(probeCenterY - sideY * halfWidth);
+
+  return (
+    isSolidForCar(probeCenterX, probeCenterY) ||
+    isSolidForCar(probeLeftX, probeLeftY) ||
+    isSolidForCar(probeRightX, probeRightY)
+  );
+}
+
+function chooseAvoidanceHeading(car, desiredAngle) {
+  const probes = [20, 30, 42, 58];
+  let clearAhead = true;
+  for (const dist of probes) {
+    if (carProbeBlocked(car, desiredAngle, dist)) {
+      clearAhead = false;
+      break;
+    }
+  }
+  if (clearAhead) {
+    return desiredAngle;
+  }
+
+  const options = [0.35, -0.35, 0.62, -0.62, 0.95, -0.95, 1.26, -1.26, 1.45, -1.45];
+  let bestAngle = desiredAngle;
+  let bestScore = Infinity;
+
+  for (const offset of options) {
+    const optionAngle = desiredAngle + offset;
+    let blockedCount = 0;
+    for (const dist of probes) {
+      if (carProbeBlocked(car, optionAngle, dist)) {
+        blockedCount += 1;
+      }
+    }
+    const score = blockedCount * 100 + Math.abs(offset);
+    if (score < bestScore) {
+      bestScore = score;
+      bestAngle = optionAngle;
+    }
+  }
+
+  return bestAngle;
 }
 
 function stepDrivenCar(car, input, dt) {
@@ -1046,7 +1230,8 @@ function stepTrafficCar(car, dt) {
   car.aiCooldown -= dt;
 
   const targetCardinal = snapToRightAngle(car.angle);
-  car.angle = angleApproach(car.angle, targetCardinal, dt * 2.8);
+  const steerCardinal = chooseAvoidanceHeading(car, targetCardinal);
+  car.angle = angleApproach(car.angle, steerCardinal, dt * 2.8);
 
   const movingHorizontal = Math.abs(Math.cos(car.angle)) >= Math.abs(Math.sin(car.angle));
   if (movingHorizontal) {
@@ -1073,13 +1258,6 @@ function stepTrafficCar(car, dt) {
   const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
-
-  if (car.x <= 10 || car.x >= WORLD.width - 10) {
-    car.angle = snapToRightAngle(Math.PI - car.angle);
-  }
-  if (car.y <= 10 || car.y >= WORLD.height - 10) {
-    car.angle = snapToRightAngle(-car.angle);
-  }
 
   enforceCarCollisions(car, prevX, prevY);
 }
@@ -1154,8 +1332,8 @@ function availableCopForCar(car, target, alreadySelected) {
   const offset = 12;
   const sx = Math.sin(car.angle);
   const sy = -Math.cos(car.angle);
-  best.x = clamp(car.x + sx * side * offset, 14, WORLD.width - 14);
-  best.y = clamp(car.y + sy * side * offset, 14, WORLD.height - 14);
+  best.x = wrapWorldX(car.x + sx * side * offset);
+  best.y = wrapWorldY(car.y + sy * side * offset);
   best.dir = Math.atan2(target.y - best.y, target.x - best.x);
   best.mode = 'hunt';
   best.targetPlayerId = target.id;
@@ -1265,7 +1443,8 @@ function stepCopCar(car, dt) {
 
   car.sirenOn = true;
   const desired = Math.atan2(target.y - car.y, target.x - car.x);
-  car.angle = angleApproach(car.angle, desired, dt * 2.4);
+  const steerDesired = chooseAvoidanceHeading(car, desired);
+  car.angle = angleApproach(car.angle, steerDesired, dt * 2.4);
   const dist = Math.hypot(target.x - car.x, target.y - car.y);
   const desiredSpeed = dist > 170 ? 120 : 42;
   car.speed = approach(car.speed, desiredSpeed, dt * 88);
@@ -1312,7 +1491,8 @@ function nearestAvailableCorpse(x, y, maxDistance = Infinity) {
 
 function driveAiToward(car, targetX, targetY, dt, farSpeed = 98, nearSpeed = 34) {
   const desired = Math.atan2(targetY - car.y, targetX - car.x);
-  car.angle = angleApproach(car.angle, desired, dt * 2.7);
+  const steerDesired = chooseAvoidanceHeading(car, desired);
+  car.angle = angleApproach(car.angle, steerDesired, dt * 2.7);
   const dist = Math.hypot(targetX - car.x, targetY - car.y);
   const desiredSpeed = dist > 120 ? farSpeed : nearSpeed;
   car.speed = approach(car.speed, desiredSpeed, dt * 84);
@@ -1326,49 +1506,80 @@ function driveAiToward(car, targetX, targetY, dt, farSpeed = 98, nearSpeed = 34)
   return dist;
 }
 
-function getAmbulanceTarget(car) {
-  if (!car.ambulanceTargetType || !car.ambulanceTargetId) return null;
-  if (car.ambulanceTargetType === 'npc') {
-    const npc = npcs.get(car.ambulanceTargetId);
-    return npc ? { type: 'npc', id: npc.id, entity: npc } : null;
+function getCorpseEntityByRef(targetType, targetId) {
+  if (!targetType || !targetId) return null;
+  if (targetType === 'npc') {
+    return npcs.get(targetId) || null;
   }
-  if (car.ambulanceTargetType === 'cop') {
-    const cop = cops.get(car.ambulanceTargetId);
-    return cop ? { type: 'cop', id: cop.id, entity: cop } : null;
+  if (targetType === 'cop') {
+    return cops.get(targetId) || null;
   }
   return null;
 }
 
-function resetAmbulanceTask(car) {
-  const target = getAmbulanceTarget(car);
-  if (target && target.entity.bodyClaimedBy === car.id && target.entity.corpseState === 'down') {
-    target.entity.bodyClaimedBy = null;
+function getAmbulanceTarget(car) {
+  if (!car.ambulanceTargetType || !car.ambulanceTargetId) return null;
+  const entity = getCorpseEntityByRef(car.ambulanceTargetType, car.ambulanceTargetId);
+  if (!entity) return null;
+  return { type: car.ambulanceTargetType, id: car.ambulanceTargetId, entity };
+}
+
+function ensureAmbulanceLoad(car) {
+  if (!Array.isArray(car.ambulanceLoad)) {
+    car.ambulanceLoad = [];
   }
-  car.ambulanceMode = 'idle';
+  return car.ambulanceLoad;
+}
+
+function clearAmbulanceTarget(car) {
   car.ambulanceTargetType = null;
   car.ambulanceTargetId = null;
 }
 
+function releaseAmbulanceTargetClaim(car) {
+  const targetRef = getAmbulanceTarget(car);
+  if (!targetRef) return;
+  const target = targetRef.entity;
+  if (target.corpseState === 'down' && target.bodyClaimedBy === car.id) {
+    target.bodyClaimedBy = null;
+  }
+}
+
+function pruneAmbulanceLoad(car) {
+  const load = ensureAmbulanceLoad(car);
+  const keep = [];
+  for (const item of load) {
+    if (!item || !item.type || !item.id) continue;
+    const entity = getCorpseEntityByRef(item.type, item.id);
+    if (!entity || entity.alive) continue;
+    if (entity.corpseState !== 'carried' || entity.bodyCarriedBy !== car.id) continue;
+    keep.push({ type: item.type, id: item.id });
+  }
+  car.ambulanceLoad = keep;
+  return keep;
+}
+
+function resetAmbulanceTask(car) {
+  releaseAmbulanceTargetClaim(car);
+  clearAmbulanceTarget(car);
+  const load = pruneAmbulanceLoad(car);
+  car.ambulanceMode = load.length > 0 ? 'to_hospital' : 'idle';
+}
+
 function assignAmbulanceTarget(car, targetType, targetId) {
   if (!car || !targetType || !targetId) return;
+  if (ensureAmbulanceLoad(car).length >= AMBULANCE_CAPACITY) return;
 
-  const target =
-    targetType === 'npc'
-      ? npcs.get(targetId)
-      : targetType === 'cop'
-        ? cops.get(targetId)
-        : null;
+  const target = getCorpseEntityByRef(targetType, targetId);
   if (!target || target.alive || target.corpseState !== 'down') return;
+  if (target.bodyClaimedBy && target.bodyClaimedBy !== car.id) return;
 
   if (
     car.ambulanceTargetType &&
     car.ambulanceTargetId &&
     (car.ambulanceTargetType !== targetType || car.ambulanceTargetId !== targetId)
   ) {
-    const previous = getAmbulanceTarget(car);
-    if (previous && previous.entity.corpseState === 'down' && previous.entity.bodyClaimedBy === car.id) {
-      previous.entity.bodyClaimedBy = null;
-    }
+    releaseAmbulanceTargetClaim(car);
   }
 
   target.bodyClaimedBy = car.id;
@@ -1376,6 +1587,14 @@ function assignAmbulanceTarget(car, targetType, targetId) {
   car.ambulanceTargetId = targetId;
   car.ambulanceMode = 'to_body';
   car.aiCooldown = 0;
+}
+
+function findAndAssignNearestAmbulanceTarget(car, maxDistance = Infinity) {
+  if (ensureAmbulanceLoad(car).length >= AMBULANCE_CAPACITY) return false;
+  const targetRef = nearestAvailableCorpse(car.x, car.y, maxDistance);
+  if (!targetRef) return false;
+  assignAmbulanceTarget(car, targetRef.type, targetRef.id);
+  return !!(car.ambulanceTargetType && car.ambulanceTargetId);
 }
 
 function dispatchAmbulanceForCorpse(targetType, entity) {
@@ -1386,12 +1605,17 @@ function dispatchAmbulanceForCorpse(targetType, entity) {
 
   for (const car of cars.values()) {
     if (car.type !== 'ambulance' || car.driverId || !car.npcDriver) continue;
-    if (car.ambulanceMode === 'to_hospital') continue;
+    const load = pruneAmbulanceLoad(car);
+    if (load.length >= AMBULANCE_CAPACITY) continue;
+    if (car.ambulanceMode === 'to_hospital' && load.length > 0) continue;
+
     const dx = car.x - entity.x;
     const dy = car.y - entity.y;
     const d2 = dx * dx + dy * dy;
-    const modePenalty = car.ambulanceMode === 'idle' ? 0 : 700000;
-    const score = d2 + modePenalty;
+    const hasTarget = !!(car.ambulanceTargetType && car.ambulanceTargetId);
+    const modePenalty = car.ambulanceMode === 'idle' && !hasTarget ? 0 : hasTarget ? 180000 : 70000;
+    const loadPenalty = load.length * 45000;
+    const score = d2 + modePenalty + loadPenalty;
     if (score < bestScore) {
       best = car;
       bestScore = score;
@@ -1412,25 +1636,70 @@ function dispatchAmbulanceForCop(cop) {
   dispatchAmbulanceForCorpse('cop', cop);
 }
 
+function dropAmbulanceLoadAtCar(car) {
+  const load = ensureAmbulanceLoad(car);
+  for (const item of load) {
+    const entity = getCorpseEntityByRef(item.type, item.id);
+    if (!entity || entity.alive) continue;
+    if (entity.corpseState !== 'carried' || entity.bodyCarriedBy !== car.id) continue;
+    entity.corpseState = 'down';
+    entity.bodyCarriedBy = null;
+    entity.bodyClaimedBy = null;
+    entity.x = car.x;
+    entity.y = car.y;
+    entity.dir = car.angle;
+  }
+  car.ambulanceLoad = [];
+}
+
+function deliverAmbulanceLoadToHospital(car) {
+  const load = ensureAmbulanceLoad(car);
+  for (const item of load) {
+    const entity = getCorpseEntityByRef(item.type, item.id);
+    if (!entity || entity.alive) continue;
+    if (entity.corpseState !== 'carried' || entity.bodyCarriedBy !== car.id) continue;
+    entity.corpseState = 'reviving';
+    entity.bodyCarriedBy = null;
+    entity.bodyClaimedBy = null;
+    entity.reviveTimer = randRange(3.5, 5.2);
+    const release = hospitalReleaseSpawn();
+    entity.x = release.x;
+    entity.y = release.y;
+    entity.dir = Math.PI * 0.5;
+    const eventType = item.type === 'cop' ? 'copHospital' : 'npcHospital';
+    emitEvent(eventType, { x: entity.x, y: entity.y, victimId: item.id });
+  }
+  car.ambulanceLoad = [];
+}
+
 function stepAmbulanceCar(car, dt) {
-  let targetRef = getAmbulanceTarget(car);
-  let target = targetRef ? targetRef.entity : null;
+  const load = pruneAmbulanceLoad(car);
+  if (load.length === 0 && car.ambulanceMode === 'to_hospital') {
+    car.ambulanceMode = 'idle';
+  }
 
   if (car.ambulanceMode === 'idle') {
-    if (!target || target.alive || target.corpseState !== 'down') {
-      targetRef = nearestAvailableCorpse(car.x, car.y);
-      if (targetRef) {
-        assignAmbulanceTarget(car, targetRef.type, targetRef.id);
-        target = targetRef.entity;
-      }
+    if (load.length > 0) {
+      car.ambulanceMode = 'to_hospital';
     } else {
-      car.ambulanceMode = 'to_body';
+      const targetRef = getAmbulanceTarget(car);
+      const target = targetRef ? targetRef.entity : null;
+      if (!target || target.alive || target.corpseState !== 'down') {
+        clearAmbulanceTarget(car);
+        findAndAssignNearestAmbulanceTarget(car);
+      } else {
+        car.ambulanceMode = 'to_body';
+      }
     }
   }
 
+  const hasActiveWork =
+    car.ambulanceMode === 'to_body' || car.ambulanceMode === 'to_hospital' || load.length > 0;
+  car.sirenOn = hasActiveWork;
+
   if (car.ambulanceMode === 'to_body') {
-    targetRef = getAmbulanceTarget(car);
-    target = targetRef ? targetRef.entity : null;
+    const targetRef = getAmbulanceTarget(car);
+    const target = targetRef ? targetRef.entity : null;
     if (
       !target ||
       target.alive ||
@@ -1449,45 +1718,46 @@ function stepAmbulanceCar(car, dt) {
       target.corpseState = 'carried';
       target.bodyCarriedBy = car.id;
       target.bodyClaimedBy = car.id;
-      car.ambulanceMode = 'to_hospital';
+      if (!ensureAmbulanceLoad(car).some((item) => item.type === targetRef.type && item.id === target.id)) {
+        ensureAmbulanceLoad(car).push({ type: targetRef.type, id: target.id });
+      }
       const eventType = targetRef.type === 'cop' ? 'copPickup' : 'npcPickup';
       emitEvent(eventType, { x: target.x, y: target.y, carId: car.id, victimId: target.id });
+      clearAmbulanceTarget(car);
+
+      if (ensureAmbulanceLoad(car).length >= AMBULANCE_CAPACITY) {
+        car.ambulanceMode = 'to_hospital';
+      } else if (!findAndAssignNearestAmbulanceTarget(car, 1500)) {
+        car.ambulanceMode = 'to_hospital';
+      } else {
+        car.ambulanceMode = 'to_body';
+      }
     }
     return;
   }
 
   if (car.ambulanceMode === 'to_hospital') {
-    targetRef = getAmbulanceTarget(car);
-    target = targetRef ? targetRef.entity : null;
-    if (!target || target.alive || target.corpseState !== 'carried' || target.bodyCarriedBy !== car.id) {
-      resetAmbulanceTask(car);
+    if (ensureAmbulanceLoad(car).length === 0) {
+      car.ambulanceMode = 'idle';
+      clearAmbulanceTarget(car);
+      car.sirenOn = false;
       stepTrafficCar(car, dt);
       car.speed = clamp(car.speed, -60, 95);
       return;
     }
 
-    target.x = car.x;
-    target.y = car.y;
-    target.dir = car.angle;
-
     const dist = driveAiToward(car, HOSPITAL.dropX, HOSPITAL.dropY, dt, 96, 30);
     if (dist < 24) {
-      target.corpseState = 'reviving';
-      target.bodyCarriedBy = null;
-      target.bodyClaimedBy = null;
-      target.reviveTimer = randRange(3.5, 5.2);
-      target.x = HOSPITAL.releaseX;
-      target.y = HOSPITAL.releaseY;
-      target.dir = Math.PI * 0.5;
-      const eventType = targetRef.type === 'cop' ? 'copHospital' : 'npcHospital';
-      emitEvent(eventType, { x: target.x, y: target.y, victimId: target.id });
+      deliverAmbulanceLoadToHospital(car);
       car.ambulanceMode = 'idle';
-      car.ambulanceTargetType = null;
-      car.ambulanceTargetId = null;
+      clearAmbulanceTarget(car);
+      car.aiCooldown = randRange(0.25, 0.95);
+      car.sirenOn = false;
     }
     return;
   }
 
+  car.sirenOn = false;
   stepTrafficCar(car, dt);
   car.speed = clamp(car.speed, -60, 95);
 }
@@ -1547,7 +1817,56 @@ function damagePlayer(victim, amount, attacker) {
   }
 }
 
-function fireShot(player) {
+function applyExplosionDamage(x, y, attacker, radius = 72) {
+  const r2 = radius * radius;
+
+  for (const npc of npcs.values()) {
+    if (!npc.alive) continue;
+    if (wrappedDistanceSq(x, y, npc.x, npc.y) > r2) continue;
+    killNpc(npc, attacker ? attacker.id : null);
+  }
+
+  for (const cop of cops.values()) {
+    if (!cop.alive || cop.inCarId) continue;
+    if (wrappedDistanceSq(x, y, cop.x, cop.y) > r2) continue;
+    damageCop(cop, 999, attacker || null);
+  }
+
+  for (const other of players.values()) {
+    if (other.health <= 0 || other.insideShopId) continue;
+    if (attacker && other.id === attacker.id) continue;
+    if (wrappedDistanceSq(x, y, other.x, other.y) > r2) continue;
+    damagePlayer(other, 220, attacker || null);
+  }
+
+  const carEffectRadius = radius * 1.6;
+  const carEffectR2 = carEffectRadius * carEffectRadius;
+  for (const car of cars.values()) {
+    const dx = wrapDelta(car.x - x, WORLD.width);
+    const dy = wrapDelta(car.y - y, WORLD.height);
+    const d2 = dx * dx + dy * dy;
+    if (d2 > carEffectR2) continue;
+
+    const dist = Math.max(0.0001, Math.sqrt(d2));
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const force = 1 - dist / carEffectRadius;
+    const shove = 8 + force * 24;
+    const prevX = car.x;
+    const prevY = car.y;
+
+    car.x = wrapWorldX(car.x + nx * shove);
+    car.y = wrapWorldY(car.y + ny * shove);
+    car.angle = angleApproach(car.angle, Math.atan2(ny, nx), 0.5 + force * 0.4);
+    car.speed = clamp(car.speed + force * 105, -92, car.maxSpeed);
+    enforceCarCollisions(car, prevX, prevY);
+  }
+
+  emitEvent('explosion', { x, y, radius });
+  emitEvent('impact', { x, y });
+}
+
+function fireShot(player, clickAimOverride = null) {
   if (player.health <= 0 || player.inCarId || player.insideShopId) return;
   const weapon = WEAPONS[player.weapon] || WEAPONS.fist;
   if (weapon.pellets <= 0) return;
@@ -1558,6 +1877,31 @@ function fireShot(player) {
   const dir = player.dir;
   const sx = player.x + Math.cos(dir) * 8;
   const sy = player.y + Math.sin(dir) * 8;
+
+  if (player.weapon === 'bazooka') {
+    const targetX = clickAimOverride ? clickAimOverride.x : player.input.aimX;
+    const targetY = clickAimOverride ? clickAimOverride.y : player.input.aimY;
+    const aimDx = wrapDelta(targetX - sx, WORLD.width);
+    const aimDy = wrapDelta(targetY - sy, WORLD.height);
+    const aimDir = Math.atan2(aimDy, aimDx);
+    const rawDistance = Math.hypot(aimDx, aimDy);
+    const requestedDistance = Math.min(rawDistance, weapon.range);
+    const clearDistance = firstSolidDistance(sx, sy, aimDir, requestedDistance);
+    const finalDistance = Math.min(requestedDistance, clearDistance);
+    const ex = wrapWorldX(sx + Math.cos(aimDir) * finalDistance);
+    const ey = wrapWorldY(sy + Math.sin(aimDir) * finalDistance);
+
+    emitEvent('bullet', {
+      playerId: player.id,
+      weapon: player.weapon,
+      x: sx,
+      y: sy,
+      toX: ex,
+      toY: ey,
+    });
+    applyExplosionDamage(ex, ey, player, 72);
+    return;
+  }
 
   for (let pellet = 0; pellet < weapon.pellets; pellet++) {
     const pelletDir =
@@ -1702,8 +2046,11 @@ function stepPlayers(dt) {
       const pendingShots = Math.min(4, player.input.shootSeq - player.lastShootSeq);
       player.lastShootSeq = player.input.shootSeq;
       for (let i = 0; i < pendingShots; i++) {
-        fireShot(player);
+        fireShot(player, { x: player.input.clickAimX, y: player.input.clickAimY });
       }
+    }
+    if (!player.inCarId && player.input.shootHeld && player.weapon === 'machinegun') {
+      fireShot(player);
     }
 
     if (player.starCooldown > 0) {
@@ -1713,6 +2060,60 @@ function stepPlayers(dt) {
     }
 
     player.stars = clamp(Math.ceil(player.starHeat - 0.001), 0, 5);
+  }
+}
+
+function isCarStuckRespawnSuppressed(car) {
+  if (!car || car.driverId || !car.npcDriver) return true;
+  if (car.type === 'cop' && Array.isArray(car.dismountCopIds) && car.dismountCopIds.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function respawnStuckCarNearRoad(car) {
+  const spawn = randomRoadSpawnNear(car.x, car.y);
+  car.x = spawn.x;
+  car.y = spawn.y;
+  car.angle = spawn.angle;
+  if (carCollidesSolid(car)) {
+    const fallback = randomRoadSpawn();
+    car.x = fallback.x;
+    car.y = fallback.y;
+    car.angle = fallback.angle;
+  }
+  const cruiseSpeed = car.type === 'cop' ? 88 : car.type === 'ambulance' ? 72 : 62;
+  car.speed = cruiseSpeed;
+  car.aiCooldown = randRange(0.25, 1.15);
+  car.stuckTimer = 0;
+  car.lastMoveX = car.x;
+  car.lastMoveY = car.y;
+}
+
+function updateCarStuckState(car, dt) {
+  if (!Number.isFinite(car.lastMoveX)) car.lastMoveX = car.x;
+  if (!Number.isFinite(car.lastMoveY)) car.lastMoveY = car.y;
+  if (!Number.isFinite(car.stuckTimer)) car.stuckTimer = 0;
+
+  if (isCarStuckRespawnSuppressed(car)) {
+    car.stuckTimer = 0;
+    car.lastMoveX = car.x;
+    car.lastMoveY = car.y;
+    return;
+  }
+
+  const progressSq = wrappedDistanceSq(car.lastMoveX, car.lastMoveY, car.x, car.y);
+  const requiredProgressSq = 12 * 12;
+  if (progressSq >= requiredProgressSq) {
+    car.lastMoveX = car.x;
+    car.lastMoveY = car.y;
+    car.stuckTimer = 0;
+    return;
+  }
+
+  car.stuckTimer += dt;
+  if (car.stuckTimer >= CAR_STUCK_RESPAWN_SECONDS) {
+    respawnStuckCarNearRoad(car);
   }
 }
 
@@ -1731,17 +2132,12 @@ function stepCars(dt) {
       if (!driver || driver.health <= 0 || driver.inCarId !== car.id) {
         releaseCarDriver(car);
       } else {
-        if (car.type === 'ambulance' && car.ambulanceMode !== 'idle') {
-          const targetRef = getAmbulanceTarget(car);
-          const target = targetRef ? targetRef.entity : null;
-          if (target && target.corpseState === 'carried' && target.bodyCarriedBy === car.id) {
-            target.corpseState = 'down';
-            target.bodyCarriedBy = null;
-            target.bodyClaimedBy = null;
-            target.x = car.x;
-            target.y = car.y;
-          }
+        if (car.type === 'ambulance' && (car.ambulanceMode !== 'idle' || ensureAmbulanceLoad(car).length > 0)) {
+          dropAmbulanceLoadAtCar(car);
           resetAmbulanceTask(car);
+        }
+        if (car.type === 'ambulance') {
+          car.sirenOn = false;
         }
 
         stepDrivenCar(car, driver.input, dt);
@@ -1755,6 +2151,7 @@ function stepCars(dt) {
           emitEvent('horn', { x: car.x, y: car.y, sourcePlayerId: driver.id });
         }
       }
+      updateCarStuckState(car, dt);
       continue;
     }
 
@@ -1766,6 +2163,7 @@ function stepCars(dt) {
       } else {
         stepTrafficCar(car, dt);
       }
+      updateCarStuckState(car, dt);
       continue;
     }
 
@@ -1781,6 +2179,7 @@ function stepCars(dt) {
       car.aiCooldown = randRange(0.3, 1.3);
       car.speed = Math.max(car.speed, 40);
     }
+    updateCarStuckState(car, dt);
   }
 }
 
@@ -1989,8 +2388,7 @@ function stepNpcs(dt) {
       steerAwayFromRoad(npc);
     }
 
-    npc.x = clamp(npc.x, 12, WORLD.width - 12);
-    npc.y = clamp(npc.y, 12, WORLD.height - 12);
+    wrapWorldPosition(npc);
   }
 }
 
@@ -2000,6 +2398,7 @@ function moveCop(cop, dir, speed, dt) {
   const ny = cop.y + Math.sin(cop.dir) * speed * dt;
   if (!isSolidForPed(nx, cop.y)) cop.x = nx;
   if (!isSolidForPed(cop.x, ny)) cop.y = ny;
+  wrapWorldPosition(cop);
 }
 
 function shootAtTargetFromCop(cop, target) {
@@ -2109,8 +2508,7 @@ function stepCops(dt) {
           removeCopFromAssignedCar(cop);
         }
 
-        cop.x = clamp(cop.x, 12, WORLD.width - 12);
-        cop.y = clamp(cop.y, 12, WORLD.height - 12);
+        wrapWorldPosition(cop);
         continue;
       }
     }
@@ -2131,8 +2529,7 @@ function stepCops(dt) {
       moveCop(cop, cop.dir, 56, dt);
     }
 
-    cop.x = clamp(cop.x, 12, WORLD.width - 12);
-    cop.y = clamp(cop.y, 12, WORLD.height - 12);
+    wrapWorldPosition(cop);
   }
 }
 
@@ -2162,6 +2559,31 @@ function stepNpcHitsByCars() {
   }
 }
 
+function stepCopHitsByCars() {
+  for (const cop of cops.values()) {
+    if (!cop.alive || cop.inCarId) continue;
+
+    for (const car of cars.values()) {
+      const impactSpeed = Math.abs(car.speed);
+      if (impactSpeed < 46) continue;
+
+      const dx = wrapDelta(car.x - cop.x, WORLD.width);
+      const dy = wrapDelta(car.y - cop.y, WORLD.height);
+      if (dx * dx + dy * dy > 13 * 13) continue;
+
+      if (!car.driverId) {
+        emitEvent('impact', { x: cop.x, y: cop.y });
+        break;
+      }
+
+      const driver = players.get(car.driverId) || null;
+      killCop(cop, driver);
+      emitEvent('impact', { x: cop.x, y: cop.y });
+      break;
+    }
+  }
+}
+
 function stepCashDrops(dt) {
   for (const drop of cashDrops.values()) {
     drop.ttl -= dt;
@@ -2175,15 +2597,15 @@ function stepCashDrops(dt) {
     drop.y += drop.vy * dt;
     drop.vx *= Math.pow(0.55, dt * 8);
     drop.vy *= Math.pow(0.55, dt * 8);
-    drop.x = clamp(drop.x, 10, WORLD.width - 10);
-    drop.y = clamp(drop.y, 10, WORLD.height - 10);
+    drop.x = wrapWorldX(drop.x);
+    drop.y = wrapWorldY(drop.y);
 
     if (drop.pickupDelay > 0) {
       continue;
     }
 
     for (const player of players.values()) {
-      if (player.health <= 0 || player.inCarId || player.insideShopId) continue;
+      if (player.health <= 0 || player.insideShopId) continue;
       const dx = player.x - drop.x;
       const dy = player.y - drop.y;
       if (dx * dx + dy * dy > DROP_PICKUP_RADIUS * DROP_PICKUP_RADIUS) continue;
@@ -2214,21 +2636,19 @@ function stepBloodStains(dt) {
 function resetAmbientSceneWhenEmpty() {
   if (players.size > 0) return;
 
-  for (const npc of npcs.values()) {
-    if (!npc.alive) {
-      respawnNpc(npc);
+  for (const car of cars.values()) {
+    if (car.type === 'ambulance') {
+      dropAmbulanceLoadAtCar(car);
+      resetAmbulanceTask(car);
+      car.sirenOn = false;
+    } else if (car.type === 'cop') {
+      resetCopCarDeployment(car);
     }
   }
 
-  if (bloodStains.size > 0) {
-    bloodStains.clear();
-  }
-
-  for (const car of cars.values()) {
-    if (car.type === 'ambulance' && (car.ambulanceMode !== 'idle' || car.ambulanceTargetId)) {
-      resetAmbulanceTask(car);
-    } else if (car.type === 'cop') {
-      resetCopCarDeployment(car);
+  for (const npc of npcs.values()) {
+    if (!npc.alive) {
+      respawnNpc(npc);
     }
   }
 
@@ -2239,6 +2659,10 @@ function resetAmbientSceneWhenEmpty() {
       cop.mode = 'patrol';
       cop.targetPlayerId = null;
     }
+  }
+
+  if (bloodStains.size > 0) {
+    bloodStains.clear();
   }
 }
 
@@ -2300,6 +2724,7 @@ function serializeSnapshot() {
       weapon: player.weapon,
       ownedPistol: player.ownedPistol,
       ownedShotgun: player.ownedShotgun,
+      ownedMachinegun: player.ownedMachinegun,
       ownedBazooka: player.ownedBazooka,
     });
   }
@@ -2481,8 +2906,9 @@ function handleJoin(ws, data) {
     lastShootSeq: 0,
     weapon: 'pistol',
     ownedPistol: true,
-    ownedShotgun: false,
-    ownedBazooka: false,
+    ownedShotgun: true,
+    ownedMachinegun: true,
+    ownedBazooka: true,
     prevEnter: false,
     input: {
       up: false,
@@ -2491,10 +2917,13 @@ function handleJoin(ws, data) {
       right: false,
       enter: false,
       horn: false,
+      shootHeld: false,
       shootSeq: 0,
       weaponSlot: 1,
       aimX: spawn.x,
       aimY: spawn.y,
+      clickAimX: spawn.x,
+      clickAimY: spawn.y,
     },
   };
 
@@ -2568,8 +2997,9 @@ function handleInput(ws, data) {
   player.input.right = !!input.right;
   player.input.enter = !!input.enter;
   player.input.horn = !!input.horn;
+  player.input.shootHeld = !!input.shootHeld;
   const slot = Number(input.weaponSlot);
-  if (Number.isInteger(slot) && slot >= 1 && slot <= 3) {
+  if (Number.isInteger(slot) && slot >= 1 && slot <= 4) {
     player.input.weaponSlot = slot;
   }
 
@@ -2578,6 +3008,13 @@ function handleInput(ws, data) {
   if (Number.isFinite(ax) && Number.isFinite(ay)) {
     player.input.aimX = clamp(ax, 0, WORLD.width);
     player.input.aimY = clamp(ay, 0, WORLD.height);
+  }
+
+  const cax = Number(input.clickAimX);
+  const cay = Number(input.clickAimY);
+  if (Number.isFinite(cax) && Number.isFinite(cay)) {
+    player.input.clickAimX = clamp(cax, 0, WORLD.width);
+    player.input.clickAimY = clamp(cay, 0, WORLD.height);
   }
 
   player.input.shootSeq = normalizeShootSeq(Number(input.shootSeq), player.input.shootSeq);
@@ -2668,6 +3105,7 @@ setInterval(() => {
   stepNpcs(DT);
   stepPlayerHits();
   stepNpcHitsByCars();
+  stepCopHitsByCars();
   stepCashDrops(DT);
   stepBloodStains(DT);
   resetAmbientSceneWhenEmpty();
