@@ -2274,6 +2274,19 @@ function getCarSprite(type, bodyColor) {
   return sprite;
 }
 
+function drawCarShadow(sx, sy, angle, sprite) {
+  const verticalWeight = Math.abs(Math.sin(angle));
+  const shadowOffsetX = Math.round(1 + verticalWeight * 4);
+  const shadowOffsetY = Math.round(3 + (1 - verticalWeight) * 3);
+
+  ctx.save();
+  ctx.translate(sx + shadowOffsetX, sy + shadowOffsetY);
+  ctx.rotate(angle);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.24)';
+  ctx.fillRect(-Math.floor(sprite.width * 0.44), -Math.floor(sprite.height * 0.24), Math.floor(sprite.width * 0.88), Math.floor(sprite.height * 0.48));
+  ctx.restore();
+}
+
 function drawCar(car, worldLeft, worldTop) {
   const sx = Math.round(car.x - worldLeft);
   const sy = Math.round(car.y - worldTop);
@@ -2282,15 +2295,15 @@ function drawCar(car, worldLeft, worldTop) {
     return;
   }
 
+  const sprite = getCarSprite(car.type, car.color);
+  drawCarShadow(sx, sy, car.angle, sprite);
+
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate(car.angle);
 
-  const sprite = getCarSprite(car.type, car.color);
   const halfW = Math.floor(sprite.width * 0.5);
   const halfH = Math.floor(sprite.height * 0.5);
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.33)';
-  ctx.fillRect(-Math.floor(sprite.width * 0.46), halfH - 1, Math.floor(sprite.width * 0.92), 3);
 
   ctx.drawImage(sprite, -halfW, -halfH);
 
