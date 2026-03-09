@@ -100,6 +100,9 @@ let latestState = null;
 let statusNotice = '';
 let statusNoticeUntil = 0;
 let mapVisible = false;
+let renderNowMs = performance.now();
+const walkAnimById = new Map();
+let lastWalkAnimCleanupAt = 0;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
@@ -687,6 +690,12 @@ function toggleMapOverlay() {
 
 function mod(value, by) {
   return ((value % by) + by) % by;
+}
+
+function wrapDelta(value, size) {
+  if (value > size * 0.5) return value - size;
+  if (value < -size * 0.5) return value + size;
+  return value;
 }
 
 function clamp(value, min, max) {
@@ -1303,6 +1312,7 @@ function resetSessionState() {
   snapshots = [];
   lastSnapshot = null;
   localPlayerCache = null;
+  walkAnimById.clear();
   closeSettingsPanel();
   audio.resetSessionAudioState();
   INPUT.up = false;
@@ -2389,7 +2399,48 @@ const SPRITES = {
   ],
 };
 
-function drawPixelCharacter(x, y, dir, bodyColor, skinColor, shirtDark, label = null) {
+function cleanupWalkAnimationCache(now) {
+  if (now - lastWalkAnimCleanupAt < 3000) return;
+  lastWalkAnimCleanupAt = now;
+  for (const [id, state] of walkAnimById.entries()) {
+    if (now - state.lastSeenAt > 5000) {
+      walkAnimById.delete(id);
+    }
+  }
+}
+
+function getWalkAnimationState(id, worldX, worldY) {
+  const now = renderNowMs;
+  let state = walkAnimById.get(id);
+  if (!state) {
+    state = {
+      x: worldX,
+      y: worldY,
+      phase: Math.random() < 0.5 ? 0 : 1,
+      lastSeenAt: now,
+    };
+    walkAnimById.set(id, state);
+  }
+
+  const dx = wrapDelta(worldX - state.x, WORLD.width);
+  const dy = wrapDelta(worldY - state.y, WORLD.height);
+  const dist = Math.hypot(dx, dy);
+  const moving = dist > 0.18;
+
+  if (moving) {
+    state.phase = (state.phase + clamp(dist * 0.2, 0.06, 0.34)) % 2;
+  }
+
+  state.x = worldX;
+  state.y = worldY;
+  state.lastSeenAt = now;
+  return {
+    moving,
+    step: state.phase >= 1 ? 1 : 0,
+  };
+}
+
+function drawPixelCharacter(x, y, dir, bodyColor, skinColor, shirtDark, label = null, walkStep = 0, walking = false) {
   ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
   ctx.fillRect(x - 4, y + 6, 8, 3);
 
@@ -2419,7 +2470,15 @@ function drawPixelCharacter(x, y, dir, bodyColor, skinColor, shirtDark, label = 
       if (token === '.') continue;
       const px = flip ? matrix[0].length - 1 - col : col;
       ctx.fillStyle = palette[token];
-      ctx.fillRect(x - 8 + px * unit, y - 10 + row * unit, unit, unit);
+      let drawY = y - 10 + row * unit;
+      if (walking && token === '5') {
+        const leftLeg = px < matrix[0].length * 0.5;
+        const liftedLeg = (walkStep === 0 && leftLeg) || (walkStep === 1 && !leftLeg);
+        if (liftedLeg) {
+          drawY -= 1;
+        }
+      }
+      ctx.fillRect(x - 8 + px * unit, drawY, unit, unit);
     }
   }
 
@@ -2446,7 +2505,8 @@ function drawPixelPlayer(player, worldLeft, worldTop) {
     return;
   }
 
-  drawPixelCharacter(x, y, player.dir || 0, player.color, '#f0c39a', '#1a3452', player.name);
+  const walk = getWalkAnimationState(`p:${player.id}`, player.x, player.y);
+  drawPixelCharacter(x, y, player.dir || 0, player.color, '#f0c39a', '#1a3452', player.name, walk.step, walk.moving);
 }
 
 function drawNpc(npc, worldLeft, worldTop) {
@@ -2467,13 +2527,17 @@ function drawNpc(npc, worldLeft, worldTop) {
     return;
   }
 
+  const walk = getWalkAnimationState(`n:${npc.id}`, npc.x, npc.y);
   drawPixelCharacter(
     x,
     y,
     npc.dir || 0,
     npc.shirtColor || '#8092a6',
     npc.skinColor || '#f0c39a',
-    npc.shirtDark || '#2a3342'
+    npc.shirtDark || '#2a3342',
+    null,
+    walk.step,
+    walk.moving
   );
 }
 
@@ -2497,7 +2561,8 @@ function drawCop(cop, worldLeft, worldTop) {
     return;
   }
   const uniform = cop.mode === 'hunt' ? '#4a8dff' : '#3e76d8';
-  drawPixelCharacter(x, y, cop.dir || 0, uniform, '#efc39e', '#1f3157');
+  const walk = getWalkAnimationState(`c:${cop.id}`, cop.x, cop.y);
+  drawPixelCharacter(x, y, cop.dir || 0, uniform, '#efc39e', '#1f3157', null, walk.step, walk.moving);
   if (cop.alert) {
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(x - 1, y - 15, 2, 7);
@@ -3013,6 +3078,8 @@ function startRenderLoop() {
   function frame(now) {
     const dt = clamp((now - lastFrameTime) / 1000, 0, 0.15);
     lastFrameTime = now;
+    renderNowMs = now;
+    cleanupWalkAnimationCache(now);
 
     if (joined) {
       inputSendAccumulator += dt;
