@@ -1,4 +1,9 @@
 const { WebSocket } = require('ws');
+const {
+  decodeServerFrame,
+  encodeJoinFrame,
+  encodeInputFrame,
+} = require('../public/client-protocol.js');
 
 const BOT_COUNT = Math.max(1, Number(process.env.BOTS) || Number(process.argv[2]) || 10);
 const DURATION_SEC = Math.max(5, Number(process.env.DURATION) || Number(process.argv[3]) || 60);
@@ -38,6 +43,8 @@ for (let i = 0; i < BOT_COUNT; i += 1) {
     ws,
     id: null,
     seq: 0,
+    inputSeq: 1,
+    shootSeq: 0,
     t: Math.random() * Math.PI * 2,
     joined: false,
     sendTimer: null,
@@ -48,21 +55,15 @@ for (let i = 0; i < BOT_COUNT; i += 1) {
 
   ws.on('open', () => {
     stats.opened += 1;
-    ws.send(
-      JSON.stringify({
-        type: 'join',
-        name: state.name,
-        color: state.color,
-      })
-    );
+    ws.send(encodeJoinFrame(state.name, state.color));
   });
 
   ws.on('message', (raw) => {
-    const text = String(raw);
-    stats.bytesIn += Buffer.byteLength(text);
+    const messageBytes = raw instanceof Buffer ? raw.length : Buffer.byteLength(String(raw));
+    stats.bytesIn += messageBytes;
     let data;
     try {
-      data = JSON.parse(text);
+      data = decodeServerFrame(raw);
     } catch {
       return;
     }
@@ -80,29 +81,29 @@ for (let i = 0; i < BOT_COUNT; i += 1) {
         const left = Math.cos(state.t * 0.8) > 0.35;
         const right = Math.cos(state.t * 0.8) < -0.35;
         const shootHeld = Math.sin(state.t * 0.6) > 0.92;
-        state.seq += shootHeld ? 1 : 0;
+        state.shootSeq += shootHeld ? 1 : 0;
 
         const aimX = 1920 + Math.cos(state.t * 0.4) * 900;
         const aimY = 1920 + Math.sin(state.t * 0.4) * 900;
 
         ws.send(
-          JSON.stringify({
-            type: 'input',
-            input: {
-              up,
-              down: false,
-              left,
-              right,
-              enter: false,
-              horn: false,
-              shootHeld,
-              shootSeq: state.seq,
-              weaponSlot: 1,
-              aimX: clamp(aimX, 0, 3840),
-              aimY: clamp(aimY, 0, 3840),
-              clickAimX: clamp(aimX, 0, 3840),
-              clickAimY: clamp(aimY, 0, 3840),
-            },
+          encodeInputFrame({
+            seq: state.inputSeq++,
+            shootSeq: state.shootSeq,
+            clientSendTime: Math.round(performance.now()) >>> 0,
+            up,
+            down: false,
+            left,
+            right,
+            enter: false,
+            horn: false,
+            shootHeld,
+            weaponSlot: 1,
+            requestStats: false,
+            aimX: clamp(aimX, 0, 3840),
+            aimY: clamp(aimY, 0, 3840),
+            clickAimX: clamp(aimX, 0, 3840),
+            clickAimY: clamp(aimY, 0, 3840),
           })
         );
       }, SEND_INTERVAL_MS);

@@ -1,7 +1,18 @@
-﻿const path = require('node:path');
+const path = require('node:path');
 const http = require('node:http');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
+const {
+  OPCODES,
+  ITEM_TO_CODE,
+  SNAPSHOT_SECTION_ORDER,
+  decodeClientFrame,
+  encodeErrorFrame,
+  encodeNoticeFrame,
+  encodeJoinedFrame,
+  encodePresenceFrame,
+  encodeSnapshotFrame,
+} = require('./server-protocol');
 
 const app = express();
 const server = http.createServer(app);
@@ -16,12 +27,15 @@ function envFlag(name, defaultValue) {
 }
 
 const PORT = Number(process.env.PORT || 3000);
-const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 30));
+const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 36));
 const DT = 1 / TICK_RATE;
-const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 20));
-const SNAPSHOT_EVERY_TICKS = Math.max(1, Math.round(TICK_RATE / SNAPSHOT_RATE));
+const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 24));
 const PRESENCE_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.PRESENCE_RATE) || 1));
-const PRESENCE_EVERY_TICKS = Math.max(1, Math.round(TICK_RATE / PRESENCE_RATE));
+const SNAPSHOT_KEYFRAME_EVERY = Math.max(4, Number(process.env.SNAPSHOT_KEYFRAME_EVERY) || 20);
+const SNAPSHOT_INTERP_DELAY_MS = Math.max(
+  60,
+  Math.min(140, Number(process.env.SNAPSHOT_INTERP_DELAY_MS) || 85)
+);
 const COLLISION_GRID_CELL = 96;
 const AOI_PED_RADIUS = Math.max(320, Number(process.env.AOI_PED_RADIUS) || 900);
 const AOI_CAR_RADIUS = Math.max(AOI_PED_RADIUS, Number(process.env.AOI_CAR_RADIUS) || 1200);
@@ -87,10 +101,15 @@ let nextEventId = 1;
 let pendingEvents = [];
 let tickSpatialContext = null;
 let tickLodContext = null;
+let nextProtocolId = 1;
+const protocolIdsByEntityId = new Map();
+const entityIdByProtocolId = new Map();
 let bytesSentSinceReport = 0;
 let nextMetricsAt = Date.now() + 5_000;
 const tickMsWindow = [];
 const snapshotBuildMsWindow = [];
+let snapshotAccumulator = 0;
+let presenceAccumulator = 0;
 
 const CAR_PALETTE = ['#f9ce4e', '#ff7a5e', '#83d3ff', '#8eff92', '#d9a5ff', '#f2f2f2', '#a6ffef'];
 const NPC_PALETTE = ['#f0c39a', '#f5d0b2', '#d2a67f', '#efba9f', '#c78f6f', '#e9c09a'];
@@ -108,6 +127,7 @@ const SHOPS = [
   { id: 'shop_mid', name: 'Midtown Arms', x: BLOCK_PX * 6 + 232, y: BLOCK_PX * 6 + 236, radius: 34 },
   { id: 'shop_dock', name: 'Dock Arms', x: BLOCK_PX * 10 + 232, y: BLOCK_PX * 10 + 232, radius: 34 },
 ];
+const SHOP_INDEX_BY_ID = new Map(SHOPS.map((shop, index) => [shop.id, index]));
 const HOSPITAL = {
   id: 'hospital_central',
   name: 'City Hospital',
@@ -316,6 +336,42 @@ function entityInsidePlayerAoi(player, x, y, radiusSq) {
 
 function makeId(prefix) {
   return `${prefix}_${nextId++}`;
+}
+
+function protocolIdForEntity(entityId) {
+  if (!entityId) return 0;
+  const existing = protocolIdsByEntityId.get(entityId);
+  if (existing) return existing;
+  const id = nextProtocolId++;
+  protocolIdsByEntityId.set(entityId, id);
+  entityIdByProtocolId.set(id, entityId);
+  return id;
+}
+
+function protocolIdForEntityOptional(entityId) {
+  if (!entityId) return 0;
+  return protocolIdForEntity(entityId);
+}
+
+function releaseProtocolId(entityId) {
+  if (!entityId) return;
+  const protocolId = protocolIdsByEntityId.get(entityId);
+  if (!protocolId) return;
+  protocolIdsByEntityId.delete(entityId);
+  entityIdByProtocolId.delete(protocolId);
+}
+
+function normalizeHexColor(value, fallback = '#ffffff') {
+  if (typeof value !== 'string') return fallback;
+  const c = value.trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(c)) return fallback;
+  return c;
+}
+
+function shopIndexById(id) {
+  if (!id) return null;
+  const index = SHOP_INDEX_BY_ID.get(id);
+  return Number.isInteger(index) ? index : null;
 }
 
 function plotIndexForLocalCoord(localX, localY) {
@@ -3717,31 +3773,216 @@ function serializeSnapshotForPlayer(player, now, events, globalStats = null) {
   return payload;
 }
 
-function serializePresencePayload() {
+function toWirePlayerRecord(record, nowWallMs) {
+  const chatMsLeft =
+    typeof record.chatUntil === 'number' && record.chatUntil > 0
+      ? Math.max(0, Math.min(65535, Math.round(record.chatUntil - nowWallMs)))
+      : 0;
+  return {
+    id: protocolIdForEntity(record.id),
+    name: record.name || '',
+    color: normalizeHexColor(record.color, '#ffffff'),
+    x: record.x,
+    y: record.y,
+    dir: record.dir,
+    inCarId: protocolIdForEntityOptional(record.inCarId),
+    insideShopIndex: shopIndexById(record.insideShopId),
+    health: record.health,
+    stars: record.stars,
+    money: record.money,
+    weapon: record.weapon || 'fist',
+    ownedPistol: !!record.ownedPistol,
+    ownedShotgun: !!record.ownedShotgun,
+    ownedMachinegun: !!record.ownedMachinegun,
+    ownedBazooka: !!record.ownedBazooka,
+    chatText: chatMsLeft > 0 ? String(record.chatText || '') : '',
+    chatMsLeft,
+  };
+}
+
+function toWireCarRecord(record) {
+  return {
+    id: protocolIdForEntity(record.id),
+    type: record.type,
+    x: record.x,
+    y: record.y,
+    angle: record.angle,
+    speed: record.speed,
+    color: normalizeHexColor(record.color, '#5ca1ff'),
+    driverId: protocolIdForEntityOptional(record.driverId),
+    npcDriver: !!record.npcDriver,
+    sirenOn: !!record.sirenOn,
+  };
+}
+
+function toWireNpcRecord(record) {
+  return {
+    id: protocolIdForEntity(record.id),
+    x: record.x,
+    y: record.y,
+    dir: record.dir,
+    alive: !!record.alive,
+    corpseState: record.corpseState || 'none',
+    skinColor: normalizeHexColor(record.skinColor, '#f0c39a'),
+    shirtColor: normalizeHexColor(record.shirtColor, '#808891'),
+    shirtDark: normalizeHexColor(record.shirtDark, '#2a3342'),
+  };
+}
+
+function toWireCopRecord(record) {
+  return {
+    id: protocolIdForEntity(record.id),
+    x: record.x,
+    y: record.y,
+    dir: record.dir,
+    health: record.health,
+    alive: !!record.alive,
+    inCarId: protocolIdForEntityOptional(record.inCarId),
+    corpseState: record.corpseState || 'none',
+    mode: record.mode || 'patrol',
+    alert: !!record.alert,
+  };
+}
+
+function toWireDropRecord(record) {
+  return {
+    id: protocolIdForEntity(record.id),
+    x: record.x,
+    y: record.y,
+    amount: record.amount,
+    ttl: record.ttl,
+  };
+}
+
+function toWireBloodRecord(record) {
+  return {
+    id: protocolIdForEntity(record.id),
+    x: record.x,
+    y: record.y,
+    ttl: record.ttl,
+  };
+}
+
+function toWireEventRecord(event) {
+  const wire = {
+    id: event.id >>> 0,
+    type: event.type,
+    x: Number.isFinite(event.x) ? event.x : 0,
+    y: Number.isFinite(event.y) ? event.y : 0,
+  };
+
+  if (event.playerId) wire.playerId = protocolIdForEntityOptional(event.playerId);
+  if (event.killerId) wire.killerId = protocolIdForEntityOptional(event.killerId);
+  if (event.victimId) wire.victimId = protocolIdForEntityOptional(event.victimId);
+  if (event.sourcePlayerId) wire.sourcePlayerId = protocolIdForEntityOptional(event.sourcePlayerId);
+  if (event.carId) wire.carId = protocolIdForEntityOptional(event.carId);
+  if (event.npcId) wire.npcId = protocolIdForEntityOptional(event.npcId);
+  if (event.dropId) wire.dropId = protocolIdForEntityOptional(event.dropId);
+  if (event.stainId) wire.stainId = protocolIdForEntityOptional(event.stainId);
+
+  if (event.type === 'bullet' || event.type === 'melee') {
+    wire.toX = Number.isFinite(event.toX) ? event.toX : wire.x;
+    wire.toY = Number.isFinite(event.toY) ? event.toY : wire.y;
+  }
+  if (event.type === 'bullet') {
+    wire.weapon = event.weapon || 'pistol';
+  }
+  if (event.type === 'explosion' && Number.isFinite(event.radius)) {
+    wire.radius = event.radius;
+  }
+  if (event.type === 'npcThrown') {
+    wire.dir = Number.isFinite(event.dir) ? event.dir : 0;
+    wire.speed = Number.isFinite(event.speed) ? event.speed : 0;
+    wire.skinColor = normalizeHexColor(event.skinColor, '#f0c39a');
+    wire.shirtColor = normalizeHexColor(event.shirtColor, '#808891');
+    wire.shirtDark = normalizeHexColor(event.shirtDark, '#2a3342');
+  }
+  if (event.type === 'cashDrop' || event.type === 'cashPickup') {
+    wire.amount = Number.isFinite(event.amount) ? event.amount : 0;
+  }
+  if (event.type === 'cashPickup' && Number.isFinite(event.total)) {
+    wire.total = event.total;
+  }
+  if (event.type === 'bloodSpawn' && Number.isFinite(event.ttl)) {
+    wire.ttl = event.ttl;
+  }
+  if (event.type === 'purchase') {
+    wire.item = ITEM_TO_CODE[event.item] ? event.item : '';
+    wire.amount = Number.isFinite(event.amount) ? event.amount : 0;
+  }
+  if (event.type === 'enterShop' || event.type === 'exitShop') {
+    wire.shopIndex = shopIndexById(event.shopId);
+  }
+
+  return wire;
+}
+
+function ensureClientSnapshotState(client) {
+  if (client.snapshotState) return;
+  client.snapshotState = {
+    snapshotsSinceKeyframe: SNAPSHOT_KEYFRAME_EVERY,
+    snapshotSeq: 0,
+    signatures: SNAPSHOT_SECTION_ORDER.reduce((acc, name) => {
+      acc[name] = new Map();
+      return acc;
+    }, {}),
+  };
+}
+
+function buildSectionDelta(records, previousSignatures, keyframe) {
+  const add = [];
+  const update = [];
+  const remove = [];
+  const nextSignatures = new Map();
+
+  for (const record of records) {
+    const id = record.id >>> 0;
+    const sig = JSON.stringify(record);
+    nextSignatures.set(id, sig);
+    if (keyframe || !previousSignatures.has(id)) {
+      add.push(record);
+    } else if (previousSignatures.get(id) !== sig) {
+      update.push(record);
+    }
+  }
+
+  if (!keyframe) {
+    for (const id of previousSignatures.keys()) {
+      if (!nextSignatures.has(id)) {
+        remove.push(id >>> 0);
+      }
+    }
+  }
+
+  return {
+    delta: { add, update, remove },
+    signatures: nextSignatures,
+  };
+}
+
+function serializePresencePayloadBinary(serverTimeMs) {
   const playersPayload = [];
   for (const player of players.values()) {
     playersPayload.push({
-      id: player.id,
-      name: player.name,
-      color: player.color,
-      x: quantized(player.x, 10),
-      y: quantized(player.y, 10),
-      inCarId: player.inCarId || null,
+      id: protocolIdForEntity(player.id),
+      color: normalizeHexColor(player.color, '#ffffff'),
+      x: player.x,
+      y: player.y,
+      inCarId: protocolIdForEntityOptional(player.inCarId),
     });
   }
   return {
-    type: 'presence',
-    serverTime: Date.now(),
+    serverTime: serverTimeMs >>> 0,
     worldRev: WORLD_REV,
     onlineCount: playersPayload.length,
     players: playersPayload,
   };
 }
 
-function broadcastPresence() {
+function broadcastPresence(serverTimeMs = Math.round(performance.now())) {
   if (clients.size === 0) return;
-  const payload = JSON.stringify(serializePresencePayload());
-  const payloadBytes = Buffer.byteLength(payload);
+  const payload = encodePresenceFrame(serializePresencePayloadBinary(serverTimeMs));
+  const payloadBytes = payload.length;
   for (const ws of clients.keys()) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
@@ -3750,12 +3991,12 @@ function broadcastPresence() {
   }
 }
 
-function broadcastSnapshot() {
+function broadcastSnapshot(nowPerfMs = Math.round(performance.now())) {
   if (clients.size === 0) {
     pendingEvents = [];
     return;
   }
-  const now = Date.now();
+  const nowWallMs = Date.now();
   const events = pendingEvents;
   pendingEvents = [];
   const globalStats = buildGlobalWorldStats();
@@ -3764,12 +4005,49 @@ function broadcastSnapshot() {
     if (ws.readyState !== WebSocket.OPEN) continue;
     const player = players.get(client.playerId);
     if (!player) continue;
+    ensureClientSnapshotState(client);
     const buildStart = performance.now();
-    const message = serializeSnapshotForPlayer(player, now, events, globalStats);
+    const snapshot = serializeSnapshotForPlayer(player, nowWallMs, events, globalStats);
+    const keyframe = client.snapshotState.snapshotsSinceKeyframe >= SNAPSHOT_KEYFRAME_EVERY;
+    client.snapshotState.snapshotSeq = (client.snapshotState.snapshotSeq + 1) & 0xffff;
+
+    const fullSections = {
+      players: snapshot.players.map((entry) => toWirePlayerRecord(entry, nowWallMs)),
+      cars: snapshot.cars.map(toWireCarRecord),
+      npcs: snapshot.npcs.map(toWireNpcRecord),
+      cops: snapshot.cops.map(toWireCopRecord),
+      drops: snapshot.drops.map(toWireDropRecord),
+      blood: snapshot.blood.map(toWireBloodRecord),
+    };
+
+    const sections = {};
+    for (const name of SNAPSHOT_SECTION_ORDER) {
+      const previous = client.snapshotState.signatures[name];
+      const result = buildSectionDelta(fullSections[name], previous, keyframe);
+      sections[name] = result.delta;
+      client.snapshotState.signatures[name] = result.signatures;
+    }
+
+    const wireEvents = snapshot.events.map(toWireEventRecord);
+    const payload = encodeSnapshotFrame({
+      serverTime: nowPerfMs >>> 0,
+      worldRev: WORLD_REV,
+      snapshotSeq: client.snapshotState.snapshotSeq,
+      keyframe,
+      ackInputSeq: player.lastInputSeq || 0,
+      clientSendTimeEcho: player.lastClientSendTime || 0,
+      interpolationDelayMs: SNAPSHOT_INTERP_DELAY_MS,
+      sections,
+      events: wireEvents,
+      stats: snapshot.stats || null,
+      scope: snapshot.scope || null,
+    });
     pushMetricSample(snapshotBuildMsWindow, performance.now() - buildStart, 300);
-    const payload = JSON.stringify(message);
-    bytesSentSinceReport += Buffer.byteLength(payload);
+    bytesSentSinceReport += payload.length;
     ws.send(payload);
+    client.snapshotState.snapshotsSinceKeyframe = keyframe
+      ? 1
+      : Math.min(SNAPSHOT_KEYFRAME_EVERY * 2, client.snapshotState.snapshotsSinceKeyframe + 1);
   }
 }
 
@@ -3796,7 +4074,7 @@ function disconnectClient(ws) {
 
 function handleJoin(ws, data) {
   if (clients.has(ws)) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Already joined.' }));
+    ws.send(encodeErrorFrame('Already joined.'));
     return;
   }
 
@@ -3804,11 +4082,11 @@ function handleJoin(ws, data) {
   const color = sanitizeColor(data.color);
 
   if (!name) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Name must be 2-16 letters/numbers.' }));
+    ws.send(encodeErrorFrame('Name must be 2-16 letters/numbers.'));
     return;
   }
   if (!color) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Color must be a valid hex value like #44ccff.' }));
+    ws.send(encodeErrorFrame('Color must be a valid hex value like #44ccff.'));
     return;
   }
 
@@ -3843,6 +4121,8 @@ function handleJoin(ws, data) {
     ownedMachinegun: true,
     ownedBazooka: true,
     requestStats: false,
+    lastInputSeq: 0,
+    lastClientSendTime: 0,
     prevEnter: false,
     input: {
       up: false,
@@ -3863,12 +4143,12 @@ function handleJoin(ws, data) {
   };
 
   players.set(id, player);
-  clients.set(ws, { playerId: id });
+  clients.set(ws, { playerId: id, snapshotState: null });
 
+  const playerProtocolId = protocolIdForEntity(id);
   ws.send(
-    JSON.stringify({
-      type: 'joined',
-      playerId: id,
+    encodeJoinedFrame({
+      playerId: playerProtocolId,
       tickRate: TICK_RATE,
       worldRev: WORLD_REV,
       world: STATIC_WORLD_PAYLOAD,
@@ -3903,6 +4183,14 @@ function handleInput(ws, data) {
 
   const input = data.input;
   if (!input || typeof input !== 'object') return;
+  const seq = Number(data.seq);
+  if (Number.isInteger(seq) && seq >= 0) {
+    player.lastInputSeq = seq >>> 0;
+  }
+  const clientSendTime = Number(data.clientSendTime);
+  if (Number.isInteger(clientSendTime) && clientSendTime >= 0) {
+    player.lastClientSendTime = clientSendTime >>> 0;
+  }
 
   player.input.up = !!input.up;
   player.input.down = !!input.down;
@@ -3932,7 +4220,7 @@ function handleInput(ws, data) {
     player.input.clickAimY = clamp(cay, 0, WORLD.height);
   }
 
-  player.input.shootSeq = normalizeShootSeq(Number(input.shootSeq), player.input.shootSeq);
+  player.input.shootSeq = normalizeShootSeq(Number(data.shootSeq), player.input.shootSeq);
 }
 
 function handleBuy(ws, data) {
@@ -3943,13 +4231,7 @@ function handleBuy(ws, data) {
 
   const item = typeof data.item === 'string' ? data.item.trim().toLowerCase() : '';
   const result = buyItemForPlayer(player, item);
-  ws.send(
-    JSON.stringify({
-      type: 'notice',
-      ok: result.ok,
-      message: result.message,
-    })
-  );
+  ws.send(encodeNoticeFrame(result.ok, result.message));
 }
 
 function handleChat(ws, data) {
@@ -3973,21 +4255,22 @@ function handleChat(ws, data) {
 
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
-    if (typeof raw !== 'string' && !(raw instanceof Buffer)) {
+    if (!(raw instanceof Buffer)) {
+      ws.send(encodeErrorFrame('Binary protocol required. Refresh the page.'));
+      ws.close();
       return;
     }
 
-    const text = String(raw);
-    if (text.length > 8_000) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Payload too large.' }));
+    if (raw.length > 8192) {
+      ws.send(encodeErrorFrame('Payload too large.'));
       return;
     }
 
     let data;
     try {
-      data = JSON.parse(text);
+      data = decodeClientFrame(raw);
     } catch {
-      ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON.' }));
+      ws.send(encodeErrorFrame('Invalid packet.'));
       return;
     }
 
@@ -3995,13 +4278,13 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (data.type === 'join') {
+    if (data.opcode === OPCODES.C2S_JOIN) {
       handleJoin(ws, data);
-    } else if (data.type === 'input') {
+    } else if (data.opcode === OPCODES.C2S_INPUT) {
       handleInput(ws, data);
-    } else if (data.type === 'buy') {
+    } else if (data.opcode === OPCODES.C2S_BUY) {
       handleBuy(ws, data);
-    } else if (data.type === 'chat') {
+    } else if (data.opcode === OPCODES.C2S_CHAT) {
       handleChat(ws, data);
     }
   });
@@ -4013,8 +4296,6 @@ wss.on('connection', (ws) => {
   ws.on('error', () => {
     disconnectClient(ws);
   });
-
-  ws.send(JSON.stringify({ type: 'hello', message: 'Connected. Send join payload.' }));
 });
 
 for (let i = 0; i < TRAFFIC_COUNT; i++) {
@@ -4076,11 +4357,28 @@ setInterval(() => {
   ensureCarPopulation();
   ensureNpcPopulation();
   ensureCopPopulation();
-  if (tickCount % SNAPSHOT_EVERY_TICKS === 0) {
-    broadcastSnapshot();
+  const snapshotStep = 1 / SNAPSHOT_RATE;
+  snapshotAccumulator += DT;
+  let snapshotLoops = 0;
+  while (snapshotAccumulator >= snapshotStep && snapshotLoops < 3) {
+    broadcastSnapshot(Math.round(performance.now()));
+    snapshotAccumulator -= snapshotStep;
+    snapshotLoops += 1;
   }
-  if (tickCount % PRESENCE_EVERY_TICKS === 0) {
-    broadcastPresence();
+  if (snapshotLoops >= 3) {
+    snapshotAccumulator = 0;
+  }
+
+  const presenceStep = 1 / PRESENCE_RATE;
+  presenceAccumulator += DT;
+  let presenceLoops = 0;
+  while (presenceAccumulator >= presenceStep && presenceLoops < 2) {
+    broadcastPresence(Math.round(performance.now()));
+    presenceAccumulator -= presenceStep;
+    presenceLoops += 1;
+  }
+  if (presenceLoops >= 2) {
+    presenceAccumulator = 0;
   }
   pushMetricSample(tickMsWindow, performance.now() - tickStart, 300);
   reportServerMetricsIfNeeded(Date.now());

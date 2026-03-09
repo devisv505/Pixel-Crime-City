@@ -1,4 +1,10 @@
-﻿const canvas = document.getElementById('gameCanvas');
+const protocolApi = window.ClientProtocol;
+if (!protocolApi) {
+  throw new Error('ClientProtocol is not loaded.');
+}
+const { decodeServerFrame, encodeJoinFrame, encodeInputFrame, encodeBuyFrame, encodeChatFrame } = protocolApi;
+
+const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 ctx.imageSmoothingEnabled = false;
 
@@ -115,6 +121,40 @@ let presenceOnlineCount = 0;
 let presencePlayers = [];
 const clientBloodStains = new Map();
 let debugStatsVisible = false;
+let nextInputSeq = 1;
+let lastAckInputSeq = 0;
+const pendingInputs = [];
+let localPrediction = null;
+let serverClockOffsetMs = 0;
+let hasClockSync = false;
+let smoothedRttMs = 120;
+let dynamicInterpDelayMs = 90;
+let lastServerSnapshotTime = 0;
+
+const snapshotEntityState = {
+  players: new Map(),
+  cars: new Map(),
+  npcs: new Map(),
+  cops: new Map(),
+  drops: new Map(),
+  blood: new Map(),
+};
+
+const PLAYER_SPEED = 110;
+const CAR_WIDTH = 24;
+const CAR_HEIGHT = 14;
+const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
+const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
+const CAR_BUILDING_COLLISION_INSET_PX = 2;
+const INPUT_SEND_RATE = 72;
+const LOCAL_PREDICTION_RATE = 120;
+const REMOTE_INTERP_MIN_MS = 70;
+const REMOTE_INTERP_MAX_MS = 100;
+const PREDICTION_HARD_SNAP_DIST = 64;
+const ENABLE_LOCAL_PREDICTION = false;
+const SERVER_RENDER_DELAY_MS = 90;
+let localPredictionAccumulator = 0;
+let lastMoveInputAtMs = 0;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
@@ -711,6 +751,19 @@ function wrapDelta(value, size) {
   return value;
 }
 
+function wrapCoord(value, size) {
+  if (!Number.isFinite(value)) return 0;
+  return mod(value, size);
+}
+
+function wrapWorldX(value) {
+  return wrapCoord(value, WORLD.width);
+}
+
+function wrapWorldY(value) {
+  return wrapCoord(value, WORLD.height);
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -724,6 +777,35 @@ function angleLerp(a, b, t) {
   while (delta > Math.PI) delta -= Math.PI * 2;
   while (delta < -Math.PI) delta += Math.PI * 2;
   return a + delta * t;
+}
+
+function normalizeAngle(angle) {
+  let a = Number.isFinite(angle) ? angle : 0;
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function wrappedLerp(from, to, t, size) {
+  return from + wrapDelta(to - from, size) * t;
+}
+
+function approach(value, target, amount) {
+  if (value < target) {
+    return Math.min(target, value + amount);
+  }
+  if (value > target) {
+    return Math.max(target, value - amount);
+  }
+  return value;
+}
+
+function angleApproach(current, target, maxStep) {
+  const delta = normalizeAngle(target - current);
+  if (Math.abs(delta) <= maxStep) {
+    return target;
+  }
+  return current + Math.sign(delta) * maxStep;
 }
 
 function hash2D(x, y) {
@@ -768,6 +850,110 @@ function worldGroundTypeAt(x, y) {
     }
   }
   return 'park';
+}
+
+function groundTypeAtWrapped(x, y) {
+  return worldGroundTypeAt(wrapWorldX(x), wrapWorldY(y));
+}
+
+function isSolidForPed(x, y) {
+  const g = groundTypeAtWrapped(x, y);
+  return g === 'building' || g === 'void';
+}
+
+function isSolidForCar(x, y) {
+  const worldX = wrapWorldX(x);
+  const worldY = wrapWorldY(y);
+  const g = groundTypeAtWrapped(worldX, worldY);
+  if (g === 'void') return true;
+  if (g !== 'building') return false;
+
+  const localX = mod(worldX, WORLD.blockPx);
+  const localY = mod(worldY, WORLD.blockPx);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return false;
+
+  const blockX = Math.floor(worldX / WORLD.blockPx);
+  const blockY = Math.floor(worldY / WORLD.blockPx);
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  const inset = CAR_BUILDING_COLLISION_INSET_PX;
+  return (
+    localX > rect.x0 + inset &&
+    localX < rect.x1 - inset &&
+    localY > rect.y0 + inset &&
+    localY < rect.y1 - inset
+  );
+}
+
+function carBodyPoints(car) {
+  const points = [{ x: car.x, y: car.y }];
+  const halfL = CAR_WIDTH * CAR_COLLISION_HALF_LENGTH_SCALE;
+  const halfW = CAR_HEIGHT * CAR_COLLISION_HALF_WIDTH_SCALE;
+  const c = Math.cos(car.angle);
+  const s = Math.sin(car.angle);
+  const basis = [
+    { fx: halfL, fy: halfW },
+    { fx: halfL, fy: -halfW },
+    { fx: -halfL, fy: halfW },
+    { fx: -halfL, fy: -halfW },
+    { fx: halfL, fy: 0 },
+    { fx: -halfL, fy: 0 },
+  ];
+  for (const b of basis) {
+    const px = car.x + c * b.fx - s * b.fy;
+    const py = car.y + s * b.fx + c * b.fy;
+    points.push({ x: px, y: py });
+  }
+  return points;
+}
+
+function carCollidesSolid(car) {
+  const points = carBodyPoints(car);
+  for (const p of points) {
+    if (isSolidForCar(p.x, p.y)) return true;
+  }
+  return false;
+}
+
+function enforcePredictedCarCollisions(car, prevX, prevY) {
+  car.x = wrapWorldX(car.x);
+  car.y = wrapWorldY(car.y);
+
+  if (carCollidesSolid(car)) {
+    let resolved = false;
+    if (Number.isFinite(prevX) && Number.isFinite(prevY)) {
+      const cx = car.x;
+      const cy = car.y;
+      for (let i = 1; i <= 8; i += 1) {
+        const t = i / 8;
+        car.x = wrappedLerp(cx, prevX, t, WORLD.width);
+        car.y = wrappedLerp(cy, prevY, t, WORLD.height);
+        if (!carCollidesSolid(car)) {
+          resolved = true;
+          break;
+        }
+      }
+    }
+    if (!resolved) {
+      const retreat = [6, 10, 14, 18];
+      for (const amount of retreat) {
+        car.x = wrapWorldX(car.x + Math.cos(car.angle + Math.PI) * amount);
+        car.y = wrapWorldY(car.y + Math.sin(car.angle + Math.PI) * amount);
+        if (!carCollidesSolid(car)) {
+          resolved = true;
+          break;
+        }
+      }
+    }
+    if (!resolved) {
+      car.x = wrapWorldX(prevX);
+      car.y = wrapWorldY(prevY);
+    }
+    car.speed *= -0.24;
+  }
+
+  car.x = wrapWorldX(car.x);
+  car.y = wrapWorldY(car.y);
 }
 
 function blockHasBuildings(blockX, blockY) {
@@ -1290,44 +1476,47 @@ function updatePointer(clientX, clientY) {
   POINTER.worldY = clamp(POINTER.worldY, 0, WORLD.height);
 }
 
+function buildCurrentInputPayload(seq) {
+  return {
+    seq: seq >>> 0,
+    shootSeq: INPUT.shootSeq >>> 0,
+    clientSendTime: Math.round(performance.now()) >>> 0,
+    up: INPUT.up,
+    down: INPUT.down,
+    left: INPUT.left,
+    right: INPUT.right,
+    enter: INPUT.enter,
+    horn: INPUT.horn,
+    shootHeld: INPUT.shootHeld,
+    weaponSlot: INPUT.weaponSlot,
+    requestStats: INPUT.requestStats,
+    aimX: Math.round(POINTER.worldX * 100) / 100,
+    aimY: Math.round(POINTER.worldY * 100) / 100,
+    clickAimX: Math.round(INPUT.clickAimX * 100) / 100,
+    clickAimY: Math.round(INPUT.clickAimY * 100) / 100,
+    dt: 1 / INPUT_SEND_RATE,
+  };
+}
+
 function sendInput() {
   if (!socket || socket.readyState !== WebSocket.OPEN || !joined) {
     return;
   }
 
-  socket.send(
-    JSON.stringify({
-      type: 'input',
-      input: {
-        up: INPUT.up,
-        down: INPUT.down,
-        left: INPUT.left,
-        right: INPUT.right,
-        enter: INPUT.enter,
-        horn: INPUT.horn,
-        shootHeld: INPUT.shootHeld,
-        shootSeq: INPUT.shootSeq,
-        weaponSlot: INPUT.weaponSlot,
-        requestStats: INPUT.requestStats,
-        aimX: Math.round(POINTER.worldX * 100) / 100,
-        aimY: Math.round(POINTER.worldY * 100) / 100,
-        clickAimX: Math.round(INPUT.clickAimX * 100) / 100,
-        clickAimY: Math.round(INPUT.clickAimY * 100) / 100,
-      },
-    })
-  );
+  const payload = buildCurrentInputPayload(nextInputSeq);
+  nextInputSeq = (nextInputSeq + 1) >>> 0;
+  if (ENABLE_LOCAL_PREDICTION) {
+    pendingInputs.push(payload);
+    while (pendingInputs.length > 256) pendingInputs.shift();
+  }
+  socket.send(encodeInputFrame(payload));
 }
 
 function sendBuy(item) {
   if (!socket || socket.readyState !== WebSocket.OPEN || !joined) {
     return;
   }
-  socket.send(
-    JSON.stringify({
-      type: 'buy',
-      item,
-    })
-  );
+  socket.send(encodeBuyFrame(item));
 }
 
 function sendChat(rawText) {
@@ -1339,12 +1528,7 @@ function sendChat(rawText) {
     .trim()
     .slice(0, 90);
   if (!text) return;
-  socket.send(
-    JSON.stringify({
-      type: 'chat',
-      text,
-    })
-  );
+  socket.send(encodeChatFrame(text));
 }
 
 function resetSessionState() {
@@ -1357,6 +1541,22 @@ function resetSessionState() {
   presencePlayers = [];
   clientBloodStains.clear();
   debugStatsVisible = false;
+  nextInputSeq = 1;
+  lastAckInputSeq = 0;
+  pendingInputs.length = 0;
+  localPrediction = null;
+  hasClockSync = false;
+  serverClockOffsetMs = 0;
+  smoothedRttMs = 120;
+  dynamicInterpDelayMs = 90;
+  lastServerSnapshotTime = 0;
+  localPredictionAccumulator = 0;
+  snapshotEntityState.players.clear();
+  snapshotEntityState.cars.clear();
+  snapshotEntityState.npcs.clear();
+  snapshotEntityState.cops.clear();
+  snapshotEntityState.drops.clear();
+  snapshotEntityState.blood.clear();
   walkAnimById.clear();
   closeSettingsPanel();
   audio.resetSessionAudioState();
@@ -1386,6 +1586,379 @@ function resetSessionState() {
   }
 }
 
+function shopIdFromIndex(index) {
+  if (!Number.isInteger(index) || index < 0) return null;
+  const shop = WORLD.shops[index];
+  return shop ? shop.id : null;
+}
+
+function hydratePlayerRecord(record) {
+  const chatMsLeft = Number.isFinite(record.chatMsLeft) ? Math.max(0, record.chatMsLeft) : 0;
+  return {
+    ...record,
+    insideShopId: shopIdFromIndex(record.insideShopIndex),
+    chatText: chatMsLeft > 0 ? record.chatText || '' : '',
+    chatUntil: chatMsLeft > 0 ? Date.now() + chatMsLeft : 0,
+  };
+}
+
+function hydrateEventRecord(event) {
+  const out = { ...event };
+  if (out.type === 'enterShop' || out.type === 'exitShop') {
+    out.shopId = shopIdFromIndex(out.shopIndex);
+  }
+  return out;
+}
+
+function applySectionDelta(targetMap, section, hydrate) {
+  if (!section) return;
+  const add = Array.isArray(section.add) ? section.add : [];
+  const update = Array.isArray(section.update) ? section.update : [];
+  const remove = Array.isArray(section.remove) ? section.remove : [];
+  for (const id of remove) {
+    targetMap.delete(id);
+  }
+  for (const record of add) {
+    targetMap.set(record.id, hydrate ? hydrate(record) : { ...record });
+  }
+  for (const record of update) {
+    targetMap.set(record.id, hydrate ? hydrate(record) : { ...record });
+  }
+}
+
+function applySnapshotDelta(data) {
+  if (data.keyframe) {
+    snapshotEntityState.players.clear();
+    snapshotEntityState.cars.clear();
+    snapshotEntityState.npcs.clear();
+    snapshotEntityState.cops.clear();
+    snapshotEntityState.drops.clear();
+    snapshotEntityState.blood.clear();
+  }
+
+  const sections = data.sections || {};
+  applySectionDelta(snapshotEntityState.players, sections.players, hydratePlayerRecord);
+  applySectionDelta(snapshotEntityState.cars, sections.cars);
+  applySectionDelta(snapshotEntityState.npcs, sections.npcs);
+  applySectionDelta(snapshotEntityState.cops, sections.cops);
+  applySectionDelta(snapshotEntityState.drops, sections.drops);
+  applySectionDelta(snapshotEntityState.blood, sections.blood);
+
+  const players = Array.from(snapshotEntityState.players.values());
+  const cars = Array.from(snapshotEntityState.cars.values());
+  const npcs = Array.from(snapshotEntityState.npcs.values());
+  const cops = Array.from(snapshotEntityState.cops.values());
+  const drops = Array.from(snapshotEntityState.drops.values());
+  const blood = Array.from(snapshotEntityState.blood.values());
+
+  const playersById = new Map(players.map((p) => [p.id, p]));
+  const carsById = new Map(cars.map((c) => [c.id, c]));
+
+  return {
+    serverTime: data.serverTime,
+    worldRev: data.worldRev,
+    keyframe: data.keyframe,
+    ackInputSeq: data.ackInputSeq >>> 0,
+    clientSendTimeEcho: data.clientSendTimeEcho >>> 0,
+    interpolationDelayMs: data.interpolationDelayMs,
+    scope: data.scope || null,
+    stats: data.stats || null,
+    players,
+    cars,
+    npcs,
+    cops,
+    drops,
+    blood,
+    playersById,
+    carsById,
+    localPlayer: playersById.get(playerId) || null,
+    events: (data.events || []).map(hydrateEventRecord),
+  };
+}
+
+function isSeqAcked(seq, ack) {
+  return ((ack - seq) >>> 0) < 0x80000000;
+}
+
+function pruneAckedInputs(ackSeq) {
+  while (pendingInputs.length > 0 && isSeqAcked(pendingInputs[0].seq >>> 0, ackSeq >>> 0)) {
+    pendingInputs.shift();
+  }
+}
+
+function carPhysicsByType(type) {
+  if (type === 'cop') return { maxSpeed: 190, turnSpeed: 3.1 };
+  if (type === 'ambulance') return { maxSpeed: 165, turnSpeed: 2.6 };
+  return { maxSpeed: 145, turnSpeed: 2.2 };
+}
+
+function stepPredictedMovement(pred, input, dt) {
+  if (!pred || pred.health <= 0 || pred.insideShopId) return;
+
+  if (!pred.inCarId) {
+    let mx = 0;
+    let my = 0;
+    if (input.left) mx -= 1;
+    if (input.right) mx += 1;
+    if (input.up) my -= 1;
+    if (input.down) my += 1;
+    if (mx !== 0 || my !== 0) {
+      const len = Math.hypot(mx, my);
+      mx /= len;
+      my /= len;
+      const nx = wrapWorldX(pred.x + mx * PLAYER_SPEED * dt);
+      const ny = wrapWorldY(pred.y + my * PLAYER_SPEED * dt);
+      if (!isSolidForPed(nx, pred.y)) pred.x = nx;
+      if (!isSolidForPed(pred.x, ny)) pred.y = ny;
+    }
+    const dx = input.aimX - pred.x;
+    const dy = input.aimY - pred.y;
+    if (dx * dx + dy * dy > 4) {
+      pred.dir = Math.atan2(dy, dx);
+    }
+    pred.x = wrapWorldX(pred.x);
+    pred.y = wrapWorldY(pred.y);
+    return;
+  }
+
+  if (!pred.car || pred.car.id !== pred.inCarId) return;
+  const car = pred.car;
+  const physics = carPhysicsByType(car.type);
+  const throttle = input.up ? 1 : 0;
+  const brake = input.down ? 1 : 0;
+  const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+
+  const acceleration = throttle * 300 - brake * 260;
+  car.speed += acceleration * dt;
+  if (!throttle && !brake) {
+    car.speed *= Math.pow(0.88, dt * 8);
+  }
+
+  if (groundTypeAtWrapped(car.x, car.y) !== 'road') {
+    car.speed *= Math.pow(0.92, dt * 12);
+  }
+  car.speed = clamp(car.speed, -92, physics.maxSpeed);
+
+  if (steer !== 0) {
+    const steeringStrength = clamp(Math.abs(car.speed) / 90, 0.24, 1.3);
+    const reverseFactor = car.speed < 0 ? -1 : 1;
+    car.angle += steer * physics.turnSpeed * steeringStrength * dt * reverseFactor;
+  }
+
+  const prevX = car.x;
+  const prevY = car.y;
+  car.x += Math.cos(car.angle) * car.speed * dt;
+  car.y += Math.sin(car.angle) * car.speed * dt;
+  enforcePredictedCarCollisions(car, prevX, prevY);
+  pred.x = car.x;
+  pred.y = car.y;
+  pred.dir = normalizeAngle(car.angle);
+}
+
+function createPredictionFromState(state) {
+  if (!state || !state.localPlayer) return null;
+  const local = state.localPlayer;
+  const pred = {
+    id: local.id,
+    x: local.x,
+    y: local.y,
+    dir: local.dir || 0,
+    inCarId: local.inCarId || null,
+    insideShopId: local.insideShopId || null,
+    health: local.health || 0,
+    car: null,
+  };
+  if (pred.inCarId) {
+    const car = state.carsById.get(pred.inCarId);
+    if (car) {
+      pred.car = {
+        id: car.id,
+        type: car.type,
+        x: car.x,
+        y: car.y,
+        angle: car.angle || 0,
+        speed: car.speed || 0,
+      };
+      pred.x = pred.car.x;
+      pred.y = pred.car.y;
+      pred.dir = pred.car.angle;
+    }
+  }
+  return pred;
+}
+
+function currentRealtimePredictionInput() {
+  return {
+    up: INPUT.up,
+    down: INPUT.down,
+    left: INPUT.left,
+    right: INPUT.right,
+    enter: INPUT.enter,
+    horn: INPUT.horn,
+    shootHeld: INPUT.shootHeld,
+    weaponSlot: INPUT.weaponSlot,
+    requestStats: INPUT.requestStats,
+    aimX: Math.round(POINTER.worldX * 100) / 100,
+    aimY: Math.round(POINTER.worldY * 100) / 100,
+    clickAimX: Math.round(INPUT.clickAimX * 100) / 100,
+    clickAimY: Math.round(INPUT.clickAimY * 100) / 100,
+  };
+}
+
+function reconcilePrediction(state, ackInputSeq) {
+  if (!ENABLE_LOCAL_PREDICTION) {
+    localPrediction = null;
+    pendingInputs.length = 0;
+    return;
+  }
+  if (!state || !state.localPlayer) {
+    localPrediction = null;
+    pendingInputs.length = 0;
+    return;
+  }
+  pruneAckedInputs(ackInputSeq);
+  const base = createPredictionFromState(state);
+  if (!base) {
+    localPrediction = null;
+    return;
+  }
+  for (const input of pendingInputs) {
+    stepPredictedMovement(base, input, input.dt || 1 / INPUT_SEND_RATE);
+  }
+
+  if (!localPrediction) {
+    localPrediction = base;
+    return;
+  }
+
+  const inCar = !!base.inCarId;
+  const healthStateChanged = (localPrediction.health > 0) !== (base.health > 0);
+  const stateChanged =
+    healthStateChanged ||
+    localPrediction.inCarId !== base.inCarId ||
+    localPrediction.insideShopId !== base.insideShopId;
+  if (stateChanged) {
+    localPrediction = base;
+    return;
+  }
+
+  const dx = wrapDelta(base.x - localPrediction.x, WORLD.width);
+  const dy = wrapDelta(base.y - localPrediction.y, WORLD.height);
+  const dist = Math.hypot(dx, dy);
+  const hardSnapDist = inCar ? 180 : 90;
+  if (dist > hardSnapDist) {
+    localPrediction = base;
+    return;
+  }
+
+  localPrediction.inCarId = base.inCarId;
+  localPrediction.insideShopId = base.insideShopId;
+  localPrediction.health = base.health;
+
+  if (inCar && base.car) {
+    if (!localPrediction.car || localPrediction.car.id !== base.car.id) {
+      localPrediction = base;
+      return;
+    }
+
+    const cdx = wrapDelta(base.car.x - localPrediction.car.x, WORLD.width);
+    const cdy = wrapDelta(base.car.y - localPrediction.car.y, WORLD.height);
+    const cdist = Math.hypot(cdx, cdy);
+    const angleDiff = Math.abs(normalizeAngle(base.car.angle - localPrediction.car.angle));
+    const speedDiff = Math.abs((base.car.speed || 0) - (localPrediction.car.speed || 0));
+
+    if (cdist > 200 || angleDiff > 1.6 || speedDiff > 110) {
+      localPrediction = base;
+      return;
+    }
+
+    // Prediction-first: keep current local trajectory unless a large desync is detected.
+    localPrediction.car.type = base.car.type;
+    localPrediction.x = localPrediction.car.x;
+    localPrediction.y = localPrediction.car.y;
+    localPrediction.dir = localPrediction.car.angle;
+    return;
+  }
+
+  // On foot prediction-first: keep local position/direction, only hard-snap on large divergence above.
+  localPrediction.car = null;
+}
+
+function stepLocalPredictionRealtime(dt) {
+  if (!ENABLE_LOCAL_PREDICTION) return;
+  if (!localPrediction || dt <= 0) return;
+  const step = 1 / LOCAL_PREDICTION_RATE;
+  localPredictionAccumulator += dt;
+  const input = currentRealtimePredictionInput();
+  if (input.up || input.down || input.left || input.right) {
+    lastMoveInputAtMs = performance.now();
+  }
+  let loops = 0;
+  while (localPredictionAccumulator >= step && loops < 8) {
+    stepPredictedMovement(localPrediction, input, step);
+    localPredictionAccumulator -= step;
+    loops += 1;
+  }
+  if (loops >= 8) {
+    localPredictionAccumulator = 0;
+  }
+}
+
+function applyPredictionToInterpolatedState(state) {
+  if (!ENABLE_LOCAL_PREDICTION) return;
+  if (!state || !state.localPlayer || !localPrediction) return;
+  const local = state.playersById.get(playerId);
+  if (!local) return;
+  local.x = localPrediction.x;
+  local.y = localPrediction.y;
+  local.dir = localPrediction.dir;
+  local.inCarId = localPrediction.inCarId || null;
+  state.localPlayer = local;
+  if (localPrediction.inCarId && localPrediction.car) {
+    const car = state.carsById.get(localPrediction.inCarId);
+    if (car) {
+      car.x = localPrediction.car.x;
+      car.y = localPrediction.car.y;
+      car.angle = localPrediction.car.angle;
+      car.speed = localPrediction.car.speed;
+    }
+  }
+}
+
+function updateClockSync(snapshotMessage, receiveNowMs) {
+  const echoed = snapshotMessage.clientSendTimeEcho >>> 0;
+  if (echoed > 0) {
+    const sampleRtt = receiveNowMs - echoed;
+    if (Number.isFinite(sampleRtt) && sampleRtt > 0 && sampleRtt < 5000) {
+      smoothedRttMs = smoothedRttMs * 0.95 + sampleRtt * 0.05;
+    }
+  }
+
+  const oneWay = smoothedRttMs * 0.5;
+  const sampleOffset = receiveNowMs - snapshotMessage.serverTime - oneWay;
+  if (!hasClockSync) {
+    serverClockOffsetMs = sampleOffset;
+    hasClockSync = true;
+  } else {
+    serverClockOffsetMs = serverClockOffsetMs * 0.96 + sampleOffset * 0.04;
+  }
+
+  if (!ENABLE_LOCAL_PREDICTION) {
+    dynamicInterpDelayMs = SERVER_RENDER_DELAY_MS;
+  } else {
+    const baseDelay = Number.isFinite(snapshotMessage.interpolationDelayMs)
+      ? snapshotMessage.interpolationDelayMs
+      : 85;
+    dynamicInterpDelayMs = clamp(baseDelay + smoothedRttMs * 0.06, REMOTE_INTERP_MIN_MS, REMOTE_INTERP_MAX_MS);
+  }
+  lastServerSnapshotTime = snapshotMessage.serverTime;
+}
+
+function estimatedServerTimeNow(localNowMs) {
+  if (!hasClockSync) return lastServerSnapshotTime;
+  return localNowMs - serverClockOffsetMs;
+}
+
 async function connectAndJoin() {
   if (joinBtn.disabled) return;
 
@@ -1411,21 +1984,16 @@ async function connectAndJoin() {
   }
 
   socket = new WebSocket(wsUrl());
+  socket.binaryType = 'arraybuffer';
 
   socket.addEventListener('open', () => {
-    socket.send(
-      JSON.stringify({
-        type: 'join',
-        name: selectedName,
-        color: selectedColor,
-      })
-    );
+    socket.send(encodeJoinFrame(selectedName, selectedColor));
   });
 
   socket.addEventListener('message', (event) => {
     let data;
     try {
-      data = JSON.parse(event.data);
+      data = decodeServerFrame(event.data);
     } catch {
       return;
     }
@@ -1439,6 +2007,14 @@ async function connectAndJoin() {
       }
       playerId = data.playerId;
       joined = true;
+      nextInputSeq = 1;
+      lastAckInputSeq = 0;
+      pendingInputs.length = 0;
+      localPrediction = null;
+      hasClockSync = false;
+      serverClockOffsetMs = 0;
+      smoothedRttMs = 120;
+      dynamicInterpDelayMs = 90;
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
       if (chatBar) {
@@ -1450,17 +2026,23 @@ async function connectAndJoin() {
     }
 
     if (data.type === 'snapshot') {
-      if (data.world) {
-        applyWorldFromServer(data.world);
-      }
       if (typeof data.worldRev === 'number' && Number.isFinite(data.worldRev)) {
         worldRev = data.worldRev;
       }
-      data.receivedAt = performance.now();
-      snapshots.push(data);
+      const receiveNow = performance.now();
+      updateClockSync(data, receiveNow);
+      const snapshot = applySnapshotDelta(data);
+      snapshot.receivedAt = receiveNow;
+      snapshots.push(snapshot);
       while (snapshots.length > 55) snapshots.shift();
-      lastSnapshot = data;
-      processEvents(data.events || []);
+      lastSnapshot = snapshot;
+      processEvents(snapshot.events || []);
+      if (ENABLE_LOCAL_PREDICTION) {
+        lastAckInputSeq = data.ackInputSeq >>> 0;
+        reconcilePrediction(snapshot, lastAckInputSeq);
+      } else {
+        localPrediction = null;
+      }
       return;
     }
 
@@ -1678,8 +2260,8 @@ function interpolateSnapshot(targetServerTime) {
     const prev = olderPlayers.get(next.id) || next;
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
       dir: angleLerp(prev.dir, next.dir, t),
     };
   });
@@ -1688,8 +2270,8 @@ function interpolateSnapshot(targetServerTime) {
     const prev = olderCars.get(next.id) || next;
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
       angle: angleLerp(prev.angle, next.angle, t),
       speed: lerp(prev.speed || 0, next.speed || 0, t),
     };
@@ -1702,8 +2284,8 @@ function interpolateSnapshot(targetServerTime) {
     }
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
       dir: angleLerp(prev.dir, next.dir, t),
     };
   });
@@ -1712,8 +2294,8 @@ function interpolateSnapshot(targetServerTime) {
     const prev = olderDrops.get(next.id) || next;
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
     };
   });
 
@@ -1724,8 +2306,8 @@ function interpolateSnapshot(targetServerTime) {
     }
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
       dir: angleLerp(prev.dir || 0, next.dir || 0, t),
     };
   });
@@ -1734,8 +2316,8 @@ function interpolateSnapshot(targetServerTime) {
     const prev = olderBlood.get(next.id) || next;
     return {
       ...next,
-      x: lerp(prev.x, next.x, t),
-      y: lerp(prev.y, next.y, t),
+      x: wrappedLerp(prev.x, next.x, t, WORLD.width),
+      y: wrappedLerp(prev.y, next.y, t, WORLD.height),
     };
   });
 
@@ -3012,13 +3594,23 @@ function renderState(state, dt) {
     return;
   }
 
-  camera.x = lerp(camera.x, state.localPlayer.x, 0.18);
-  camera.y = lerp(camera.y, state.localPlayer.y, 0.18);
-
   const halfW = canvas.width * 0.5;
   const halfH = canvas.height * 0.5;
+  if (localPrediction) {
+    // Keep local movement responsive and remove visual "rollback" caused by camera lag.
+    camera.x = Math.round(state.localPlayer.x - halfW) + halfW;
+    camera.y = Math.round(state.localPlayer.y - halfH) + halfH;
+  } else {
+    camera.x = lerp(camera.x, state.localPlayer.x, 0.18);
+    camera.y = lerp(camera.y, state.localPlayer.y, 0.18);
+  }
+
   camera.x = clamp(camera.x, halfW, WORLD.width - halfW);
   camera.y = clamp(camera.y, halfH, WORLD.height - halfH);
+  if (!localPrediction) {
+    camera.x = Math.round(camera.x);
+    camera.y = Math.round(camera.y);
+  }
 
   const worldLeft = camera.x - halfW;
   const worldTop = camera.y - halfH;
@@ -3281,14 +3873,21 @@ function startRenderLoop() {
 
     if (joined) {
       inputSendAccumulator += dt;
-      while (inputSendAccumulator >= 1 / 30) {
+      while (inputSendAccumulator >= 1 / INPUT_SEND_RATE) {
         sendInput();
-        inputSendAccumulator -= 1 / 30;
+        inputSendAccumulator -= 1 / INPUT_SEND_RATE;
       }
 
-      const serverTimeReference = Date.now() - 100;
+      if (ENABLE_LOCAL_PREDICTION) {
+        stepLocalPredictionRealtime(dt);
+      }
+
+      const serverTimeReference = estimatedServerTimeNow(now) - dynamicInterpDelayMs;
       const state = interpolateSnapshot(serverTimeReference);
       if (state && state.localPlayer) {
+        if (ENABLE_LOCAL_PREDICTION) {
+          applyPredictionToInterpolatedState(state);
+        }
         renderState(state, dt);
         updateHud(state);
         audio.update(state, now);
