@@ -3520,6 +3520,24 @@ function drawNpc(npc, worldLeft, worldTop) {
   );
 }
 
+function drawCopIdentityMarker(x, y, alert = false) {
+  // Distinct police cap + badge + label so cops are easy to identify.
+  ctx.fillStyle = '#0b1320';
+  ctx.fillRect(x - 4, y - 14, 8, 1);
+  ctx.fillStyle = '#5ea8ff';
+  ctx.fillRect(x - 3, y - 15, 6, 2);
+  ctx.fillStyle = '#f2d16b';
+  ctx.fillRect(x - 1, y - 10, 2, 2);
+
+  ctx.fillStyle = 'rgba(8, 16, 26, 0.74)';
+  ctx.fillRect(x - 7, y - 24, 14, 7);
+  ctx.fillStyle = alert ? '#ffe57a' : '#9bc6ff';
+  ctx.font = '5px "Lucida Console", Monaco, monospace';
+  const label = alert ? 'ALERT' : 'COP';
+  const width = Math.ceil(ctx.measureText(label).width);
+  ctx.fillText(label, x - Math.floor(width * 0.5), y - 19);
+}
+
 function drawCop(cop, worldLeft, worldTop) {
   if (cop.inCarId) {
     return;
@@ -3542,6 +3560,7 @@ function drawCop(cop, worldLeft, worldTop) {
   const uniform = cop.mode === 'hunt' ? '#4a8dff' : '#3e76d8';
   const walk = getWalkAnimationState(`c:${cop.id}`, cop.x, cop.y);
   drawPixelCharacter(x, y, cop.dir || 0, uniform, '#efc39e', '#1f3157', null, walk.step, walk.moving);
+  drawCopIdentityMarker(x, y, cop.alert);
   if (cop.alert) {
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(x - 1, y - 15, 2, 7);
