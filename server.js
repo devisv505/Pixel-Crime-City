@@ -79,6 +79,9 @@ const COP_CAR_DISMOUNT_RADIUS = 92;
 const COP_CAR_RECALL_RADIUS = 320;
 const COP_DEPLOY_PICK_RADIUS = 220;
 const COP_CAR_DEFAULT_CREW_SIZE = 2;
+const COP_COMBAT_STANDOFF_MIN = 96;
+const COP_COMBAT_STANDOFF_MAX = 168;
+const COP_COMBAT_STANDOFF_PIVOT = 132;
 
 const TRAFFIC_COUNT = 254;
 const COP_COUNT = 32;
@@ -1031,6 +1034,8 @@ function makeCopUnit() {
     mode: 'patrol',
     targetPlayerId: null,
     alertTimer: 0,
+    combatStrafeDir: Math.random() < 0.5 ? -1 : 1,
+    combatStrafeTimer: randRange(0.8, 1.6),
   };
   cops.set(cop.id, cop);
   return cop;
@@ -1061,6 +1066,8 @@ function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
   cop.mode = canRejoin ? 'return' : 'patrol';
   cop.targetPlayerId = null;
   cop.alertTimer = 0;
+  cop.combatStrafeDir = Math.random() < 0.5 ? -1 : 1;
+  cop.combatStrafeTimer = randRange(0.8, 1.6);
 }
 
 function removeCopFromAssignedCar(cop) {
@@ -2382,6 +2389,84 @@ function pointToSegmentDistanceSq(px, py, x1, y1, x2, y2) {
   return { distSq: dx * dx + dy * dy, t };
 }
 
+function rayIntersectCarDistance(sx, sy, dir, maxDist, car, inflate = 1.2) {
+  const toCarX = wrapDelta(car.x - sx, WORLD.width);
+  const toCarY = wrapDelta(car.y - sy, WORLD.height);
+  const carCenterX = sx + toCarX;
+  const carCenterY = sy + toCarY;
+
+  const c = Math.cos(car.angle);
+  const s = Math.sin(car.angle);
+  const ux = Math.cos(dir);
+  const uy = Math.sin(dir);
+
+  // Transform ray to car-local space where the car footprint is axis-aligned.
+  const relX = sx - carCenterX;
+  const relY = sy - carCenterY;
+  const rox = relX * c + relY * s;
+  const roy = -relX * s + relY * c;
+  const rdx = ux * c + uy * s;
+  const rdy = -ux * s + uy * c;
+
+  const halfL = car.width * CAR_COLLISION_HALF_LENGTH_SCALE + inflate;
+  const halfW = car.height * CAR_COLLISION_HALF_WIDTH_SCALE + inflate;
+
+  let tMin = 0;
+  let tMax = maxDist;
+  const eps = 0.000001;
+
+  if (Math.abs(rdx) < eps) {
+    if (rox < -halfL || rox > halfL) return null;
+  } else {
+    let t1 = (-halfL - rox) / rdx;
+    let t2 = (halfL - rox) / rdx;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMax < tMin) return null;
+  }
+
+  if (Math.abs(rdy) < eps) {
+    if (roy < -halfW || roy > halfW) return null;
+  } else {
+    let t1 = (-halfW - roy) / rdy;
+    let t2 = (halfW - roy) / rdy;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMax < tMin) return null;
+  }
+
+  if (tMax < 0) return null;
+  const tHit = tMin >= 0 ? tMin : tMax;
+  if (!Number.isFinite(tHit) || tHit < 0 || tHit > maxDist) return null;
+  return tHit;
+}
+
+function firstCarBlockDistance(sx, sy, dir, maxDist, ignoreCarId = null) {
+  let bestCar = null;
+  let bestDist = maxDist;
+  for (const car of cars.values()) {
+    if (ignoreCarId && car.id === ignoreCarId) continue;
+    const dist = rayIntersectCarDistance(sx, sy, dir, bestDist, car);
+    if (dist == null) continue;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestCar = car;
+    }
+  }
+  if (!bestCar) return null;
+  return { car: bestCar, dist: bestDist };
+}
+
 function firstSolidDistance(x, y, dir, maxDist) {
   const step = 6;
   const dx = Math.cos(dir);
@@ -2508,11 +2593,15 @@ function fireShot(player, clickAimOverride = null) {
     const pelletDir =
       weapon.type === 'melee' ? dir : dir + randRange(-weapon.spread * 0.5, weapon.spread * 0.5);
     let shotLength = firstSolidDistance(sx, sy, pelletDir, weapon.range);
+    const carBlock = firstCarBlockDistance(sx, sy, pelletDir, shotLength);
+    if (carBlock) {
+      shotLength = carBlock.dist;
+    }
     let ex = sx + Math.cos(pelletDir) * shotLength;
     let ey = sy + Math.sin(pelletDir) * shotLength;
 
-    let bestHitType = null;
-    let bestHit = null;
+    let bestHitType = carBlock ? 'car' : null;
+    let bestHit = carBlock ? carBlock.car : null;
     let bestDist = shotLength;
 
     for (const npc of npcs.values()) {
@@ -2569,6 +2658,8 @@ function fireShot(player, clickAimOverride = null) {
         damagePlayer(bestHit, weapon.damage, player);
       } else if (bestHitType === 'cop') {
         damageCop(bestHit, weapon.damage, player);
+      } else if (bestHitType === 'car') {
+        emitEvent('impact', { x: ex, y: ey });
       }
     }
 
@@ -3193,6 +3284,38 @@ function moveCop(cop, dir, speed, dt) {
   wrapWorldPosition(cop);
 }
 
+function moveCopCombat(cop, target, dt) {
+  const toTarget = wrappedVector(cop.x, cop.y, target.x, target.y);
+  const dist = toTarget.dist;
+  if (dist <= 0.001) return;
+
+  const toward = Math.atan2(toTarget.dy, toTarget.dx);
+  if (!Number.isFinite(cop.combatStrafeDir) || cop.combatStrafeDir === 0) {
+    cop.combatStrafeDir = Math.random() < 0.5 ? -1 : 1;
+  }
+  cop.combatStrafeTimer = Number.isFinite(cop.combatStrafeTimer) ? cop.combatStrafeTimer - dt : 0;
+  if (cop.combatStrafeTimer <= 0) {
+    cop.combatStrafeTimer = randRange(0.7, 1.6);
+    if (Math.random() < 0.5) {
+      cop.combatStrafeDir *= -1;
+    }
+  }
+
+  if (dist > COP_COMBAT_STANDOFF_MAX) {
+    moveCop(cop, toward, 92, dt);
+    return;
+  }
+  if (dist < COP_COMBAT_STANDOFF_MIN) {
+    moveCop(cop, angleWrap(toward + Math.PI), 84, dt);
+    return;
+  }
+
+  const strafeBase = angleWrap(toward + cop.combatStrafeDir * Math.PI * 0.5);
+  const rangeBias = clamp((dist - COP_COMBAT_STANDOFF_PIVOT) / 64, -0.22, 0.22);
+  const strafeDir = angleWrap(strafeBase + rangeBias + randRange(-0.08, 0.08));
+  moveCop(cop, strafeDir, 56, dt);
+}
+
 function shootAtTargetFromCop(cop, target) {
   const toTarget = wrappedVector(cop.x, cop.y, target.x, target.y);
   const dist = toTarget.dist;
@@ -3200,12 +3323,19 @@ function shootAtTargetFromCop(cop, target) {
 
   cop.cooldown = randRange(0.52, 0.86);
   const aim = Math.atan2(toTarget.dy, toTarget.dx) + randRange(-0.06, 0.06);
-  const maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
+  let maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
+  const carBlock = firstCarBlockDistance(cop.x, cop.y, aim, maxDist, cop.inCarId || null);
+  if (carBlock) {
+    maxDist = Math.min(maxDist, carBlock.dist);
+  }
   const ex = wrapWorldX(cop.x + Math.cos(aim) * maxDist);
   const ey = wrapWorldY(cop.y + Math.sin(aim) * maxDist);
   const directDist = toTarget.dist;
   if (directDist <= maxDist + 4) {
     damagePlayer(target, 15, null);
+  }
+  if (carBlock && carBlock.dist <= maxDist + 0.01) {
+    emitEvent('impact', { x: ex, y: ey });
   }
   emitEvent('bullet', {
     playerId: `cop_${cop.id}`,
@@ -3301,7 +3431,7 @@ function stepCops(dt) {
           } else {
             cop.mode = 'hunt';
             cop.targetPlayerId = target.id;
-            moveCop(cop, wrappedDirection(cop.x, cop.y, target.x, target.y), 98, dt);
+            moveCopCombat(cop, target, dt);
             shootAtTargetFromCop(cop, target);
           }
         } else {
@@ -3333,7 +3463,7 @@ function stepCops(dt) {
     if (target) {
       cop.mode = 'hunt';
       cop.targetPlayerId = target.id;
-      moveCop(cop, wrappedDirection(cop.x, cop.y, target.x, target.y), 94, dt);
+      moveCopCombat(cop, target, dt);
       shootAtTargetFromCop(cop, target);
     } else {
       const patrolDt = lodStepDt(cop.id, cop.x, cop.y, dt, 2, 3);
