@@ -20,6 +20,7 @@ const hudMode = document.getElementById('hudMode');
 const hudMoney = document.getElementById('hudMoney');
 const hudWanted = document.getElementById('hudWanted');
 const hudOnline = document.getElementById('hudOnline');
+const hudWorldStats = document.getElementById('hudWorldStats');
 const mapBtn = document.getElementById('mapBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsOverlay = document.getElementById('settingsOverlay');
@@ -473,6 +474,13 @@ class GameAudio {
 
   playExplosion(distance = 0) {
     if (this.playEffectClip('explosion', '/assets/audio/explosion.mp3', distance, 0.46, 1300, 0.1, 80)) {
+      return;
+    }
+    this.playImpact(distance);
+  }
+
+  playCopWitness(distance = 0) {
+    if (this.playEffectClip('police_scream_drop', '/assets/audio/police_scream_drop.mp3', distance, 0.38, 1200, 0.08, 900)) {
       return;
     }
     this.playImpact(distance);
@@ -1456,6 +1464,10 @@ function processEvents(events) {
         radius: ev.radius || 144,
         ttl: 0.38,
       });
+    } else if (ev.type === 'copWitness') {
+      if (ev.playerId === playerId) {
+        audio.playCopWitness(distance);
+      }
     } else if (ev.type === 'melee') {
       pushEffect({
         type: 'melee',
@@ -1474,6 +1486,9 @@ function processEvents(events) {
         dir: ev.dir || 0,
         speed: ev.speed || 80,
         rot: ev.dir || 0,
+        skinColor: ev.skinColor || '#f0c39a',
+        shirtColor: ev.shirtColor || '#808891',
+        shirtDark: ev.shirtDark || '#2a3342',
         ttl: 0.85,
       });
     } else if (ev.type === 'npcDown') {
@@ -2452,7 +2467,14 @@ function drawNpc(npc, worldLeft, worldTop) {
     return;
   }
 
-  drawPixelCharacter(x, y, npc.dir || 0, npc.shirtColor || '#8092a6', npc.skinColor || '#f0c39a', '#2a3342');
+  drawPixelCharacter(
+    x,
+    y,
+    npc.dir || 0,
+    npc.shirtColor || '#8092a6',
+    npc.skinColor || '#f0c39a',
+    npc.shirtDark || '#2a3342'
+  );
 }
 
 function drawCop(cop, worldLeft, worldTop) {
@@ -2476,6 +2498,14 @@ function drawCop(cop, worldLeft, worldTop) {
   }
   const uniform = cop.mode === 'hunt' ? '#4a8dff' : '#3e76d8';
   drawPixelCharacter(x, y, cop.dir || 0, uniform, '#efc39e', '#1f3157');
+  if (cop.alert) {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(x - 1, y - 15, 2, 7);
+    ctx.fillRect(x - 1, y - 7, 2, 2);
+    ctx.fillStyle = '#ffe164';
+    ctx.fillRect(x, y - 14, 1, 5);
+    ctx.fillRect(x, y - 7, 1, 1);
+  }
 }
 
 function updateEffects(dt) {
@@ -2523,10 +2553,12 @@ function drawEffects(worldLeft, worldTop) {
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(effect.rot || 0);
-      ctx.fillStyle = '#f0c39a';
+      ctx.fillStyle = effect.skinColor || '#f0c39a';
       ctx.fillRect(-3, -2, 6, 4);
-      ctx.fillStyle = '#808891';
+      ctx.fillStyle = effect.shirtColor || '#808891';
       ctx.fillRect(-4, 1, 8, 2);
+      ctx.fillStyle = effect.shirtDark || '#2a3342';
+      ctx.fillRect(-2, 3, 4, 1);
       ctx.restore();
     } else if (effect.type === 'cash') {
       const sx = Math.round(effect.x - worldLeft);
@@ -2855,6 +2887,18 @@ function updateHud(state) {
   hudWanted.textContent = p.stars > 0 ? `Stars: ${'*'.repeat(p.stars)}` : 'Stars: none';
   if (hudOnline) {
     hudOnline.textContent = `Online: ${(state.players || []).length}`;
+  }
+  if (hudWorldStats) {
+    const cars = state.cars || [];
+    const npcs = state.npcs || [];
+    const cops = state.cops || [];
+    const aliveNpcs = npcs.reduce((sum, npc) => sum + (npc.alive ? 1 : 0), 0);
+    const civilianCars = cars.reduce((sum, car) => sum + (car.type === 'civilian' ? 1 : 0), 0);
+    const copCars = cars.reduce((sum, car) => sum + (car.type === 'cop' ? 1 : 0), 0);
+    const ambulanceCars = cars.reduce((sum, car) => sum + (car.type === 'ambulance' ? 1 : 0), 0);
+    const aliveOfficers = cops.reduce((sum, cop) => sum + (cop.alive ? 1 : 0), 0);
+    hudWorldStats.textContent =
+      `NPC: ${aliveNpcs} | Cars: ${civilianCars} | Officers: ${aliveOfficers} | Cop Cars: ${copCars} | Ambulance: ${ambulanceCars}`;
   }
 }
 function resizeCanvas() {

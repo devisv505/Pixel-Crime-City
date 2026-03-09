@@ -222,6 +222,14 @@ button.secondary {
   font-size: 13px;
 }
 
+.hud-world-stats-row {
+  margin-top: 2px;
+  justify-content: flex-start;
+  gap: 0;
+  font-size: 11px;
+  color: #b5cad8;
+}
+
 .hud-help {
   margin-top: 5px;
   color: var(--muted);
