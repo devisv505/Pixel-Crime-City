@@ -1,4 +1,5 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const express = require('express');
@@ -49,6 +50,27 @@ const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(proces
 const PROGRESS_SECRET = String(process.env.PROGRESS_SECRET || 'pcc-progress-secret-v1');
 const PROGRESS_TOKEN_VERSION = 1;
 const PROGRESS_KEY = crypto.createHash('sha256').update(PROGRESS_SECRET).digest();
+const DATA_DIR = path.join(__dirname, 'data');
+const CRIME_REPUTATION_FILE = path.join(DATA_DIR, 'crime-reputation.json');
+const CRIME_REPUTATION_SAVE_DELAY_MS = 350;
+const CRIME_BOARD_DEFAULT_PAGE_SIZE = 8;
+const CRIME_BOARD_MAX_PAGE_SIZE = 32;
+const CRIME_WEIGHTS = Object.freeze({
+  npc_kill: 10,
+  npc_kill_witnessed: 16,
+  cop_assault: 2,
+  cop_kill: 22,
+  player_kill: 13,
+  car_theft_civilian: 6,
+  car_theft_ambulance: 9,
+  car_theft_cop: 18,
+  car_theft_cop_unattended: 12,
+  car_destroy_civilian: 8,
+  car_destroy_ambulance: 11,
+  car_destroy_cop: 14,
+  cop_car_assault: 20,
+  vehicular_assault: 3,
+});
 
 const WORLD = {
   width: 3840,
@@ -108,6 +130,7 @@ const npcs = new Map();
 const cops = new Map();
 const cashDrops = new Map();
 const bloodStains = new Map();
+const crimeReputationByProfileId = new Map();
 
 let nextId = 1;
 let nextEventId = 1;
@@ -119,6 +142,8 @@ const protocolIdsByEntityId = new Map();
 const entityIdByProtocolId = new Map();
 let bytesSentSinceReport = 0;
 let nextMetricsAt = Date.now() + 5_000;
+let crimeReputationDirty = false;
+let crimeReputationSaveTimer = null;
 const tickMsWindow = [];
 const snapshotBuildMsWindow = [];
 let snapshotAccumulator = 0;
@@ -225,8 +250,6 @@ const WEAPONS = {
     type: 'bullet',
   },
 };
-
-app.use(express.static(path.join(__dirname, 'public')));
 
 function mod(value, by) {
   return ((value % by) + by) % by;
@@ -642,6 +665,277 @@ function restoreProgressForPlayer(player, ticket, expectedName) {
   player.input.weaponSlot = 1;
   return true;
 }
+
+function normalizedNameKey(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase();
+}
+
+function sanitizeProfileId(raw) {
+  if (typeof raw !== 'string') return '';
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned.length < 6 || cleaned.length > 96) return '';
+  if (!/^[a-z0-9][a-z0-9._:-]{5,95}$/.test(cleaned)) return '';
+  return cleaned;
+}
+
+function legacyProfileIdForName(name) {
+  const key = normalizedNameKey(name);
+  if (!key) return '';
+  return `legacy:${key}`;
+}
+
+function crimeProfileTag(profileId) {
+  const text = String(profileId || '');
+  if (!text) return 'anon';
+  const short = text
+    .slice(-6)
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase();
+  return short || 'anon';
+}
+
+function clampCrimeRating(value) {
+  return clamp(Math.round(Number(value) || 0), 0, 0xffffffff);
+}
+
+function normalizeCrimeReputationRecord(record, fallbackProfileId = '') {
+  if (!record || typeof record !== 'object') return null;
+  const name = sanitizeName(record.name);
+  const profileId =
+    sanitizeProfileId(record.profileId) ||
+    sanitizeProfileId(fallbackProfileId) ||
+    legacyProfileIdForName(name);
+  if (!name || !profileId) return null;
+  return {
+    profileId,
+    name,
+    crimeRating: clampCrimeRating(record.crimeRating),
+    lastColor: normalizeHexColor(record.lastColor, '#58d2ff'),
+    updatedAt: Number.isFinite(record.updatedAt) ? Math.max(0, Math.round(record.updatedAt)) : Date.now(),
+  };
+}
+
+function loadCrimeReputationStore() {
+  crimeReputationByProfileId.clear();
+  let parsed = null;
+  try {
+    const raw = fs.readFileSync(CRIME_REPUTATION_FILE, 'utf8');
+    if (!raw.trim()) return;
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return;
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to load ${CRIME_REPUTATION_FILE}: ${error.message}`);
+    return;
+  }
+
+  const entries = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : null;
+  if (!entries) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] invalid reputation store format in ${CRIME_REPUTATION_FILE}; starting with empty store`);
+    return;
+  }
+
+  for (const entry of entries) {
+    const normalized = normalizeCrimeReputationRecord(entry, entry?.profileId);
+    if (!normalized) continue;
+    crimeReputationByProfileId.set(normalized.profileId, normalized);
+  }
+}
+
+function flushCrimeReputationStore() {
+  if (!crimeReputationDirty) return;
+  crimeReputationDirty = false;
+  const payload = {
+    version: 1,
+    updatedAt: Date.now(),
+    records: Array.from(crimeReputationByProfileId.values()),
+  };
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(CRIME_REPUTATION_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  } catch (error) {
+    crimeReputationDirty = true;
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to save ${CRIME_REPUTATION_FILE}: ${error.message}`);
+  }
+}
+
+function scheduleCrimeReputationSave() {
+  crimeReputationDirty = true;
+  if (crimeReputationSaveTimer) return;
+  crimeReputationSaveTimer = setTimeout(() => {
+    crimeReputationSaveTimer = null;
+    flushCrimeReputationStore();
+  }, CRIME_REPUTATION_SAVE_DELAY_MS);
+  if (typeof crimeReputationSaveTimer.unref === 'function') {
+    crimeReputationSaveTimer.unref();
+  }
+}
+
+function resolveCrimeProfileIdForJoin(name, profileId) {
+  return sanitizeProfileId(profileId) || legacyProfileIdForName(name);
+}
+
+function upsertCrimeReputationRecord(profileId, name, color) {
+  const safeName = sanitizeName(name);
+  if (!safeName) return null;
+  const normalizedProfileId = resolveCrimeProfileIdForJoin(safeName, profileId);
+  if (!normalizedProfileId) return null;
+  const safeColor = normalizeHexColor(color, '#58d2ff');
+
+  let record = crimeReputationByProfileId.get(normalizedProfileId) || null;
+  if (!record && !normalizedProfileId.startsWith('legacy:')) {
+    const legacyId = legacyProfileIdForName(safeName);
+    const legacyRecord = crimeReputationByProfileId.get(legacyId);
+    if (legacyRecord) {
+      crimeReputationByProfileId.delete(legacyId);
+      record = { ...legacyRecord, profileId: normalizedProfileId };
+      crimeReputationByProfileId.set(normalizedProfileId, record);
+    }
+  }
+
+  if (!record) {
+    record = {
+      profileId: normalizedProfileId,
+      name: safeName,
+      crimeRating: 0,
+      lastColor: safeColor,
+      updatedAt: Date.now(),
+    };
+    crimeReputationByProfileId.set(normalizedProfileId, record);
+  } else {
+    record.name = safeName;
+    record.lastColor = safeColor;
+    record.updatedAt = Date.now();
+  }
+
+  scheduleCrimeReputationSave();
+  return record;
+}
+
+function attachCrimeReputationToPlayer(player, profileId) {
+  if (!player) return;
+  const record = upsertCrimeReputationRecord(profileId, player.name, player.color);
+  if (!record) {
+    player.profileId = resolveCrimeProfileIdForJoin(player.name, profileId);
+    player.crimeRating = 0;
+    return;
+  }
+  player.profileId = record.profileId;
+  player.crimeRating = clampCrimeRating(record.crimeRating);
+}
+
+function addCrimeRating(player, amount) {
+  if (!player) return;
+  const gain = clampCrimeRating(amount);
+  if (gain <= 0) return;
+  const current = clampCrimeRating(player.crimeRating);
+  const next = clampCrimeRating(current + gain);
+  if (next === current) return;
+
+  player.crimeRating = next;
+  const record = upsertCrimeReputationRecord(player.profileId, player.name, player.color);
+  if (!record) return;
+  player.profileId = record.profileId;
+  record.crimeRating = next;
+  record.name = player.name;
+  record.lastColor = normalizeHexColor(player.color, record.lastColor || '#58d2ff');
+  record.updatedAt = Date.now();
+  scheduleCrimeReputationSave();
+}
+
+function removeCrimeRating(player, amount) {
+  if (!player) return;
+  const loss = clampCrimeRating(amount);
+  if (loss <= 0) return;
+  const current = clampCrimeRating(player.crimeRating);
+  const next = clampCrimeRating(current - loss);
+  if (next === current) return;
+
+  player.crimeRating = next;
+  const record = upsertCrimeReputationRecord(player.profileId, player.name, player.color);
+  if (!record) return;
+  player.profileId = record.profileId;
+  record.crimeRating = next;
+  record.name = player.name;
+  record.lastColor = normalizeHexColor(player.color, record.lastColor || '#58d2ff');
+  record.updatedAt = Date.now();
+  scheduleCrimeReputationSave();
+}
+
+function crimeWeightForDestroyedCar(car) {
+  if (!car) return CRIME_WEIGHTS.car_destroy_civilian;
+  if (car.type === 'cop') return CRIME_WEIGHTS.car_destroy_cop;
+  if (car.type === 'ambulance') return CRIME_WEIGHTS.car_destroy_ambulance;
+  return CRIME_WEIGHTS.car_destroy_civilian;
+}
+
+function sortedCrimeReputationRecords() {
+  const records = Array.from(crimeReputationByProfileId.values());
+  records.sort((a, b) => {
+    if (b.crimeRating !== a.crimeRating) return b.crimeRating - a.crimeRating;
+    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
+    return a.name.localeCompare(b.name);
+  });
+  return records;
+}
+
+function onlineCrimeProfileIds() {
+  const online = new Set();
+  for (const player of players.values()) {
+    const profileId = resolveCrimeProfileIdForJoin(player.name, player.profileId);
+    if (profileId) {
+      online.add(profileId);
+    }
+  }
+  return online;
+}
+
+app.get('/api/crime-leaderboard', (req, res) => {
+  const requestedPage = Number.parseInt(String(req.query.page || '1'), 10);
+  const requestedPageSize = Number.parseInt(String(req.query.pageSize || CRIME_BOARD_DEFAULT_PAGE_SIZE), 10);
+  const pageSize = clamp(
+    Number.isFinite(requestedPageSize) ? requestedPageSize : CRIME_BOARD_DEFAULT_PAGE_SIZE,
+    1,
+    CRIME_BOARD_MAX_PAGE_SIZE
+  );
+
+  const records = sortedCrimeReputationRecords();
+  const total = records.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
+  const start = (page - 1) * pageSize;
+  const onlineIds = onlineCrimeProfileIds();
+  const slice = records.slice(start, start + pageSize);
+
+  res.json({
+    page,
+    pageSize,
+    total,
+    totalPages,
+    players: slice.map((record, index) => ({
+      rank: start + index + 1,
+      name: record.name,
+      crimeRating: clampCrimeRating(record.crimeRating),
+      color: normalizeHexColor(record.lastColor, '#58d2ff'),
+      profileTag: crimeProfileTag(record.profileId),
+      online: onlineIds.has(record.profileId),
+    })),
+  });
+});
+
+process.on('exit', () => {
+  if (crimeReputationSaveTimer) {
+    clearTimeout(crimeReputationSaveTimer);
+    crimeReputationSaveTimer = null;
+  }
+  flushCrimeReputationStore();
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 function emitEvent(type, payload) {
   pendingEvents.push({
@@ -1103,6 +1397,7 @@ function destroyCar(car, attacker = null) {
   if (killer && !killer.insideShopId) {
     const starGain = car.type === 'cop' ? 1.6 : car.type === 'ambulance' ? 1.25 : 0.9;
     addStars(killer, starGain, 30);
+    addCrimeRating(killer, crimeWeightForDestroyedCar(car));
   }
 
   killCarOccupants(car, attacker);
@@ -1148,6 +1443,7 @@ function triggerCopCarAggroOnAttack(car, attacker) {
   if (!copCarHasOfficersInside(car)) return;
 
   forceFiveStars(attacker, 48);
+  addCrimeRating(attacker, CRIME_WEIGHTS.cop_car_assault);
   car.dismountTargetPlayerId = attacker.id;
   tryDeployCopOfficers(car, attacker, true);
   if (Array.isArray(car.dismountCopIds) && car.dismountCopIds.length > 0) {
@@ -1297,6 +1593,7 @@ function killCop(cop, killer = null) {
 
   if (killer && killer.health > 0) {
     addStars(killer, 1.25, 34);
+    addCrimeRating(killer, CRIME_WEIGHTS.cop_kill);
     const reward = randInt(4, 21);
     const drop = makeCashDrop(cop.x, cop.y, reward);
     emitEvent('cashDrop', {
@@ -1321,6 +1618,7 @@ function damageCop(cop, amount, attacker = null) {
     cop.targetPlayerId = attacker.id;
     cop.mode = 'hunt';
     addStars(attacker, 0.35, 18);
+    addCrimeRating(attacker, CRIME_WEIGHTS.cop_assault);
   }
 
   if (cop.health <= 0) {
@@ -1337,6 +1635,7 @@ function awardNpcKill(killerId, x, y) {
   if (witness.policeNear) {
     const alreadyInFiveStarPursuit = killer.stars >= 5 || killer.starHeat >= 4.99;
     addStars(killer, 5, 38);
+    addCrimeRating(killer, CRIME_WEIGHTS.npc_kill_witnessed);
     killer.starHeat = 5;
     killer.stars = 5;
     for (const copId of witness.witnessCopIds) {
@@ -1354,6 +1653,7 @@ function awardNpcKill(killerId, x, y) {
     }
   } else {
     addStars(killer, 1.0, 28);
+    addCrimeRating(killer, CRIME_WEIGHTS.npc_kill);
   }
   const drop = makeCashDrop(x, y, reward);
   emitEvent('cashDrop', {
@@ -1407,6 +1707,7 @@ function killNpc(npc, killerId = null) {
 function defeatPlayer(player) {
   if (player.respawnTimer > 0) return;
   player.health = 0;
+  removeCrimeRating(player, 50);
   player.respawnTimer = 2.6;
   player.hitCooldown = 0;
   player.insideShopId = null;
@@ -1787,13 +2088,16 @@ function handleEnterOrExit(player) {
     ejectNpcFromCar(candidate);
     if (candidate.type === 'cop') {
       forceFiveStars(player, 48);
+      addCrimeRating(player, CRIME_WEIGHTS.car_theft_cop);
       candidate.dismountTargetPlayerId = player.id;
       tryDeployCopOfficers(candidate, player);
       candidate.sirenOn = true;
     } else if (candidate.type === 'ambulance') {
       addStars(player, 1.0, 28);
+      addCrimeRating(player, CRIME_WEIGHTS.car_theft_ambulance);
     } else {
       addStars(player, 0.75, 26);
+      addCrimeRating(player, CRIME_WEIGHTS.car_theft_civilian);
     }
   }
 
@@ -1805,6 +2109,7 @@ function handleEnterOrExit(player) {
 
   if (candidate.type === 'cop' && !candidate.stolenFromNpc) {
     addStars(player, 0.8, 30);
+    addCrimeRating(player, CRIME_WEIGHTS.car_theft_cop_unattended);
   }
 
   emitEvent('enterCar', { playerId: player.id, carId: candidate.id, x: player.x, y: player.y });
@@ -2691,6 +2996,7 @@ function damagePlayer(victim, amount, attacker) {
     defeatPlayer(victim);
     if (attacker && attacker.id !== victim.id) {
       addStars(attacker, 0.8, 26);
+      addCrimeRating(attacker, CRIME_WEIGHTS.player_kill);
       emitEvent('pvpKill', {
         killerId: attacker.id,
         victimId: victim.id,
@@ -3285,6 +3591,7 @@ function stepPlayerHits(ctx = tickSpatialContext) {
         const offender = players.get(car.driverId);
         if (offender) {
           addStars(offender, 0.45, 20);
+          addCrimeRating(offender, CRIME_WEIGHTS.vehicular_assault);
         }
       }
 
@@ -4178,6 +4485,7 @@ function serializePlayerForSnapshot(player, now) {
     health: Math.round(player.health),
     stars: player.stars,
     money: player.money,
+    crimeRating: clampCrimeRating(player.crimeRating),
     weapon: player.weapon,
     ownedPistol: player.ownedPistol,
     ownedShotgun: player.ownedShotgun,
@@ -4447,6 +4755,7 @@ function toWirePlayerRecord(record, nowWallMs) {
     health: record.health,
     stars: record.stars,
     money: record.money,
+    crimeRating: clampCrimeRating(record.crimeRating),
     weapon: record.weapon || 'fist',
     ownedPistol: !!record.ownedPistol,
     ownedShotgun: !!record.ownedShotgun,
@@ -4752,6 +5061,7 @@ function handleJoin(ws, data) {
   const name = sanitizeName(data.name);
   const color = sanitizeColor(data.color);
   const profileTicket = typeof data.profileTicket === 'string' ? data.profileTicket : '';
+  const profileId = sanitizeProfileId(data.profileId);
 
   if (!name) {
     ws.send(encodeErrorFrame('Name must be 2-16 letters/numbers.'));
@@ -4777,6 +5087,7 @@ function handleJoin(ws, data) {
     shopExitY: spawn.y,
     health: 100,
     money: 0,
+    crimeRating: 0,
     stars: 0,
     starHeat: 0,
     starCooldown: 0,
@@ -4792,6 +5103,7 @@ function handleJoin(ws, data) {
     ownedShotgun: false,
     ownedMachinegun: false,
     ownedBazooka: false,
+    profileId: '',
     requestStats: false,
     lastInputSeq: 0,
     lastClientSendTime: 0,
@@ -4815,6 +5127,7 @@ function handleJoin(ws, data) {
   };
 
   restoreProgressForPlayer(player, profileTicket, name);
+  attachCrimeReputationToPlayer(player, profileId);
   const initialProgressSignature = progressSignatureFromPlayer(player);
   const initialProgressTicket = createProgressTicketForPlayer(player);
 
@@ -4979,6 +5292,8 @@ wss.on('connection', (ws) => {
     disconnectClient(ws);
   });
 });
+
+loadCrimeReputationStore();
 
 for (let i = 0; i < TRAFFIC_COUNT; i++) {
   makeCar('civilian');

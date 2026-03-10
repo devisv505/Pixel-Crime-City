@@ -90,6 +90,10 @@ body {
     0 0 0 1px rgba(120, 186, 225, 0.28);
 }
 
+#joinPanel.join-panel-centered {
+  transform: translateY(0);
+}
+
 h1 {
   margin: 0;
   font-size: clamp(20px, 4.2vw, 32px);
@@ -195,7 +199,7 @@ button.secondary {
 }
 
 #toColorBtn {
-  margin-top: 12px;
+  margin-top: 0;
 }
 
 .profile-hint {
@@ -244,6 +248,93 @@ button.secondary {
 
 .profile-row button {
   padding: 4px 8px;
+  font-size: 11px;
+}
+
+.crime-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  min-height: 264px;
+}
+
+.crime-board-row {
+  display: grid;
+  grid-template-columns: 34px 30px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(98, 137, 160, 0.45);
+  background: rgba(10, 20, 28, 0.6);
+  padding: 4px 6px;
+}
+
+.crime-board-rank {
+  color: #93bbd6;
+  font-size: 11px;
+}
+
+.crime-board-avatar {
+  width: 28px;
+  height: 28px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 1px solid rgba(118, 167, 196, 0.56);
+  background: rgba(7, 14, 20, 0.78);
+}
+
+.crime-board-main {
+  min-width: 0;
+}
+
+.crime-board-name {
+  color: #ecf7ff;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crime-board-sub {
+  margin-top: 1px;
+  color: #a8c3d6;
+  font-size: 10px;
+}
+
+.crime-board-score {
+  text-align: right;
+}
+
+.crime-board-score-value {
+  color: #ffcf77;
+  font-size: 12px;
+}
+
+.crime-board-color {
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a8c3d6;
+  font-size: 10px;
+}
+
+.crime-board-color-swatch {
+  width: 9px;
+  height: 9px;
+  border: 1px solid rgba(220, 238, 251, 0.55);
+}
+
+.crime-board-pagination {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#crimeBoardPage {
+  color: #d7edf9;
   font-size: 11px;
 }
 

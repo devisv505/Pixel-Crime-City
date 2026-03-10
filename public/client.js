@@ -9,13 +9,22 @@ const ctx = canvas.getContext('2d', { alpha: false });
 ctx.imageSmoothingEnabled = false;
 
 const joinOverlay = document.getElementById('joinOverlay');
+const joinPanel = document.getElementById('joinPanel');
 const stepName = document.getElementById('stepName');
+const stepCrime = document.getElementById('stepCrime');
 const stepColor = document.getElementById('stepColor');
 const nameInput = document.getElementById('nameInput');
 const profileNameList = document.getElementById('profileNameList');
 const profileHint = document.getElementById('profileHint');
 const profileList = document.getElementById('profileList');
 const toColorBtn = document.getElementById('toColorBtn');
+const openCrimeBoardBtn = document.getElementById('openCrimeBoardBtn');
+const crimeBoardList = document.getElementById('crimeBoardList');
+const crimeBoardStatus = document.getElementById('crimeBoardStatus');
+const crimeBoardPrevBtn = document.getElementById('crimeBoardPrevBtn');
+const crimeBoardNextBtn = document.getElementById('crimeBoardNextBtn');
+const crimeBoardPage = document.getElementById('crimeBoardPage');
+const crimeBoardBackBtn = document.getElementById('crimeBoardBackBtn');
 const backBtn = document.getElementById('backBtn');
 const joinBtn = document.getElementById('joinBtn');
 const colorGrid = document.getElementById('colorGrid');
@@ -28,6 +37,7 @@ const hudHealth = document.getElementById('hudHealth');
 const hudMode = document.getElementById('hudMode');
 const hudMoney = document.getElementById('hudMoney');
 const hudWanted = document.getElementById('hudWanted');
+const hudCrime = document.getElementById('hudCrime');
 const hudOnline = document.getElementById('hudOnline');
 const hudWorldStats = document.getElementById('hudWorldStats');
 const mapBtn = document.getElementById('mapBtn');
@@ -56,7 +66,10 @@ const mobileBtnFullscreen = document.getElementById('mobileBtnFullscreen');
 
 const PROFILE_STORAGE_KEY = 'pcc_profiles_v1';
 const PROFILE_LAST_NAME_KEY = 'pcc_profiles_last_name_v1';
+const PROFILE_ID_STORAGE_KEY = 'pcc_profile_ids_v1';
 const PROFILE_MAX_ENTRIES = 24;
+const CRIME_BOARD_PAGE_SIZE = 8;
+const CRIME_BOARD_REFRESH_MS = 5000;
 
 const COLOR_CHOICES = [
   '#58d2ff',
@@ -122,7 +135,9 @@ let playerId = null;
 let selectedName = '';
 let selectedColor = COLOR_CHOICES[0];
 let selectedProfileTicket = '';
+let selectedProfileId = '';
 let localProfiles = [];
+let profileIdsByName = new Map();
 let snapshots = [];
 let lastSnapshot = null;
 let lastFrameTime = performance.now();
@@ -149,6 +164,13 @@ let hasClockSync = false;
 let smoothedRttMs = 120;
 let dynamicInterpDelayMs = 90;
 let lastServerSnapshotTime = 0;
+let crimeBoardCurrentPage = 1;
+let crimeBoardTotalPages = 1;
+let crimeBoardTotal = 0;
+let crimeBoardEntries = [];
+let crimeBoardLoading = false;
+let crimeBoardRefreshTimer = null;
+let crimeBoardFetchToken = 0;
 
 const snapshotEntityState = {
   players: new Map(),
@@ -296,6 +318,75 @@ function parseStoredProfiles(raw) {
   return cleaned.slice(0, PROFILE_MAX_ENTRIES);
 }
 
+function sanitizeLocalProfileId(value) {
+  if (typeof value !== 'string') return '';
+  const cleaned = value.trim().toLowerCase();
+  if (cleaned.length < 6 || cleaned.length > 96) return '';
+  if (!/^[a-z0-9][a-z0-9._:-]{5,95}$/.test(cleaned)) return '';
+  return cleaned;
+}
+
+function parseStoredProfileIds(raw) {
+  if (!raw) return new Map();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return new Map();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map();
+  const result = new Map();
+  for (const [rawNameKey, rawId] of Object.entries(parsed)) {
+    const nameKey = profileNameKey(rawNameKey);
+    const profileId = sanitizeLocalProfileId(rawId);
+    if (!nameKey || !profileId) continue;
+    result.set(nameKey, profileId);
+  }
+  return result;
+}
+
+function saveProfileIdsToStorage() {
+  const payload = {};
+  for (const [nameKey, profileId] of profileIdsByName.entries()) {
+    payload[nameKey] = profileId;
+  }
+  localStorage.setItem(PROFILE_ID_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function randomHexBytes(length) {
+  const bytes = new Uint8Array(length);
+  if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let out = '';
+  for (const b of bytes) {
+    out += b.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+function generateLocalProfileId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return `pid_${window.crypto.randomUUID().replace(/-/g, '').toLowerCase()}`;
+  }
+  return `pid_${randomHexBytes(16)}`;
+}
+
+function ensureProfileIdForName(name) {
+  const key = profileNameKey(name);
+  if (!key) return '';
+  const existing = sanitizeLocalProfileId(profileIdsByName.get(key));
+  if (existing) return existing;
+  const created = generateLocalProfileId();
+  profileIdsByName.set(key, created);
+  saveProfileIdsToStorage();
+  return created;
+}
+
 function saveProfilesToStorage() {
   const payload = localProfiles.slice(0, PROFILE_MAX_ENTRIES);
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(payload));
@@ -415,6 +506,7 @@ function upsertStoredProfile(name, ticket) {
 
 function loadProfilesFromStorage() {
   localProfiles = parseStoredProfiles(localStorage.getItem(PROFILE_STORAGE_KEY));
+  profileIdsByName = parseStoredProfileIds(localStorage.getItem(PROFILE_ID_STORAGE_KEY));
   const remembered = String(localStorage.getItem(PROFILE_LAST_NAME_KEY) || '')
     .trim()
     .replace(/\s+/g, ' ');
@@ -425,6 +517,197 @@ function loadProfilesFromStorage() {
   }
   syncSelectedProfileFromName(nameInput.value);
   renderProfileUi();
+}
+
+function setCrimeBoardStatus(text = '') {
+  if (crimeBoardStatus) {
+    crimeBoardStatus.textContent = text;
+  }
+}
+
+function drawCrimeBoardAvatar(canvasNode, bodyColor) {
+  if (!canvasNode) return;
+  const g = canvasNode.getContext('2d');
+  if (!g) return;
+  g.imageSmoothingEnabled = false;
+  g.clearRect(0, 0, canvasNode.width, canvasNode.height);
+  g.fillStyle = 'rgba(0, 0, 0, 0.32)';
+  g.fillRect(7, 22, 14, 3);
+
+  const matrix = SPRITES.down;
+  const unit = 2;
+  const startX = 6;
+  const startY = 5;
+  const palette = {
+    '1': '#0f1620',
+    '2': '#f0c39a',
+    '3': normalizeHexColor(bodyColor, '#58d2ff'),
+    '4': '#1a3452',
+    '5': '#111111',
+  };
+  for (let row = 0; row < matrix.length; row += 1) {
+    const line = matrix[row];
+    for (let col = 0; col < line.length; col += 1) {
+      const token = line[col];
+      if (token === '.') continue;
+      g.fillStyle = palette[token];
+      g.fillRect(startX + col * unit, startY + row * unit, unit, unit);
+    }
+  }
+}
+
+function refreshCrimeBoardControls() {
+  if (crimeBoardPage) {
+    crimeBoardPage.textContent = `Page ${crimeBoardCurrentPage} / ${crimeBoardTotalPages}`;
+  }
+  if (crimeBoardPrevBtn) {
+    crimeBoardPrevBtn.disabled = crimeBoardLoading || crimeBoardCurrentPage <= 1;
+  }
+  if (crimeBoardNextBtn) {
+    crimeBoardNextBtn.disabled = crimeBoardLoading || crimeBoardCurrentPage >= crimeBoardTotalPages;
+  }
+}
+
+function renderCrimeBoardRows() {
+  if (!crimeBoardList) return;
+  crimeBoardList.innerHTML = '';
+  if (crimeBoardEntries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'crime-board-row';
+    empty.textContent = crimeBoardLoading ? 'Loading...' : 'No crime records found.';
+    crimeBoardList.appendChild(empty);
+    refreshCrimeBoardControls();
+    return;
+  }
+
+  for (const entry of crimeBoardEntries) {
+    const row = document.createElement('div');
+    row.className = 'crime-board-row';
+
+    const rank = document.createElement('div');
+    rank.className = 'crime-board-rank';
+    rank.textContent = `#${entry.rank}`;
+    row.appendChild(rank);
+
+    const avatar = document.createElement('canvas');
+    avatar.className = 'crime-board-avatar';
+    avatar.width = 28;
+    avatar.height = 28;
+    drawCrimeBoardAvatar(avatar, entry.color);
+    row.appendChild(avatar);
+
+    const main = document.createElement('div');
+    main.className = 'crime-board-main';
+    const name = document.createElement('div');
+    name.className = 'crime-board-name';
+    name.textContent = entry.name || 'Unknown';
+    main.appendChild(name);
+    const sub = document.createElement('div');
+    sub.className = 'crime-board-sub';
+    sub.textContent = `id:${entry.profileTag || 'anon'} | ${entry.online ? 'online' : 'offline'}`;
+    main.appendChild(sub);
+    row.appendChild(main);
+
+    const score = document.createElement('div');
+    score.className = 'crime-board-score';
+    const value = document.createElement('div');
+    value.className = 'crime-board-score-value';
+    value.textContent = `Crime ${Math.max(0, Number(entry.crimeRating) || 0)}`;
+    score.appendChild(value);
+
+    const colorLine = document.createElement('div');
+    colorLine.className = 'crime-board-color';
+    const swatch = document.createElement('span');
+    swatch.className = 'crime-board-color-swatch';
+    const safeColor = normalizeHexColor(entry.color, '#58d2ff');
+    swatch.style.background = safeColor;
+    colorLine.appendChild(swatch);
+    const colorText = document.createElement('span');
+    colorText.textContent = safeColor.toUpperCase();
+    colorLine.appendChild(colorText);
+    score.appendChild(colorLine);
+
+    row.appendChild(score);
+    crimeBoardList.appendChild(row);
+  }
+
+  refreshCrimeBoardControls();
+}
+
+async function fetchCrimeBoardPage(page, silent = false) {
+  const nextPage = Math.max(1, Math.round(Number(page) || 1));
+  const requestToken = ++crimeBoardFetchToken;
+  crimeBoardLoading = true;
+  if (!silent) {
+    setCrimeBoardStatus('Loading crime board...');
+  }
+  refreshCrimeBoardControls();
+  if (!silent) {
+    crimeBoardEntries = [];
+    renderCrimeBoardRows();
+  }
+
+  try {
+    const response = await fetch(`/api/crime-leaderboard?page=${nextPage}&pageSize=${CRIME_BOARD_PAGE_SIZE}`, {
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (requestToken !== crimeBoardFetchToken) return;
+
+    crimeBoardCurrentPage = Math.max(1, Math.round(Number(payload.page) || 1));
+    crimeBoardTotalPages = Math.max(1, Math.round(Number(payload.totalPages) || 1));
+    crimeBoardTotal = Math.max(0, Math.round(Number(payload.total) || 0));
+    crimeBoardEntries = Array.isArray(payload.players) ? payload.players : [];
+    renderCrimeBoardRows();
+    setCrimeBoardStatus(crimeBoardTotal > 0 ? `Tracked profiles: ${crimeBoardTotal}` : 'No crime records yet.');
+  } catch {
+    if (requestToken !== crimeBoardFetchToken) return;
+    crimeBoardCurrentPage = 1;
+    crimeBoardTotalPages = 1;
+    crimeBoardTotal = 0;
+    crimeBoardEntries = [];
+    renderCrimeBoardRows();
+    setCrimeBoardStatus('Failed to load crime board.');
+  } finally {
+    if (requestToken === crimeBoardFetchToken) {
+      crimeBoardLoading = false;
+      refreshCrimeBoardControls();
+    }
+  }
+}
+
+function stopCrimeBoardRefresh() {
+  if (crimeBoardRefreshTimer) {
+    clearInterval(crimeBoardRefreshTimer);
+    crimeBoardRefreshTimer = null;
+  }
+}
+
+function startCrimeBoardRefresh() {
+  stopCrimeBoardRefresh();
+  crimeBoardRefreshTimer = window.setInterval(() => {
+    const visible = stepCrime && stepCrime.classList.contains('active');
+    if (!visible || joined) return;
+    fetchCrimeBoardPage(crimeBoardCurrentPage, true);
+  }, CRIME_BOARD_REFRESH_MS);
+}
+
+function openCrimeBoardPanel() {
+  crimeBoardCurrentPage = 1;
+  crimeBoardTotalPages = 1;
+  crimeBoardTotal = 0;
+  crimeBoardEntries = [];
+  setCrimeBoardStatus('Loading crime board...');
+  renderCrimeBoardRows();
+  fetchCrimeBoardPage(1);
+  startCrimeBoardRefresh();
+}
+
+function closeCrimeBoardPanel() {
+  stopCrimeBoardRefresh();
 }
 
 function saveAudioSettings() {
@@ -1855,8 +2138,16 @@ function applyWorldFromServer(payload) {
 
 function setStep(step) {
   const showName = step === 'name';
+  const showCrime = step === 'crime';
+  const showColor = step === 'color';
+  if (joinPanel) {
+    joinPanel.classList.toggle('join-panel-centered', showCrime);
+  }
   stepName.classList.toggle('active', showName);
-  stepColor.classList.toggle('active', !showName);
+  if (stepCrime) {
+    stepCrime.classList.toggle('active', showCrime);
+  }
+  stepColor.classList.toggle('active', showColor);
 }
 
 function setJoinError(text = '') {
@@ -2074,6 +2365,7 @@ function sendChat(rawText) {
 
 function resetSessionState() {
   joined = false;
+  closeCrimeBoardPanel();
   playerId = null;
   snapshots = [];
   lastSnapshot = null;
@@ -2533,6 +2825,7 @@ async function connectAndJoin() {
   selectedName = normalizedName;
   const matchedProfile = findStoredProfileByName(selectedName);
   selectedProfileTicket = matchedProfile?.ticket || '';
+  selectedProfileId = ensureProfileIdForName(selectedName);
 
   await audio.init();
 
@@ -2544,7 +2837,7 @@ async function connectAndJoin() {
   socket.binaryType = 'arraybuffer';
 
   socket.addEventListener('open', () => {
-    socket.send(encodeJoinFrame(selectedName, selectedColor, selectedProfileTicket));
+    socket.send(encodeJoinFrame(selectedName, selectedColor, selectedProfileTicket, selectedProfileId));
   });
 
   socket.addEventListener('message', (event) => {
@@ -2579,6 +2872,7 @@ async function connectAndJoin() {
       } else {
         localStorage.setItem(PROFILE_LAST_NAME_KEY, selectedName);
       }
+      closeCrimeBoardPanel();
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
       if (chatBar) {
@@ -4391,6 +4685,9 @@ function updateHud(state) {
   }
   hudMoney.textContent = `Money: $${p.money || 0}`;
   hudWanted.textContent = p.stars > 0 ? `Stars: ${'*'.repeat(p.stars)}` : 'Stars: none';
+  if (hudCrime) {
+    hudCrime.textContent = `Crime: ${Math.max(0, Number(p.crimeRating) || 0)}`;
+  }
   if (hudOnline) {
     const online = presenceOnlineCount > 0 ? presenceOnlineCount : (state.players || []).length;
     hudOnline.textContent = `Online: ${online}`;
@@ -4689,8 +4986,43 @@ function attachUiEvents() {
     setStep('color');
   });
 
+  if (openCrimeBoardBtn) {
+    openCrimeBoardBtn.addEventListener('click', () => {
+      const normalizedName = nameInput.value.trim().replace(/\s+/g, ' ');
+      if (normalizedName.length >= 2 && normalizedName.length <= 16) {
+        selectedName = normalizedName;
+      }
+      setJoinError('');
+      setStep('crime');
+      openCrimeBoardPanel();
+    });
+  }
+
+  if (crimeBoardBackBtn) {
+    crimeBoardBackBtn.addEventListener('click', () => {
+      closeCrimeBoardPanel();
+      setJoinError('');
+      setStep('name');
+    });
+  }
+
+  if (crimeBoardPrevBtn) {
+    crimeBoardPrevBtn.addEventListener('click', () => {
+      if (crimeBoardLoading || crimeBoardCurrentPage <= 1) return;
+      fetchCrimeBoardPage(crimeBoardCurrentPage - 1);
+    });
+  }
+
+  if (crimeBoardNextBtn) {
+    crimeBoardNextBtn.addEventListener('click', () => {
+      if (crimeBoardLoading || crimeBoardCurrentPage >= crimeBoardTotalPages) return;
+      fetchCrimeBoardPage(crimeBoardCurrentPage + 1);
+    });
+  }
+
   backBtn.addEventListener('click', () => {
     setJoinError('');
+    closeCrimeBoardPanel();
     setStep('name');
   });
 
@@ -4812,6 +5144,8 @@ function boot() {
   populateColorGrid();
   selectColor(selectedColor);
   loadProfilesFromStorage();
+  renderCrimeBoardRows();
+  setCrimeBoardStatus('');
   setStep('name');
   resizeCanvas();
   attachUiEvents();

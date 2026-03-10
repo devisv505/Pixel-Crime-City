@@ -43,7 +43,24 @@
           <datalist id="profileNameList"></datalist>
           <div id="profileHint" class="profile-hint"></div>
           <div id="profileList" class="profile-list"></div>
-          <button id="toColorBtn">Continue</button>
+          <div class="buttons-row">
+            <button id="toColorBtn">Continue</button>
+            <button id="openCrimeBoardBtn" class="secondary" type="button">Crime Board</button>
+          </div>
+        </section>
+
+        <section id="stepCrime" class="step" aria-label="Crime board">
+          <h2>Crime Board</h2>
+          <div id="crimeBoardList" class="crime-board-list"></div>
+          <div id="crimeBoardStatus" class="profile-hint"></div>
+          <div class="crime-board-pagination">
+            <button id="crimeBoardPrevBtn" class="secondary" type="button">Prev</button>
+            <span id="crimeBoardPage">Page 1 / 1</span>
+            <button id="crimeBoardNextBtn" type="button">Next</button>
+          </div>
+          <div class="buttons-row">
+            <button id="crimeBoardBackBtn" class="secondary" type="button">Back</button>
+          </div>
         </section>
 
         <section id="stepColor" class="step" aria-label="Step 2: choose color">
@@ -74,6 +91,7 @@
       </div>
       <div class="hud-row">
         <span id="hudWanted"></span>
+        <span id="hudCrime"></span>
         <span id="hudOnline"></span>
       </div>
       <div class="hud-row hud-world-stats-row">

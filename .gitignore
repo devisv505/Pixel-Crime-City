@@ -3,3 +3,4 @@ npm-debug.log*
 server.log
 server-*.log
 logs/
+data/crime-reputation.json

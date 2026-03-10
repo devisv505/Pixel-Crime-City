@@ -262,11 +262,16 @@ function decodeClientFrame(raw) {
   const opcode = reader.u8();
 
   if (opcode === OPCODES.C2S_JOIN) {
+    const name = reader.string8();
+    const color = reader.color24();
+    const profileTicket = reader.string16();
+    const profileId = reader.offset < reader.buffer.length ? reader.string16() : '';
     return {
       opcode,
-      name: reader.string8(),
-      color: reader.color24(),
-      profileTicket: reader.string16(),
+      name,
+      color,
+      profileTicket,
+      profileId,
     };
   }
 
@@ -438,6 +443,7 @@ function encodeSnapshotFrame(payload) {
         writer.u8(clamp(Math.round(record.health || 0), 0, 255));
         writer.u8(clamp(Math.round(record.stars || 0), 0, 255));
         writer.u32(clamp(Math.round(record.money || 0), 0, 0xffffffff));
+        writer.u32(clamp(Math.round(record.crimeRating || 0), 0, 0xffffffff));
         writer.u8(WEAPON_TO_CODE[record.weapon] ?? 0);
         let owned = 0;
         if (record.ownedPistol) owned |= 1;

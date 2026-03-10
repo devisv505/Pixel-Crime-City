@@ -465,6 +465,7 @@ function decodeServerFrame(raw) {
           const health = reader.u8();
           const stars = reader.u8();
           const money = reader.u32();
+          const crimeRating = reader.u32();
           const weapon = CODE_TO_WEAPON[reader.u8()] || 'fist';
           const owned = reader.u8();
           const chatMsLeft = reader.u16();
@@ -481,6 +482,7 @@ function decodeServerFrame(raw) {
             health,
             stars,
             money,
+            crimeRating,
             weapon,
             ownedPistol: !!(owned & 1),
             ownedShotgun: !!(owned & 2),
@@ -629,12 +631,13 @@ function decodeServerFrame(raw) {
   throw new Error('Unknown opcode.');
 }
 
-function encodeJoinFrame(name, color, profileTicket = '') {
+function encodeJoinFrame(name, color, profileTicket = '', profileId = '') {
   const writer = new Writer(64);
   writer.u8(OPCODES.C2S_JOIN);
   writer.string8(name || '');
   writer.color24(color || '#ffffff');
   writer.string16(profileTicket || '');
+  writer.string16(profileId || '');
   return writer.finish();
 }
 
