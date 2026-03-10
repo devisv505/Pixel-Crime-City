@@ -1,4 +1,4 @@
-const ClientProtocol = (() => {
+﻿const ClientProtocol = (() => {
 const OPCODES = Object.freeze({
   C2S_JOIN: 0x01,
   C2S_INPUT: 0x02,
@@ -698,13 +698,44 @@ function encodeChatFrame(text) {
   return writer.finish();
 }
 
-return {
-  OPCODES,
+const codecUtils = Object.freeze({
+  Writer,
+  Reader,
+  clamp,
+  packCoord,
+  unpackCoord,
+  unpackAngle,
+  unpackSpeed,
+  unpackTtl,
+  colorHexToInt,
+  intToColorHex,
+  unpackShopIndex,
+});
+
+const eventCodec = Object.freeze({
+  decodeEvent,
+});
+
+const decodeCodec = Object.freeze({
   decodeServerFrame,
+});
+
+const encodeCodec = Object.freeze({
   encodeJoinFrame,
   encodeInputFrame,
   encodeBuyFrame,
   encodeChatFrame,
+});
+
+return {
+  OPCODES,
+  codecUtils,
+  eventCodec,
+  decodeServerFrame: decodeCodec.decodeServerFrame,
+  encodeJoinFrame: encodeCodec.encodeJoinFrame,
+  encodeInputFrame: encodeCodec.encodeInputFrame,
+  encodeBuyFrame: encodeCodec.encodeBuyFrame,
+  encodeChatFrame: encodeCodec.encodeChatFrame,
 };
 })();
 
