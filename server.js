@@ -50,8 +50,12 @@ const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(proces
 const PROGRESS_SECRET = String(process.env.PROGRESS_SECRET || 'pcc-progress-secret-v1');
 const PROGRESS_TOKEN_VERSION = 1;
 const PROGRESS_KEY = crypto.createHash('sha256').update(PROGRESS_SECRET).digest();
-const DATA_DIR = path.join(__dirname, 'data');
-const CRIME_REPUTATION_FILE = path.join(DATA_DIR, 'crime-reputation.json');
+const CRIME_REPUTATION_FILE_ENV = String(process.env.CRIME_REPUTATION_FILE || '').trim();
+const CRIME_REPUTATION_DIR_ENV = String(process.env.CRIME_REPUTATION_DIR || '').trim();
+const CRIME_REPUTATION_FILE = path.resolve(
+  CRIME_REPUTATION_FILE_ENV ||
+    path.join(CRIME_REPUTATION_DIR_ENV || path.join(__dirname, 'data'), 'crime-reputation.json')
+);
 const CRIME_REPUTATION_SAVE_DELAY_MS = 350;
 const CRIME_BOARD_DEFAULT_PAGE_SIZE = 8;
 const CRIME_BOARD_MAX_PAGE_SIZE = 32;
@@ -754,7 +758,7 @@ function flushCrimeReputationStore() {
     records: Array.from(crimeReputationByProfileId.values()),
   };
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(path.dirname(CRIME_REPUTATION_FILE), { recursive: true });
     fs.writeFileSync(CRIME_REPUTATION_FILE, JSON.stringify(payload, null, 2), 'utf8');
   } catch (error) {
     crimeReputationDirty = true;
