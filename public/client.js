@@ -1255,6 +1255,16 @@ function hash2D(x, y) {
   return (n >>> 0) / 4294967295;
 }
 
+function hashString(value) {
+  const text = String(value ?? '');
+  let n = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    n ^= text.charCodeAt(i);
+    n = Math.imul(n, 16777619);
+  }
+  return (n >>> 0) / 4294967295;
+}
+
 function worldGroundTypeAt(x, y) {
   if (x < 0 || y < 0 || x >= WORLD.width || y >= WORLD.height) {
     return 'void';
@@ -3201,19 +3211,37 @@ function drawSpecialBuildingSigns(state, worldLeft, worldTop) {
 }
 
 function drawDrops(state, worldLeft, worldTop) {
+  const now = renderNowMs * 0.001;
+  const bobAmplitude = 2.6;
   for (const drop of state.drops || []) {
-    const sx = Math.round(drop.x - worldLeft);
-    const sy = Math.round(drop.y - worldTop);
+    const baseX = drop.x - worldLeft;
+    const baseY = drop.y - worldTop;
+    const seed = hashString(drop.id);
+    const phase = seed * Math.PI * 2;
+    const bob = Math.sin(now * 4.7 + phase) * bobAmplitude;
+    const spin = Math.sin(now * 2.9 + phase * 1.31) * 0.26;
+    const airborne = clamp((bob + bobAmplitude) / (bobAmplitude * 2), 0, 1);
+    const sx = Math.round(baseX);
+    const sy = Math.round(baseY - bob);
     if (sx < -16 || sy < -16 || sx > canvas.width + 16 || sy > canvas.height + 16) {
       continue;
     }
 
+    const shadowWidth = 9 - Math.round(airborne * 2);
+    const shadowAlpha = 0.32 - airborne * 0.17;
+    ctx.fillStyle = `rgba(6, 26, 10, ${shadowAlpha.toFixed(3)})`;
+    ctx.fillRect(sx - Math.floor(shadowWidth * 0.5), Math.round(baseY + 4), shadowWidth, 2);
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(spin);
     ctx.fillStyle = '#245a2a';
-    ctx.fillRect(sx - 4, sy - 3, 8, 6);
+    ctx.fillRect(-4, -3, 8, 6);
     ctx.fillStyle = '#7dff78';
-    ctx.fillRect(sx - 3, sy - 2, 6, 4);
+    ctx.fillRect(-3, -2, 6, 4);
     ctx.fillStyle = '#0a2c0f';
-    ctx.fillRect(sx - 1, sy - 2, 2, 4);
+    ctx.fillRect(-1, -2, 2, 4);
+    ctx.restore();
   }
 }
 
