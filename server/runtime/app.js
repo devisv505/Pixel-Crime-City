@@ -108,9 +108,158 @@ const QUEST_ACTION_TYPES = Object.freeze([
   'kill_cop',
   'steal_car_any',
   'steal_car_cop',
+  'steal_car_cop_sell_garage',
+  'steal_car_ambulance_sell_garage',
+  'steal_car_civilian_sell_garage',
   'steal_car_ambulance',
   'kill_target_npc',
   'steal_target_car',
+]);
+const INITIAL_QUEST_SEED_V1 = Object.freeze([
+  Object.freeze({
+    questKey: 'street_warmup_npc_10',
+    title: 'Street Warmup',
+    description: 'Take down 10 NPCs to prove yourself on the streets.',
+    actionType: 'kill_npc',
+    targetCount: 10,
+    rewardMoney: 120,
+    rewardReputation: 6,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'unlock_arms_car_any_5',
+    title: 'Booster One',
+    description: 'Steal 5 cars around the city.',
+    actionType: 'steal_car_any',
+    targetCount: 5,
+    rewardMoney: 150,
+    rewardReputation: 8,
+    rewardUnlockGunShop: true,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_car_theft_2',
+    title: 'Heat Magnet',
+    description: 'Steal 2 police cars.',
+    actionType: 'steal_car_cop',
+    targetCount: 2,
+    rewardMoney: 200,
+    rewardReputation: 12,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_car_sell_2',
+    title: 'Chop the Badge',
+    description: 'Sell 2 police cars in garage.',
+    actionType: 'steal_car_cop_sell_garage',
+    targetCount: 2,
+    rewardMoney: 260,
+    rewardReputation: 14,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'ambulance_theft_2',
+    title: 'Hijack Response',
+    description: 'Steal 2 ambulances.',
+    actionType: 'steal_car_ambulance',
+    targetCount: 2,
+    rewardMoney: 180,
+    rewardReputation: 10,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'ambulance_sell_2',
+    title: 'Scrap the Siren',
+    description: 'Sell 2 ambulances in garage.',
+    actionType: 'steal_car_ambulance_sell_garage',
+    targetCount: 2,
+    rewardMoney: 240,
+    rewardReputation: 13,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'civilian_sell_5',
+    title: 'Garage Runner',
+    description: 'Sell 5 civilian cars in garage.',
+    actionType: 'steal_car_civilian_sell_garage',
+    targetCount: 5,
+    rewardMoney: 210,
+    rewardReputation: 11,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_cleanup_8',
+    title: 'Blue Line Breaker',
+    description: 'Take down 8 cops.',
+    actionType: 'kill_cop',
+    targetCount: 8,
+    rewardMoney: 320,
+    rewardReputation: 18,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'target_npc_3',
+    title: 'Marked Faces',
+    description: 'Eliminate 3 marked targets.',
+    actionType: 'kill_target_npc',
+    targetCount: 3,
+    rewardMoney: 350,
+    rewardReputation: 20,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'target_car_3',
+    title: 'Exact Pickup',
+    description: 'Steal 3 assigned target cars.',
+    actionType: 'steal_target_car',
+    targetCount: 3,
+    rewardMoney: 420,
+    rewardReputation: 24,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'city_pressure_npc_40',
+    title: 'City Under Pressure',
+    description: 'Take down 40 NPCs.',
+    actionType: 'kill_npc',
+    targetCount: 40,
+    rewardMoney: 500,
+    rewardReputation: 28,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'finale_mixed_sell_10',
+    title: 'Final Strip',
+    description: 'Sell 10 civilian cars in garage.',
+    actionType: 'steal_car_civilian_sell_garage',
+    targetCount: 10,
+    rewardMoney: 650,
+    rewardReputation: 35,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
 ]);
 const QUEST_TARGET_ZONE_RADIUS = 220;
 const QUEST_TARGET_ZONE_REFRESH_MS = 5_000;
@@ -118,7 +267,8 @@ const QUEST_TARGET_SKIN_COLOR = '#ffd86b';
 const QUEST_TARGET_SHIRT_COLOR = '#f0b11a';
 const QUEST_TARGET_SHIRT_DARK = '#7e4f00';
 const QUEST_JSON_MAX_BYTES = 8 * 1024;
-const QUEST_SCHEMA_MIGRATION_LATEST = 3;
+const QUEST_KEY_MAX_LENGTH = 80;
+const QUEST_SCHEMA_MIGRATION_LATEST = 5;
 const SERVER_BOOT_TIME_MS = Date.now();
 const ADMIN_USER = String(process.env.ADMIN_USER || '').trim();
 const ADMIN_PASS = String(process.env.ADMIN_PASS || '').trim();
@@ -613,6 +763,27 @@ function sanitizeProfileId(raw) {
   return cleaned;
 }
 
+function sanitizeQuestKey(raw) {
+  if (typeof raw !== 'string') return '';
+  let cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '');
+  if (!cleaned) return '';
+  if (cleaned.length > QUEST_KEY_MAX_LENGTH) {
+    cleaned = cleaned.slice(0, QUEST_KEY_MAX_LENGTH).replace(/^[_\-.]+|[_\-.]+$/g, '');
+  }
+  return cleaned;
+}
+
+function questKeyFromTitle(title) {
+  const fromTitle = sanitizeQuestKey(String(title || '').replace(/\s+/g, '_'));
+  if (fromTitle) return fromTitle;
+  return 'quest';
+}
+
 function legacyProfileIdForName(name) {
   const key = normalizedNameKey(name);
   if (!key) return '';
@@ -836,6 +1007,137 @@ function runCrimeReputationMigrations(db) {
         }
       },
     },
+    {
+      version: 4,
+      name: 'quest_key',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('quest_key')) {
+          db.exec('ALTER TABLE quests ADD COLUMN quest_key TEXT');
+        }
+        const rows = db.prepare('SELECT id, quest_key AS questKey FROM quests ORDER BY id ASC').all();
+        const usedKeys = new Set();
+        const update = db.prepare('UPDATE quests SET quest_key = @questKey WHERE id = @id');
+        for (const row of rows) {
+          const id = Number(row?.id) >>> 0;
+          if (!id) continue;
+          const rawCurrent = String(row?.questKey || '').trim();
+          let nextKey = sanitizeQuestKey(rawCurrent);
+          if (!nextKey || usedKeys.has(nextKey)) {
+            nextKey = sanitizeQuestKey(`legacy_${id}`) || `legacy_${id}`;
+            let suffix = 2;
+            while (usedKeys.has(nextKey)) {
+              nextKey = sanitizeQuestKey(`legacy_${id}_${suffix}`) || `legacy_${id}_${suffix}`;
+              suffix += 1;
+            }
+          }
+          usedKeys.add(nextKey);
+          if (rawCurrent !== nextKey) {
+            update.run({ id, questKey: nextKey });
+          }
+        }
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_quests_quest_key ON quests (quest_key)');
+      },
+    },
+    {
+      version: 5,
+      name: 'initial_quest_seed_v1',
+      up() {
+        const totalRow = db.prepare('SELECT COUNT(1) AS total FROM quests').get();
+        const total = Math.max(0, Math.round(Number(totalRow?.total) || 0));
+        if (total > 0) return;
+        const insert = db.prepare(`
+          INSERT INTO quests (
+            quest_key,
+            title,
+            description,
+            action_type,
+            action_params_json,
+            target_count,
+            sort_order,
+            reward_money,
+            reward_reputation,
+            reward_unlock_gun_shop,
+            reward_payload_json,
+            reset_on_death,
+            is_active,
+            created_at,
+            updated_at
+          ) VALUES (
+            @questKey,
+            @title,
+            @description,
+            @actionType,
+            @actionParamsJson,
+            @targetCount,
+            @sortOrder,
+            @rewardMoney,
+            @rewardReputation,
+            @rewardUnlockGunShop,
+            @rewardPayloadJson,
+            @resetOnDeath,
+            @isActive,
+            @createdAt,
+            @updatedAt
+          )
+        `);
+        const usedKeys = new Set();
+        const now = Date.now();
+        let fallbackSortOrder = 10;
+        for (const seed of INITIAL_QUEST_SEED_V1) {
+          const title = String(seed?.title || '').trim().slice(0, 80);
+          const actionType = normalizeQuestActionType(seed?.actionType);
+          if (!title || !actionType) continue;
+          const targetCount = clamp(Math.round(Number(seed?.targetCount) || 0), 1, 65535);
+          const rewardMoney = clamp(Math.round(Number(seed?.rewardMoney) || 0), 0, 0xffffffff);
+          const rewardReputation = clamp(Math.round(Number(seed?.rewardReputation) || 0), 0, 0xffffffff);
+          const rewardUnlockGunShop = !!seed?.rewardUnlockGunShop;
+          const rewardPayload = normalizeQuestRewardPayloadObject(
+            seed?.rewardPayload,
+            rewardMoney,
+            rewardReputation,
+            rewardUnlockGunShop
+          );
+          const actionParams = normalizeQuestJsonObject(seed?.actionParams, {});
+          let questKey = sanitizeQuestKey(seed?.questKey) || questKeyFromTitle(title);
+          if (usedKeys.has(questKey)) {
+            let suffix = 2;
+            let candidate = questKey;
+            while (usedKeys.has(candidate)) {
+              const suffixText = `_${suffix}`;
+              const base = questKey.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - suffixText.length));
+              candidate = `${base}${suffixText}`;
+              suffix += 1;
+            }
+            questKey = candidate;
+          }
+          usedKeys.add(questKey);
+          const sortOrder = clamp(
+            Math.round(Number.isFinite(Number(seed?.sortOrder)) ? Number(seed.sortOrder) : fallbackSortOrder),
+            -2147483648,
+            2147483647
+          );
+          insert.run({
+            questKey,
+            title,
+            description: String(seed?.description || '').trim().slice(0, 400),
+            actionType,
+            actionParamsJson: stringifyQuestJsonObject(actionParams, {}),
+            targetCount,
+            sortOrder,
+            rewardMoney,
+            rewardReputation,
+            rewardUnlockGunShop: rewardUnlockGunShop ? 1 : 0,
+            rewardPayloadJson: stringifyQuestJsonObject(rewardPayload, {}),
+            resetOnDeath: seed?.resetOnDeath ? 1 : 0,
+            isActive: seed?.isActive === false ? 0 : 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+          fallbackSortOrder += 10;
+        }
+      },
+    },
   ];
 
   for (const migration of migrations) {
@@ -874,6 +1176,7 @@ function ensureCrimeReputationDb() {
         ON crime_reputation (crime_rating DESC, updated_at DESC, name ASC);
       CREATE TABLE IF NOT EXISTS quests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quest_key TEXT NOT NULL,
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         action_type TEXT NOT NULL,
@@ -1007,6 +1310,7 @@ function ensureCrimeReputationDb() {
     questSql.listActive = crimeReputationDb.prepare(`
       SELECT
         id,
+        quest_key AS questKey,
         title,
         description,
         action_type AS actionType,
@@ -1028,6 +1332,7 @@ function ensureCrimeReputationDb() {
     questSql.listAll = crimeReputationDb.prepare(`
       SELECT
         id,
+        quest_key AS questKey,
         title,
         description,
         action_type AS actionType,
@@ -1048,6 +1353,7 @@ function ensureCrimeReputationDb() {
     questSql.getById = crimeReputationDb.prepare(`
       SELECT
         id,
+        quest_key AS questKey,
         title,
         description,
         action_type AS actionType,
@@ -1068,6 +1374,7 @@ function ensureCrimeReputationDb() {
     `);
     questSql.insert = crimeReputationDb.prepare(`
       INSERT INTO quests (
+        quest_key,
         title,
         description,
         action_type,
@@ -1083,6 +1390,7 @@ function ensureCrimeReputationDb() {
         created_at,
         updated_at
       ) VALUES (
+        @questKey,
         @title,
         @description,
         @actionType,
@@ -1102,6 +1410,7 @@ function ensureCrimeReputationDb() {
     questSql.update = crimeReputationDb.prepare(`
       UPDATE quests
       SET
+        quest_key = @questKey,
         title = @title,
         description = @description,
         action_type = @actionType,
@@ -1116,6 +1425,12 @@ function ensureCrimeReputationDb() {
         is_active = @isActive,
         updated_at = @updatedAt
       WHERE id = @id
+    `);
+    questSql.selectIdByQuestKey = crimeReputationDb.prepare(`
+      SELECT id
+      FROM quests
+      WHERE quest_key = @questKey
+      LIMIT 1
     `);
     questSql.delete = crimeReputationDb.prepare('DELETE FROM quests WHERE id = @id');
     questSql.deleteProgressByQuestId = crimeReputationDb.prepare(
@@ -1423,15 +1738,51 @@ function normalizeQuestActionType(raw) {
   return QUEST_ACTION_TYPES.includes(value) ? value : '';
 }
 
+function isQuestKeyTaken(questKey, excludeQuestId = 0) {
+  const safeQuestKey = sanitizeQuestKey(questKey);
+  if (!safeQuestKey) return false;
+  if (!ensureCrimeReputationDb()) return false;
+  if (!questSql.selectIdByQuestKey) return false;
+  try {
+    const row = questSql.selectIdByQuestKey.get({ questKey: safeQuestKey });
+    const foundId = Number(row?.id) >>> 0;
+    if (!foundId) return false;
+    const excludedId = Number(excludeQuestId) >>> 0;
+    return foundId !== excludedId;
+  } catch {
+    return false;
+  }
+}
+
+function buildUniqueQuestKey(rawQuestKey, fallbackTitle, excludeQuestId = 0) {
+  const excludedId = Number(excludeQuestId) >>> 0;
+  const base = sanitizeQuestKey(rawQuestKey) || questKeyFromTitle(fallbackTitle);
+  let candidate = base;
+  if (!isQuestKeyTaken(candidate, excludedId)) return candidate;
+  let suffix = 2;
+  while (suffix < 100000) {
+    const suffixText = `_${suffix}`;
+    const prefix = base.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - suffixText.length));
+    candidate = `${prefix}${suffixText}`;
+    if (!isQuestKeyTaken(candidate, excludedId)) return candidate;
+    suffix += 1;
+  }
+  const fallbackSuffix = `_${Date.now().toString(36).slice(-6)}`;
+  return `${base.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - fallbackSuffix.length))}${fallbackSuffix}`;
+}
+
 function clampQuestProgress(value, targetCount) {
   return clamp(Math.round(Number(value) || 0), 0, Math.max(0, targetCount));
 }
 
 function normalizeQuestRow(row) {
   if (!row || typeof row !== 'object') return null;
+  const id = Number(row.id) >>> 0;
+  if (!id) return null;
   const actionType = normalizeQuestActionType(row.actionType);
   const title = String(row.title || '').trim().slice(0, 80);
   if (!actionType || !title) return null;
+  const questKey = sanitizeQuestKey(row.questKey) || sanitizeQuestKey(`legacy_${id}`) || `legacy_${id}`;
   const targetCount = clamp(Math.round(Number(row.targetCount) || 0), 1, 65535);
   const rewardMoney = clamp(Math.round(Number(row.rewardMoney) || 0), 0, 0xffffffff);
   const rewardReputation = clamp(Math.round(Number(row.rewardReputation) || 0), 0, 0xffffffff);
@@ -1444,7 +1795,8 @@ function normalizeQuestRow(row) {
     rewardUnlockGunShop
   );
   return {
-    id: Number(row.id) >>> 0,
+    id,
+    questKey,
     title,
     description: String(row.description || '').trim().slice(0, 400),
     actionType,
@@ -2746,6 +3098,10 @@ function requireAdminApiAuth(req, res, next) {
 
 function normalizeQuestInput(payload, fallbackSortOrder = 0) {
   if (!payload || typeof payload !== 'object') return null;
+  const rawQuestKey = payload.questKey;
+  const questKeyProvided = rawQuestKey !== undefined && rawQuestKey !== null;
+  const questKey = questKeyProvided ? sanitizeQuestKey(String(rawQuestKey || '')) : '';
+  if (questKeyProvided && !questKey) return null;
   const title = String(payload.title || '').trim().slice(0, 80);
   const description = String(payload.description || '').trim().slice(0, 400);
   const actionType = normalizeQuestActionType(payload.actionType);
@@ -2786,6 +3142,7 @@ function normalizeQuestInput(payload, fallbackSortOrder = 0) {
   const isActive = payload.isActive == null ? true : !!payload.isActive;
   if (!title || !actionType) return null;
   return {
+    questKey,
     title,
     description,
     actionType,
@@ -2816,6 +3173,7 @@ function serializeQuestForAdmin(quest) {
   if (!quest) return null;
   return {
     id: quest.id >>> 0,
+    questKey: String(quest.questKey || ''),
     title: quest.title,
     description: quest.description,
     actionType: quest.actionType,
@@ -2934,7 +3292,9 @@ app.post('/api/admin/quests', requireAdminApiAuth, (req, res) => {
   }
   const now = Date.now();
   try {
+    const questKey = buildUniqueQuestKey(input.questKey, input.title);
     const result = questSql.insert.run({
+      questKey,
       title: input.title,
       description: input.description,
       actionType: input.actionType,
@@ -2976,6 +3336,7 @@ app.put('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
   const input = normalizeQuestInput(
     {
       title: req.body?.title ?? existing.title,
+      questKey: req.body?.questKey ?? existing.questKey,
       description: req.body?.description ?? existing.description,
       actionType: req.body?.actionType ?? existing.actionType,
       actionParams: req.body?.actionParams ?? existing.actionParams,
@@ -2996,9 +3357,11 @@ app.put('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
   }
   const shouldResetProgress = questCoreDefinitionChanged(existing, input);
   try {
+    const questKey = buildUniqueQuestKey(input.questKey || existing.questKey, input.title, id);
     const tx = crimeReputationDb.transaction((questId) => {
       questSql.update.run({
         id: questId,
+        questKey,
         title: input.title,
         description: input.description,
         actionType: input.actionType,
@@ -4368,6 +4731,13 @@ function trySellGarageCar(player) {
   const wasTargetCar = isCarQuestTargetForPlayer(car.id, player.profileId);
   player.money = clamp(Math.round(Number(player.money) || 0) + GARAGE_SELL_PRICE, 0, 0xffffffff);
   incrementQuestAction(player, 'steal_car_any', 1);
+  if (car.type === 'cop') {
+    incrementQuestAction(player, 'steal_car_cop_sell_garage', 1);
+  } else if (car.type === 'ambulance') {
+    incrementQuestAction(player, 'steal_car_ambulance_sell_garage', 1);
+  } else if (car.type === 'civilian') {
+    incrementQuestAction(player, 'steal_car_civilian_sell_garage', 1);
+  }
   if (wasTargetCar) {
     incrementQuestAction(player, 'steal_target_car', 1);
   }

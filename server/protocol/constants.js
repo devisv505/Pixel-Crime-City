@@ -91,9 +91,12 @@ const QUEST_ACTION_TO_CODE = Object.freeze({
   kill_cop: 2,
   steal_car_any: 3,
   steal_car_cop: 4,
-  steal_car_ambulance: 5,
-  kill_target_npc: 6,
-  steal_target_car: 7,
+  steal_car_cop_sell_garage: 5,
+  steal_car_ambulance: 6,
+  kill_target_npc: 7,
+  steal_target_car: 8,
+  steal_car_ambulance_sell_garage: 9,
+  steal_car_civilian_sell_garage: 10,
 });
 
 const CODE_TO_QUEST_ACTION = Object.freeze({
@@ -101,9 +104,12 @@ const CODE_TO_QUEST_ACTION = Object.freeze({
   2: 'kill_cop',
   3: 'steal_car_any',
   4: 'steal_car_cop',
-  5: 'steal_car_ambulance',
-  6: 'kill_target_npc',
-  7: 'steal_target_car',
+  5: 'steal_car_cop_sell_garage',
+  6: 'steal_car_ambulance',
+  7: 'kill_target_npc',
+  8: 'steal_target_car',
+  9: 'steal_car_ambulance_sell_garage',
+  10: 'steal_car_civilian_sell_garage',
 });
 
 const QUEST_STATUS_TO_CODE = Object.freeze({
