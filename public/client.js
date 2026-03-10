@@ -224,8 +224,15 @@ const seenEventIds = new Set();
 const seenEventQueue = [];
 const MAX_SEEN_EVENTS = 650;
 const CLIENT_BLOOD_TTL = 240;
+const CLIENT_CAR_TRACE_TTL = 30;
+const CLIENT_CAR_TRACE_MIN_SPEED = 18;
+const CLIENT_CAR_TRACE_MIN_INTERVAL_MS = 55;
+const CLIENT_CAR_TRACE_MAX_INTERVAL_MS = 125;
+const CLIENT_CAR_TRACE_MAX_MARKS = 1200;
 
 const visualEffects = [];
+const clientCarTraces = [];
+const carTraceEmittersByCarId = new Map();
 const AUDIO_PREF_MUSIC_KEY = 'pcc_music_volume';
 const AUDIO_PREF_SFX_KEY = 'pcc_sfx_volume';
 const AUDIO_PREF_SIREN_KEY = 'pcc_siren_volume';
@@ -2200,6 +2207,25 @@ function pushEffect(effect) {
   }
 }
 
+function resetCarTraceEmitter() {
+  carTraceEmittersByCarId.clear();
+}
+
+function pushCarTraceMark(x, y, angle, speed) {
+  const speedFactor = clamp((Math.abs(speed) - CLIENT_CAR_TRACE_MIN_SPEED) / 130, 0, 1);
+  clientCarTraces.push({
+    x: wrapWorldX(x),
+    y: wrapWorldY(y),
+    angle: Number.isFinite(angle) ? angle : 0,
+    width: lerp(1.4, 2.4, speedFactor),
+    length: lerp(3.6, 5.8, speedFactor),
+    ttl: CLIENT_CAR_TRACE_TTL,
+  });
+  while (clientCarTraces.length > CLIENT_CAR_TRACE_MAX_MARKS) {
+    clientCarTraces.shift();
+  }
+}
+
 function screenToCanvas(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const x = (clientX - rect.left) * (canvas.width / Math.max(1, rect.width));
@@ -2373,6 +2399,8 @@ function resetSessionState() {
   presenceOnlineCount = 0;
   presencePlayers = [];
   clientBloodStains.clear();
+  clientCarTraces.length = 0;
+  resetCarTraceEmitter();
   debugStatsVisible = false;
   nextInputSeq = 1;
   lastAckInputSeq = 0;
@@ -4286,6 +4314,85 @@ function drawCop(cop, worldLeft, worldTop) {
   }
 }
 
+function updateCarTraces(state, dt) {
+  for (let i = clientCarTraces.length - 1; i >= 0; i -= 1) {
+    const trace = clientCarTraces[i];
+    trace.ttl -= dt;
+    if (trace.ttl <= 0) {
+      clientCarTraces.splice(i, 1);
+    }
+  }
+
+  if (!state || !state.localPlayer) {
+    resetCarTraceEmitter();
+    return;
+  }
+
+  const nowMs = renderNowMs;
+  const activeCarIds = new Set();
+  for (const car of state.cars || []) {
+    if (!car || car.id === null || car.id === undefined) continue;
+    activeCarIds.add(car.id);
+  }
+  for (const carId of carTraceEmittersByCarId.keys()) {
+    if (!activeCarIds.has(carId)) {
+      carTraceEmittersByCarId.delete(carId);
+    }
+  }
+
+  for (const car of state.cars || []) {
+    if (!car || car.id === null || car.id === undefined) continue;
+    if (!Number.isFinite(car.x) || !Number.isFinite(car.y)) continue;
+    const speed = Math.abs(Number(car.speed) || 0);
+    if (speed < CLIENT_CAR_TRACE_MIN_SPEED) continue;
+    if (groundTypeAtWrapped(car.x, car.y) !== 'park') continue;
+
+    let emitter = carTraceEmittersByCarId.get(car.id);
+    if (!emitter) {
+      emitter = { lastSpawnAtMs: 0 };
+      carTraceEmittersByCarId.set(car.id, emitter);
+    }
+
+    const speedFactor = clamp((speed - CLIENT_CAR_TRACE_MIN_SPEED) / 130, 0, 1);
+    const spawnIntervalMs = lerp(CLIENT_CAR_TRACE_MAX_INTERVAL_MS, CLIENT_CAR_TRACE_MIN_INTERVAL_MS, speedFactor);
+    if (nowMs - emitter.lastSpawnAtMs < spawnIntervalMs) continue;
+    emitter.lastSpawnAtMs = nowMs;
+
+    const angle = Number.isFinite(car.angle) ? car.angle : 0;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const rearOffset = CAR_WIDTH * 0.34;
+    const wheelOffset = CAR_HEIGHT * 0.24;
+    const rearX = car.x - c * rearOffset;
+    const rearY = car.y - s * rearOffset;
+    pushCarTraceMark(rearX - s * wheelOffset, rearY + c * wheelOffset, angle, speed);
+    pushCarTraceMark(rearX + s * wheelOffset, rearY - c * wheelOffset, angle, speed);
+  }
+}
+
+function drawCarTraces(worldLeft, worldTop) {
+  for (const trace of clientCarTraces) {
+    const sx = Math.round(trace.x - worldLeft);
+    const sy = Math.round(trace.y - worldTop);
+    if (sx < -20 || sy < -20 || sx > canvas.width + 20 || sy > canvas.height + 20) {
+      continue;
+    }
+
+    const life = clamp(trace.ttl / CLIENT_CAR_TRACE_TTL, 0, 1);
+    const alpha = clamp(0.42 * life, 0, 0.42);
+    if (alpha <= 0.01) continue;
+
+    const width = Math.max(1.1, Number(trace.width) || 1.4);
+    const length = Math.max(2.2, Number(trace.length) || 3.6);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(Number.isFinite(trace.angle) ? trace.angle : 0);
+    ctx.fillStyle = `rgba(23, 30, 21, ${alpha.toFixed(3)})`;
+    ctx.fillRect(-length * 0.5, -width * 0.5, length, width);
+    ctx.restore();
+  }
+}
+
 function updateEffects(dt) {
   for (let i = visualEffects.length - 1; i >= 0; i -= 1) {
     const effect = visualEffects[i];
@@ -4538,6 +4645,7 @@ function drawMapOverlay(state) {
 
 function renderState(state, dt) {
   updateEffects(dt);
+  updateCarTraces(state, dt);
   latestState = state;
 
   if (!state || !state.localPlayer) {
@@ -4584,6 +4692,7 @@ function renderState(state, dt) {
   }
 
   drawWorld(state);
+  drawCarTraces(worldLeft, worldTop);
   drawBloodStains(state, worldLeft, worldTop);
   drawDrops(state, worldLeft, worldTop);
 
