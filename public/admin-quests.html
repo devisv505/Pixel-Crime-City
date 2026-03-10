@@ -154,6 +154,14 @@
             <option value="steal_target_car">steal_target_car</option>
           </select>
 
+          <label for="actionParams">Action Params JSON</label>
+          <textarea
+            id="actionParams"
+            rows="3"
+            placeholder='{}'
+            class="mono"
+          ></textarea>
+
           <label for="targetCount">Target Count</label>
           <input id="targetCount" type="number" min="1" step="1" value="1" />
 
@@ -165,6 +173,14 @@
 
           <label for="rewardReputation">Reward Reputation</label>
           <input id="rewardReputation" type="number" min="0" step="1" value="0" />
+
+          <label for="rewardPayload">Reward Payload JSON</label>
+          <textarea
+            id="rewardPayload"
+            rows="3"
+            placeholder='{"money":0,"reputation":0,"unlockGunShop":false}'
+            class="mono"
+          ></textarea>
 
           <label>
             <input id="rewardUnlockGunShop" type="checkbox" /> Unlock Gun Shop
@@ -182,7 +198,9 @@
             <button id="saveBtn" type="button">Save</button>
             <button id="resetBtn" type="button" class="secondary">Reset</button>
           </div>
-          <div class="muted" style="margin-top:8px;">Validation: action enum, target count > 0, rewards >= 0.</div>
+          <div class="muted" style="margin-top:8px;">
+            Validation: action enum, target count > 0, rewards >= 0. JSON fields must parse to objects.
+          </div>
         </section>
 
         <section class="card">
@@ -211,10 +229,12 @@
       const titleInput = document.getElementById('title');
       const descriptionInput = document.getElementById('description');
       const actionTypeInput = document.getElementById('actionType');
+      const actionParamsInput = document.getElementById('actionParams');
       const targetCountInput = document.getElementById('targetCount');
       const sortOrderInput = document.getElementById('sortOrder');
       const rewardMoneyInput = document.getElementById('rewardMoney');
       const rewardReputationInput = document.getElementById('rewardReputation');
+      const rewardPayloadInput = document.getElementById('rewardPayload');
       const rewardUnlockGunShopInput = document.getElementById('rewardUnlockGunShop');
       const resetOnDeathInput = document.getElementById('resetOnDeath');
       const isActiveInput = document.getElementById('isActive');
@@ -240,14 +260,31 @@
         statusNode.textContent = text || '';
       }
 
+      function parseJsonObjectInput(text, fieldLabel) {
+        const raw = String(text || '').trim();
+        if (!raw) return {};
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error(`${fieldLabel} must be valid JSON.`);
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(`${fieldLabel} must be a JSON object.`);
+        }
+        return parsed;
+      }
+
       function normalizePayloadFromForm() {
         const title = String(titleInput.value || '').trim().slice(0, 80);
         const description = String(descriptionInput.value || '').trim().slice(0, 400);
         const actionType = String(actionTypeInput.value || '').trim();
+        const actionParams = parseJsonObjectInput(actionParamsInput.value, 'Action Params JSON');
         const targetCount = Number.parseInt(String(targetCountInput.value || '0'), 10);
         const sortOrder = Number.parseInt(String(sortOrderInput.value || '0'), 10);
         const rewardMoney = Number.parseInt(String(rewardMoneyInput.value || '0'), 10);
         const rewardReputation = Number.parseInt(String(rewardReputationInput.value || '0'), 10);
+        const rewardPayload = parseJsonObjectInput(rewardPayloadInput.value, 'Reward Payload JSON');
         const rewardUnlockGunShop = !!rewardUnlockGunShopInput.checked;
         const resetOnDeath = !!resetOnDeathInput.checked;
         const isActive = !!isActiveInput.checked;
@@ -262,10 +299,12 @@
           title,
           description,
           actionType,
+          actionParams,
           targetCount,
           sortOrder: Number.isInteger(sortOrder) ? sortOrder : 0,
           rewardMoney,
           rewardReputation,
+          rewardPayload,
           rewardUnlockGunShop,
           resetOnDeath,
           isActive,
@@ -278,10 +317,12 @@
         titleInput.value = '';
         descriptionInput.value = '';
         actionTypeInput.value = 'kill_npc';
+        actionParamsInput.value = '{}';
         targetCountInput.value = '1';
         sortOrderInput.value = String(quests.length > 0 ? (quests[quests.length - 1].sortOrder + 10) : 10);
         rewardMoneyInput.value = '0';
         rewardReputationInput.value = '0';
+        rewardPayloadInput.value = '{"money":0,"reputation":0,"unlockGunShop":false}';
         rewardUnlockGunShopInput.checked = false;
         resetOnDeathInput.checked = false;
         isActiveInput.checked = true;
@@ -293,10 +334,20 @@
         titleInput.value = quest.title || '';
         descriptionInput.value = quest.description || '';
         actionTypeInput.value = quest.actionType || 'kill_npc';
+        actionParamsInput.value = JSON.stringify(quest.actionParams || {}, null, 2);
         targetCountInput.value = String(quest.targetCount || 1);
         sortOrderInput.value = String(quest.sortOrder || 0);
         rewardMoneyInput.value = String(quest.rewardMoney || 0);
         rewardReputationInput.value = String(quest.rewardReputation || 0);
+        rewardPayloadInput.value = JSON.stringify(
+          quest.rewardPayload || {
+            money: Number(quest.rewardMoney) || 0,
+            reputation: Number(quest.rewardReputation) || 0,
+            unlockGunShop: !!quest.rewardUnlockGunShop,
+          },
+          null,
+          2
+        );
         rewardUnlockGunShopInput.checked = !!quest.rewardUnlockGunShop;
         resetOnDeathInput.checked = !!quest.resetOnDeath;
         isActiveInput.checked = !!quest.isActive;

@@ -117,6 +117,8 @@ const QUEST_TARGET_ZONE_REFRESH_MS = 5_000;
 const QUEST_TARGET_SKIN_COLOR = '#ffd86b';
 const QUEST_TARGET_SHIRT_COLOR = '#f0b11a';
 const QUEST_TARGET_SHIRT_DARK = '#7e4f00';
+const QUEST_JSON_MAX_BYTES = 8 * 1024;
+const QUEST_SCHEMA_MIGRATION_LATEST = 3;
 const SERVER_BOOT_TIME_MS = Date.now();
 const ADMIN_USER = String(process.env.ADMIN_USER || '').trim();
 const ADMIN_PASS = String(process.env.ADMIN_PASS || '').trim();
@@ -675,6 +677,184 @@ function crimeRecordFromRow(row, fallbackProfileId = '') {
   );
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sortObjectKeysDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortObjectKeysDeep(item));
+  }
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    out[key] = sortObjectKeysDeep(value[key]);
+  }
+  return out;
+}
+
+function normalizeQuestJsonObject(raw, fallback = {}) {
+  let value = raw;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      value = fallback;
+    } else {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        value = fallback;
+      }
+    }
+  } else if (value == null) {
+    value = fallback;
+  }
+
+  if (!isPlainObject(value)) {
+    value = fallback;
+  }
+
+  try {
+    const canonical = sortObjectKeysDeep(value);
+    const text = JSON.stringify(canonical);
+    if (Buffer.byteLength(text, 'utf8') > QUEST_JSON_MAX_BYTES) {
+      return sortObjectKeysDeep(isPlainObject(fallback) ? fallback : {});
+    }
+    return canonical;
+  } catch {
+    return sortObjectKeysDeep(isPlainObject(fallback) ? fallback : {});
+  }
+}
+
+function stringifyQuestJsonObject(raw, fallback = {}) {
+  const normalized = normalizeQuestJsonObject(raw, fallback);
+  return JSON.stringify(normalized);
+}
+
+function normalizeQuestRewardPayloadObject(payload, rewardMoney, rewardReputation, rewardUnlockGunShop) {
+  const base = normalizeQuestJsonObject(payload, {});
+  base.money = clamp(Math.round(Number(rewardMoney) || 0), 0, 0xffffffff);
+  base.reputation = clamp(Math.round(Number(rewardReputation) || 0), 0, 0xffffffff);
+  base.unlockGunShop = !!rewardUnlockGunShop;
+  return base;
+}
+
+function tableColumnSet(db, tableName) {
+  if (!db || !tableName) return new Set();
+  try {
+    return new Set(
+      db
+        .prepare(`PRAGMA table_info(${tableName})`)
+        .all()
+        .map((column) => String(column?.name || '').trim().toLowerCase())
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function runCrimeReputationMigrations(db) {
+  if (!db) return;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+  `);
+  const selectApplied = db.prepare('SELECT version FROM schema_migrations WHERE version = @version LIMIT 1');
+  const markApplied = db.prepare(
+    'INSERT INTO schema_migrations (version, name, applied_at) VALUES (@version, @name, @appliedAt)'
+  );
+
+  const migrations = [
+    {
+      version: 1,
+      name: 'quest_reset_on_death',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('reset_on_death')) {
+          db.exec('ALTER TABLE quests ADD COLUMN reset_on_death INTEGER NOT NULL DEFAULT 0');
+        }
+      },
+    },
+    {
+      version: 2,
+      name: 'quest_action_params_json',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('action_params_json')) {
+          db.exec("ALTER TABLE quests ADD COLUMN action_params_json TEXT NOT NULL DEFAULT '{}'");
+        }
+        const rows = db.prepare('SELECT id, action_params_json AS actionParamsJson FROM quests').all();
+        const update = db.prepare('UPDATE quests SET action_params_json = @actionParamsJson WHERE id = @id');
+        for (const row of rows) {
+          const normalized = stringifyQuestJsonObject(row?.actionParamsJson, {});
+          if (String(row?.actionParamsJson || '').trim() !== normalized) {
+            update.run({
+              id: Number(row.id) >>> 0,
+              actionParamsJson: normalized,
+            });
+          }
+        }
+      },
+    },
+    {
+      version: 3,
+      name: 'quest_reward_payload_json',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('reward_payload_json')) {
+          db.exec("ALTER TABLE quests ADD COLUMN reward_payload_json TEXT NOT NULL DEFAULT '{}'");
+        }
+        const rows = db
+          .prepare(`
+            SELECT
+              id,
+              reward_money AS rewardMoney,
+              reward_reputation AS rewardReputation,
+              reward_unlock_gun_shop AS rewardUnlockGunShop,
+              reward_payload_json AS rewardPayloadJson
+            FROM quests
+          `)
+          .all();
+        const update = db.prepare('UPDATE quests SET reward_payload_json = @rewardPayloadJson WHERE id = @id');
+        for (const row of rows) {
+          const normalizedPayload = normalizeQuestRewardPayloadObject(
+            row?.rewardPayloadJson,
+            row?.rewardMoney,
+            row?.rewardReputation,
+            !!Number(row?.rewardUnlockGunShop)
+          );
+          const normalized = JSON.stringify(normalizedPayload);
+          if (String(row?.rewardPayloadJson || '').trim() !== normalized) {
+            update.run({
+              id: Number(row.id) >>> 0,
+              rewardPayloadJson: normalized,
+            });
+          }
+        }
+      },
+    },
+  ];
+
+  for (const migration of migrations) {
+    const version = Number(migration?.version) || 0;
+    if (version <= 0 || version > QUEST_SCHEMA_MIGRATION_LATEST) continue;
+    const applied = selectApplied.get({ version });
+    if (applied) continue;
+    const tx = db.transaction(() => {
+      migration.up();
+      markApplied.run({
+        version,
+        name: String(migration.name || `migration_${version}`),
+        appliedAt: Date.now(),
+      });
+    });
+    tx();
+  }
+}
+
 function ensureCrimeReputationDb() {
   if (crimeReputationDb) return true;
   try {
@@ -697,11 +877,13 @@ function ensureCrimeReputationDb() {
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         action_type TEXT NOT NULL,
+        action_params_json TEXT NOT NULL DEFAULT '{}',
         target_count INTEGER NOT NULL,
         sort_order INTEGER NOT NULL,
         reward_money INTEGER NOT NULL DEFAULT 0,
         reward_reputation INTEGER NOT NULL DEFAULT 0,
         reward_unlock_gun_shop INTEGER NOT NULL DEFAULT 0,
+        reward_payload_json TEXT NOT NULL DEFAULT '{}',
         reset_on_death INTEGER NOT NULL DEFAULT 0,
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL,
@@ -754,20 +936,7 @@ function ensureCrimeReputationDb() {
       CREATE INDEX IF NOT EXISTS idx_player_quest_target_car_id
         ON player_quest_target_car (target_car_id);
     `);
-    try {
-      const questColumns = new Set(
-        crimeReputationDb
-          .prepare('PRAGMA table_info(quests)')
-          .all()
-          .map((column) => String(column?.name || '').trim().toLowerCase())
-      );
-      if (!questColumns.has('reset_on_death')) {
-        crimeReputationDb.exec('ALTER TABLE quests ADD COLUMN reset_on_death INTEGER NOT NULL DEFAULT 0');
-      }
-    } catch (schemaError) {
-      // eslint-disable-next-line no-console
-      console.warn(`[quest] failed to apply schema upgrade: ${schemaError.message}`);
-    }
+    runCrimeReputationMigrations(crimeReputationDb);
     crimeReputationSql.selectByProfileId = crimeReputationDb.prepare(`
       SELECT
         profile_id AS profileId,
@@ -841,11 +1010,13 @@ function ensureCrimeReputationDb() {
         title,
         description,
         action_type AS actionType,
+        action_params_json AS actionParamsJson,
         target_count AS targetCount,
         sort_order AS sortOrder,
         reward_money AS rewardMoney,
         reward_reputation AS rewardReputation,
         reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
         reset_on_death AS resetOnDeath,
         is_active AS isActive,
         created_at AS createdAt,
@@ -860,11 +1031,13 @@ function ensureCrimeReputationDb() {
         title,
         description,
         action_type AS actionType,
+        action_params_json AS actionParamsJson,
         target_count AS targetCount,
         sort_order AS sortOrder,
         reward_money AS rewardMoney,
         reward_reputation AS rewardReputation,
         reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
         reset_on_death AS resetOnDeath,
         is_active AS isActive,
         created_at AS createdAt,
@@ -878,11 +1051,13 @@ function ensureCrimeReputationDb() {
         title,
         description,
         action_type AS actionType,
+        action_params_json AS actionParamsJson,
         target_count AS targetCount,
         sort_order AS sortOrder,
         reward_money AS rewardMoney,
         reward_reputation AS rewardReputation,
         reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
         reset_on_death AS resetOnDeath,
         is_active AS isActive,
         created_at AS createdAt,
@@ -896,11 +1071,13 @@ function ensureCrimeReputationDb() {
         title,
         description,
         action_type,
+        action_params_json,
         target_count,
         sort_order,
         reward_money,
         reward_reputation,
         reward_unlock_gun_shop,
+        reward_payload_json,
         reset_on_death,
         is_active,
         created_at,
@@ -909,11 +1086,13 @@ function ensureCrimeReputationDb() {
         @title,
         @description,
         @actionType,
+        @actionParamsJson,
         @targetCount,
         @sortOrder,
         @rewardMoney,
         @rewardReputation,
         @rewardUnlockGunShop,
+        @rewardPayloadJson,
         @resetOnDeath,
         @isActive,
         @createdAt,
@@ -926,11 +1105,13 @@ function ensureCrimeReputationDb() {
         title = @title,
         description = @description,
         action_type = @actionType,
+        action_params_json = @actionParamsJson,
         target_count = @targetCount,
         sort_order = @sortOrder,
         reward_money = @rewardMoney,
         reward_reputation = @rewardReputation,
         reward_unlock_gun_shop = @rewardUnlockGunShop,
+        reward_payload_json = @rewardPayloadJson,
         reset_on_death = @resetOnDeath,
         is_active = @isActive,
         updated_at = @updatedAt
@@ -1252,16 +1433,28 @@ function normalizeQuestRow(row) {
   const title = String(row.title || '').trim().slice(0, 80);
   if (!actionType || !title) return null;
   const targetCount = clamp(Math.round(Number(row.targetCount) || 0), 1, 65535);
+  const rewardMoney = clamp(Math.round(Number(row.rewardMoney) || 0), 0, 0xffffffff);
+  const rewardReputation = clamp(Math.round(Number(row.rewardReputation) || 0), 0, 0xffffffff);
+  const rewardUnlockGunShop = !!Number(row.rewardUnlockGunShop);
+  const actionParams = normalizeQuestJsonObject(row.actionParamsJson, {});
+  const rewardPayload = normalizeQuestRewardPayloadObject(
+    row.rewardPayloadJson,
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop
+  );
   return {
     id: Number(row.id) >>> 0,
     title,
     description: String(row.description || '').trim().slice(0, 400),
     actionType,
+    actionParams,
     targetCount,
     sortOrder: clamp(Math.round(Number(row.sortOrder) || 0), -2147483648, 2147483647),
-    rewardMoney: clamp(Math.round(Number(row.rewardMoney) || 0), 0, 0xffffffff),
-    rewardReputation: clamp(Math.round(Number(row.rewardReputation) || 0), 0, 0xffffffff),
-    rewardUnlockGunShop: !!Number(row.rewardUnlockGunShop),
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop,
+    rewardPayload,
     resetOnDeath: !!Number(row.resetOnDeath),
     isActive: !!Number(row.isActive),
     createdAt: Math.max(0, Math.round(Number(row.createdAt) || 0)),
@@ -1481,6 +1674,23 @@ function uncacheQuestTargetCarAssignment(profileId, questId) {
     }
   }
   questTargetCarAssignmentsByKey.delete(key);
+}
+
+function uncacheQuestAssignmentsByQuestId(questId) {
+  const safeQuestId = Number(questId) >>> 0;
+  if (!safeQuestId) return;
+
+  for (const key of Array.from(questTargetAssignmentsByKey.keys())) {
+    const parsed = parseQuestTargetKey(key);
+    if (!parsed || parsed.questId !== safeQuestId) continue;
+    uncacheQuestTargetAssignment(parsed.profileId, parsed.questId);
+  }
+
+  for (const key of Array.from(questTargetCarAssignmentsByKey.keys())) {
+    const parsed = parseQuestTargetKey(key);
+    if (!parsed || parsed.questId !== safeQuestId) continue;
+    uncacheQuestTargetCarAssignment(parsed.profileId, parsed.questId);
+  }
 }
 
 function readQuestTargetCarAssignment(profileId, questId) {
@@ -2539,6 +2749,9 @@ function normalizeQuestInput(payload, fallbackSortOrder = 0) {
   const title = String(payload.title || '').trim().slice(0, 80);
   const description = String(payload.description || '').trim().slice(0, 400);
   const actionType = normalizeQuestActionType(payload.actionType);
+  const actionParamsSource =
+    payload.actionParamsJson !== undefined ? payload.actionParamsJson : payload.actionParams;
+  const actionParams = normalizeQuestJsonObject(actionParamsSource, {});
   const rawTargetCount = Number(payload.targetCount);
   if (!Number.isFinite(rawTargetCount)) return null;
   const targetCount = Math.round(rawTargetCount);
@@ -2548,15 +2761,27 @@ function normalizeQuestInput(payload, fallbackSortOrder = 0) {
     -2147483648,
     2147483647
   );
-  const rawRewardMoney = Number(payload.rewardMoney);
-  if (!Number.isFinite(rawRewardMoney)) return null;
+  const rawRewardPayload =
+    payload.rewardPayloadJson !== undefined ? payload.rewardPayloadJson : payload.rewardPayload;
+  const parsedRewardPayload = normalizeQuestJsonObject(rawRewardPayload, {});
+  const rawRewardMoney = Number.isFinite(Number(payload.rewardMoney))
+    ? Number(payload.rewardMoney)
+    : Number(parsedRewardPayload.money || 0);
   const rewardMoney = Math.round(rawRewardMoney);
   if (!Number.isInteger(rewardMoney) || rewardMoney < 0 || rewardMoney > 0xffffffff) return null;
-  const rawRewardReputation = Number(payload.rewardReputation);
-  if (!Number.isFinite(rawRewardReputation)) return null;
+  const rawRewardReputation = Number.isFinite(Number(payload.rewardReputation))
+    ? Number(payload.rewardReputation)
+    : Number(parsedRewardPayload.reputation || 0);
   const rewardReputation = Math.round(rawRewardReputation);
   if (!Number.isInteger(rewardReputation) || rewardReputation < 0 || rewardReputation > 0xffffffff) return null;
-  const rewardUnlockGunShop = !!payload.rewardUnlockGunShop;
+  const rewardUnlockGunShop =
+    payload.rewardUnlockGunShop == null ? !!parsedRewardPayload.unlockGunShop : !!payload.rewardUnlockGunShop;
+  const rewardPayload = normalizeQuestRewardPayloadObject(
+    parsedRewardPayload,
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop
+  );
   const resetOnDeath = !!payload.resetOnDeath;
   const isActive = payload.isActive == null ? true : !!payload.isActive;
   if (!title || !actionType) return null;
@@ -2564,14 +2789,27 @@ function normalizeQuestInput(payload, fallbackSortOrder = 0) {
     title,
     description,
     actionType,
+    actionParams,
+    actionParamsJson: stringifyQuestJsonObject(actionParams, {}),
     targetCount,
     sortOrder,
     rewardMoney,
     rewardReputation,
     rewardUnlockGunShop,
+    rewardPayload,
+    rewardPayloadJson: stringifyQuestJsonObject(rewardPayload, {}),
     resetOnDeath,
     isActive,
   };
+}
+
+function questCoreDefinitionChanged(previousQuest, nextQuestInput) {
+  if (!previousQuest || !nextQuestInput) return false;
+  if (String(previousQuest.actionType || '') !== String(nextQuestInput.actionType || '')) return true;
+  if ((Number(previousQuest.targetCount) >>> 0) !== (Number(nextQuestInput.targetCount) >>> 0)) return true;
+  const prevActionParams = stringifyQuestJsonObject(previousQuest.actionParams, {});
+  const nextActionParams = stringifyQuestJsonObject(nextQuestInput.actionParams, {});
+  return prevActionParams !== nextActionParams;
 }
 
 function serializeQuestForAdmin(quest) {
@@ -2581,11 +2819,18 @@ function serializeQuestForAdmin(quest) {
     title: quest.title,
     description: quest.description,
     actionType: quest.actionType,
+    actionParams: normalizeQuestJsonObject(quest.actionParams, {}),
     targetCount: quest.targetCount,
     sortOrder: quest.sortOrder,
     rewardMoney: quest.rewardMoney,
     rewardReputation: quest.rewardReputation,
     rewardUnlockGunShop: !!quest.rewardUnlockGunShop,
+    rewardPayload: normalizeQuestRewardPayloadObject(
+      quest.rewardPayload,
+      quest.rewardMoney,
+      quest.rewardReputation,
+      !!quest.rewardUnlockGunShop
+    ),
     resetOnDeath: !!quest.resetOnDeath,
     isActive: !!quest.isActive,
     createdAt: quest.createdAt || 0,
@@ -2693,11 +2938,13 @@ app.post('/api/admin/quests', requireAdminApiAuth, (req, res) => {
       title: input.title,
       description: input.description,
       actionType: input.actionType,
+      actionParamsJson: input.actionParamsJson,
       targetCount: input.targetCount,
       sortOrder: input.sortOrder,
       rewardMoney: input.rewardMoney,
       rewardReputation: input.rewardReputation,
       rewardUnlockGunShop: input.rewardUnlockGunShop ? 1 : 0,
+      rewardPayloadJson: input.rewardPayloadJson,
       resetOnDeath: input.resetOnDeath ? 1 : 0,
       isActive: input.isActive ? 1 : 0,
       createdAt: now,
@@ -2731,11 +2978,13 @@ app.put('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
       title: req.body?.title ?? existing.title,
       description: req.body?.description ?? existing.description,
       actionType: req.body?.actionType ?? existing.actionType,
+      actionParams: req.body?.actionParams ?? existing.actionParams,
       targetCount: req.body?.targetCount ?? existing.targetCount,
       sortOrder: req.body?.sortOrder ?? existing.sortOrder,
       rewardMoney: req.body?.rewardMoney ?? existing.rewardMoney,
       rewardReputation: req.body?.rewardReputation ?? existing.rewardReputation,
       rewardUnlockGunShop: req.body?.rewardUnlockGunShop ?? existing.rewardUnlockGunShop,
+      rewardPayload: req.body?.rewardPayload ?? existing.rewardPayload,
       resetOnDeath: req.body?.resetOnDeath ?? existing.resetOnDeath,
       isActive: req.body?.isActive ?? existing.isActive,
     },
@@ -2745,24 +2994,36 @@ app.put('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
     res.status(400).json({ ok: false, error: 'Invalid quest payload' });
     return;
   }
+  const shouldResetProgress = questCoreDefinitionChanged(existing, input);
   try {
-    questSql.update.run({
-      id,
-      title: input.title,
-      description: input.description,
-      actionType: input.actionType,
-      targetCount: input.targetCount,
-      sortOrder: input.sortOrder,
-      rewardMoney: input.rewardMoney,
-      rewardReputation: input.rewardReputation,
-      rewardUnlockGunShop: input.rewardUnlockGunShop ? 1 : 0,
-      resetOnDeath: input.resetOnDeath ? 1 : 0,
-      isActive: input.isActive ? 1 : 0,
-      updatedAt: Date.now(),
+    const tx = crimeReputationDb.transaction((questId) => {
+      questSql.update.run({
+        id: questId,
+        title: input.title,
+        description: input.description,
+        actionType: input.actionType,
+        actionParamsJson: input.actionParamsJson,
+        targetCount: input.targetCount,
+        sortOrder: input.sortOrder,
+        rewardMoney: input.rewardMoney,
+        rewardReputation: input.rewardReputation,
+        rewardUnlockGunShop: input.rewardUnlockGunShop ? 1 : 0,
+        rewardPayloadJson: input.rewardPayloadJson,
+        resetOnDeath: input.resetOnDeath ? 1 : 0,
+        isActive: input.isActive ? 1 : 0,
+        updatedAt: Date.now(),
+      });
+      if (shouldResetProgress) {
+        questSql.deleteProgressByQuestId.run({ questId });
+        questSql.deleteTargetsByQuestId.run({ questId });
+        questSql.deleteCarTargetsByQuestId.run({ questId });
+        uncacheQuestAssignmentsByQuestId(questId);
+      }
     });
+    tx(id);
     applyQuestCatalogReloadAndResync();
     const updated = normalizeQuestRow(questSql.getById.get({ id }));
-    res.json({ ok: true, quest: serializeQuestForAdmin(updated) });
+    res.json({ ok: true, quest: serializeQuestForAdmin(updated), progressReset: shouldResetProgress });
   } catch (error) {
     res.status(500).json({ ok: false, error: `Update failed: ${error.message}` });
   }
@@ -2783,6 +3044,7 @@ app.delete('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
       questSql.deleteProgressByQuestId.run({ questId });
       questSql.deleteTargetsByQuestId.run({ questId });
       questSql.deleteCarTargetsByQuestId.run({ questId });
+      uncacheQuestAssignmentsByQuestId(questId);
       questSql.delete.run({ id: questId });
     });
     tx(id);
