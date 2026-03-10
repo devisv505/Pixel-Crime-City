@@ -127,7 +127,9 @@ const WORLD = {
   worldRev: 0,
   shops: [],
   hospital: null,
+  hospitals: [],
 };
+let hospitalPlotKeys = new Set();
 
 const camera = { x: WORLD.width * 0.5, y: WORLD.height * 0.5 };
 let viewScale = 3;
@@ -1646,16 +1648,21 @@ function worldGroundTypeAt(x, y) {
 
   const blockX = Math.floor(x / WORLD.blockPx);
   const blockY = Math.floor(y / WORLD.blockPx);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  let insidePlotBuildingRect = false;
+  if (plotIndex !== null) {
+    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+    insidePlotBuildingRect = localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1;
+    if (insidePlotBuildingRect && isHospitalPlot(blockX, blockY, plotIndex)) {
+      return 'building';
+    }
+  }
+
   if (!blockHasBuildings(blockX, blockY)) {
     return 'park';
   }
-
-  const plotIndex = plotIndexForLocalCoord(localX, localY);
-  if (plotIndex !== null) {
-    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
-    if (localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1) {
-      return 'building';
-    }
+  if (insidePlotBuildingRect) {
+    return 'building';
   }
   return 'park';
 }
@@ -1820,6 +1827,42 @@ function plotIndexForLocalCoord(localX, localY) {
   return ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
 }
 
+function specialPlotKey(blockX, blockY, plotIndex) {
+  return `${blockX},${blockY},${plotIndex}`;
+}
+
+function hospitalsFromWorld(world) {
+  if (!world || typeof world !== 'object') return [];
+  if (Array.isArray(world.hospitals) && world.hospitals.length > 0) {
+    return world.hospitals.filter((hospital) => hospital && typeof hospital === 'object');
+  }
+  if (world.hospital && typeof world.hospital === 'object') {
+    return [world.hospital];
+  }
+  return [];
+}
+
+function rebuildHospitalPlotKeys(world) {
+  const next = new Set();
+  const hospitals = hospitalsFromWorld(world);
+  for (const hospital of hospitals) {
+    if (!Number.isFinite(hospital.x) || !Number.isFinite(hospital.y)) continue;
+    const blockX = Math.floor(hospital.x / WORLD.blockPx);
+    const blockY = Math.floor(hospital.y / WORLD.blockPx);
+    const localX = mod(hospital.x, WORLD.blockPx);
+    const localY = mod(hospital.y, WORLD.blockPx);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex === null) continue;
+    next.add(specialPlotKey(blockX, blockY, plotIndex));
+  }
+  hospitalPlotKeys = next;
+}
+
+function isHospitalPlot(blockX, blockY, plotIndex) {
+  if (plotIndex === null) return false;
+  return hospitalPlotKeys.has(specialPlotKey(blockX, blockY, plotIndex));
+}
+
 function buildSpecialPlotVariantMap(world) {
   const result = new Map();
   if (!world) return result;
@@ -1838,8 +1881,8 @@ function buildSpecialPlotVariantMap(world) {
     result.set(`${blockX},${blockY},${plotIndex}`, variant);
   }
 
-  const hospital = world.hospital;
-  if (hospital) {
+  const hospitals = hospitalsFromWorld(world);
+  for (const hospital of hospitals) {
     const blockX = Math.floor(hospital.x / WORLD.blockPx);
     const blockY = Math.floor(hospital.y / WORLD.blockPx);
     const localX = mod(hospital.x, WORLD.blockPx);
@@ -2221,9 +2264,21 @@ function applyWorldFromServer(payload) {
   if (Array.isArray(payload.shops)) {
     WORLD.shops = payload.shops.map((shop) => ({ ...shop }));
   }
+  if (Array.isArray(payload.hospitals)) {
+    WORLD.hospitals = payload.hospitals
+      .filter((hospital) => hospital && typeof hospital === 'object')
+      .map((hospital) => ({ ...hospital }));
+  } else if (payload.hospital && typeof payload.hospital === 'object') {
+    WORLD.hospitals = [{ ...payload.hospital }];
+  }
   if (payload.hospital && typeof payload.hospital === 'object') {
     WORLD.hospital = { ...payload.hospital };
+  } else if (WORLD.hospitals.length > 0) {
+    WORLD.hospital = { ...WORLD.hospitals[0] };
+  } else {
+    WORLD.hospital = null;
   }
+  rebuildHospitalPlotKeys(WORLD);
   if (typeof payload.worldRev === 'number' && Number.isFinite(payload.worldRev)) {
     WORLD.worldRev = payload.worldRev;
     worldRev = payload.worldRev;
@@ -3649,10 +3704,11 @@ function drawSpecialBuildingSigns(state, worldLeft, worldTop) {
     drawFloatingLabel(anchor.x, anchor.y, worldLeft, worldTop, 'GUNS', '#ffd477', -12, i * 0.9);
   }
 
-  const hospital = state.world?.hospital;
-  if (hospital) {
+  const hospitals = hospitalsFromWorld(state.world);
+  for (let i = 0; i < hospitals.length; i += 1) {
+    const hospital = hospitals[i];
     const anchor = specialBuildingSignAnchor(hospital.x, hospital.y);
-    drawFloatingHospitalSign(anchor.x, anchor.y, worldLeft, worldTop, -14, 1.4);
+    drawFloatingHospitalSign(anchor.x, anchor.y, worldLeft, worldTop, -14, 1.4 + i * 0.8);
   }
 }
 
@@ -4762,9 +4818,10 @@ function drawMapOverlay(state) {
     ctx.fillRect(x - 2, y - 2, 4, 4);
   }
 
-  if (world.hospital) {
-    const hx = Math.round(toMapX(world.hospital.x));
-    const hy = Math.round(toMapY(world.hospital.y));
+  const hospitals = hospitalsFromWorld(world);
+  for (const hospital of hospitals) {
+    const hx = Math.round(toMapX(hospital.x));
+    const hy = Math.round(toMapY(hospital.y));
     ctx.fillStyle = '#f6f6f6';
     ctx.fillRect(hx - 1, hy - 3, 2, 6);
     ctx.fillRect(hx - 3, hy - 1, 6, 2);

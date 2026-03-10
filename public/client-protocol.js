@@ -382,6 +382,7 @@ function decodeServerFrame(raw) {
       laneB: reader.u16(),
       shops: [],
       hospital: null,
+      hospitals: [],
       worldRev,
     };
     const shopCount = reader.u8();
@@ -408,6 +409,24 @@ function decodeServerFrame(raw) {
       };
     }
     const progressTicket = reader.string16();
+    if (reader.offset < reader.buffer.byteLength) {
+      const hospitalCount = reader.u8();
+      for (let i = 0; i < hospitalCount; i += 1) {
+        world.hospitals.push({
+          id: reader.string8(),
+          name: reader.string8(),
+          x: unpackCoord(reader.u16()),
+          y: unpackCoord(reader.u16()),
+          radius: reader.u16(),
+        });
+      }
+    }
+    if (world.hospitals.length === 0 && world.hospital) {
+      world.hospitals.push({ ...world.hospital });
+    }
+    if (!world.hospital && world.hospitals.length > 0) {
+      world.hospital = { ...world.hospitals[0] };
+    }
     return { type: 'joined', playerId, tickRate, worldRev, world, progressTicket };
   }
 

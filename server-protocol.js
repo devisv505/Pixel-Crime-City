@@ -341,6 +341,11 @@ function encodeJoinedFrame(payload) {
   const world = payload?.world || {};
   const shops = Array.isArray(world.shops) ? world.shops : [];
   const hospital = world.hospital && typeof world.hospital === 'object' ? world.hospital : null;
+  const hospitalList = Array.isArray(world.hospitals)
+    ? world.hospitals.filter((item) => item && typeof item === 'object')
+    : [];
+  const hospitals = hospitalList.length > 0 ? hospitalList : hospital ? [hospital] : [];
+  const primaryHospital = hospital || hospitals[0] || null;
 
   writer.u8(OPCODES.S2C_JOINED);
   writer.u32(payload.playerId >>> 0);
@@ -368,16 +373,24 @@ function encodeJoinedFrame(payload) {
     writer.u16(clamp(Math.round(stock.bazooka || 0), 0, 65535));
   }
 
-  writer.u8(hospital ? 1 : 0);
-  if (hospital) {
-    writer.string8(hospital.id || '');
-    writer.string8(hospital.name || '');
-    writer.u16(packCoord(hospital.x || 0));
-    writer.u16(packCoord(hospital.y || 0));
-    writer.u16(clamp(Math.round(hospital.radius || 0), 0, 65535));
+  writer.u8(primaryHospital ? 1 : 0);
+  if (primaryHospital) {
+    writer.string8(primaryHospital.id || '');
+    writer.string8(primaryHospital.name || '');
+    writer.u16(packCoord(primaryHospital.x || 0));
+    writer.u16(packCoord(primaryHospital.y || 0));
+    writer.u16(clamp(Math.round(primaryHospital.radius || 0), 0, 65535));
   }
 
   writer.string16(payload?.progressTicket || '');
+  writer.u8(clamp(hospitals.length, 0, 255));
+  for (const item of hospitals) {
+    writer.string8(item?.id || '');
+    writer.string8(item?.name || '');
+    writer.u16(packCoord(item?.x || 0));
+    writer.u16(packCoord(item?.y || 0));
+    writer.u16(clamp(Math.round(item?.radius || 0), 0, 65535));
+  }
 
   return writer.toBuffer();
 }

@@ -180,17 +180,31 @@ const SHOPS = [
   { id: 'shop_dock', name: 'Dock Arms', x: BLOCK_PX * 10 + 232, y: BLOCK_PX * 10 + 232, radius: 34 },
 ];
 const SHOP_INDEX_BY_ID = new Map(SHOPS.map((shop, index) => [shop.id, index]));
-const HOSPITAL = {
-  id: 'hospital_central',
-  name: 'City Hospital',
-  x: BLOCK_PX * 5 + 228,
-  y: BLOCK_PX * 0 + 228,
-  radius: 42,
-  dropX: BLOCK_PX * 5 + LANE_B,
-  dropY: BLOCK_PX * 0 + ROAD_END + 16,
-  releaseX: BLOCK_PX * 5 + ROAD_END + 8,
-  releaseY: BLOCK_PX * 0 + ROAD_END + 8,
-};
+const HOSPITALS = [
+  {
+    id: 'hospital_central',
+    name: 'City Hospital',
+    x: BLOCK_PX * 5 + 228,
+    y: BLOCK_PX * 0 + 228,
+    radius: 42,
+    dropX: BLOCK_PX * 5 + LANE_B,
+    dropY: BLOCK_PX * 0 + ROAD_END + 16,
+    releaseX: BLOCK_PX * 5 + ROAD_END + 8,
+    releaseY: BLOCK_PX * 0 + ROAD_END + 8,
+  },
+  {
+    id: 'hospital_south',
+    name: 'South Hospital',
+    x: BLOCK_PX * 5 + 228,
+    y: BLOCK_PX * 6 + 228,
+    radius: 42,
+    dropX: BLOCK_PX * 5 + LANE_B,
+    dropY: BLOCK_PX * 6 + ROAD_END + 16,
+    releaseX: BLOCK_PX * 5 + ROAD_END + 8,
+    releaseY: BLOCK_PX * 6 + ROAD_END + 8,
+  },
+];
+const HOSPITAL = HOSPITALS[0];
 const STATIC_WORLD_PAYLOAD = Object.freeze({
   worldRev: WORLD_REV,
   width: WORLD.width,
@@ -209,6 +223,15 @@ const STATIC_WORLD_PAYLOAD = Object.freeze({
       y: shop.y,
       radius: shop.radius,
       stock: SHOP_STOCK,
+    })
+  ),
+  hospitals: HOSPITALS.map((hospital) =>
+    Object.freeze({
+      id: hospital.id,
+      name: hospital.name,
+      x: hospital.x,
+      y: hospital.y,
+      radius: hospital.radius,
     })
   ),
   hospital: Object.freeze({
@@ -449,6 +472,30 @@ function plotIndexForLocalCoord(localX, localY) {
   return ySide * 2 + xSide; // 0 TL, 1 TR, 2 BL, 3 BR
 }
 
+function specialPlotKey(blockX, blockY, plotIndex) {
+  return `${blockX},${blockY},${plotIndex}`;
+}
+
+const HOSPITAL_PLOT_KEYS = (() => {
+  const keys = new Set();
+  for (const hospital of HOSPITALS) {
+    if (!hospital || !Number.isFinite(hospital.x) || !Number.isFinite(hospital.y)) continue;
+    const blockX = Math.floor(hospital.x / BLOCK_PX);
+    const blockY = Math.floor(hospital.y / BLOCK_PX);
+    const localX = mod(hospital.x, BLOCK_PX);
+    const localY = mod(hospital.y, BLOCK_PX);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex === null) continue;
+    keys.add(specialPlotKey(blockX, blockY, plotIndex));
+  }
+  return keys;
+})();
+
+function isHospitalPlot(blockX, blockY, plotIndex) {
+  if (plotIndex === null) return false;
+  return HOSPITAL_PLOT_KEYS.has(specialPlotKey(blockX, blockY, plotIndex));
+}
+
 function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
   const xSide = plotIndex % 2;
   const ySide = plotIndex > 1 ? 1 : 0;
@@ -485,17 +532,23 @@ function groundTypeAt(x, y) {
 
   const blockX = Math.floor(worldX / BLOCK_PX);
   const blockY = Math.floor(worldY / BLOCK_PX);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  let insidePlotBuildingRect = false;
+  if (plotIndex !== null) {
+    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+    insidePlotBuildingRect = localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1;
+    if (insidePlotBuildingRect && isHospitalPlot(blockX, blockY, plotIndex)) {
+      return 'building';
+    }
+  }
+
   const profile = hash2D(blockX, blockY);
   if (profile < 0.2) {
     return 'park';
   }
 
-  const plotIndex = plotIndexForLocalCoord(localX, localY);
-  if (plotIndex !== null) {
-    const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
-    if (localX > rect.x0 && localX < rect.x1 && localY > rect.y0 && localY < rect.y1) {
-      return 'building';
-    }
+  if (insidePlotBuildingRect) {
+    return 'building';
   }
 
   return 'park';
@@ -1341,12 +1394,40 @@ function makeBloodStain(x, y) {
   return stain;
 }
 
-function hospitalReleaseSpawn() {
-  const anchors = [
-    { x: HOSPITAL.releaseX, y: HOSPITAL.releaseY },
-    { x: HOSPITAL.dropX, y: HOSPITAL.dropY },
-    { x: HOSPITAL.x, y: HOSPITAL.y },
+function orderedHospitalsByDistance(x, y) {
+  const hospitals = Array.isArray(HOSPITALS) && HOSPITALS.length > 0 ? HOSPITALS.slice() : HOSPITAL ? [HOSPITAL] : [];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || hospitals.length <= 1) {
+    return hospitals;
+  }
+  hospitals.sort(
+    (a, b) => wrappedDistanceSq(x, y, a.x, a.y) - wrappedDistanceSq(x, y, b.x, b.y)
+  );
+  return hospitals;
+}
+
+function nearestHospitalTo(x, y) {
+  const hospitals = orderedHospitalsByDistance(x, y);
+  return hospitals.length > 0 ? hospitals[0] : null;
+}
+
+function hospitalSpawnAnchors(hospital) {
+  if (!hospital) return [];
+  const releaseX = Number.isFinite(hospital.releaseX) ? hospital.releaseX : hospital.x;
+  const releaseY = Number.isFinite(hospital.releaseY) ? hospital.releaseY : hospital.y;
+  const dropX = Number.isFinite(hospital.dropX) ? hospital.dropX : hospital.x;
+  const dropY = Number.isFinite(hospital.dropY) ? hospital.dropY : hospital.y;
+  return [
+    { x: releaseX, y: releaseY },
+    { x: dropX, y: dropY },
+    { x: hospital.x, y: hospital.y },
   ];
+}
+
+function hospitalReleaseSpawn(nearX = null, nearY = null) {
+  const hospitals = orderedHospitalsByDistance(nearX, nearY);
+  if (hospitals.length === 0) {
+    return randomPedSpawn();
+  }
   const radii = [0, 8, 14, 20, 28, 36, 48, 64, 86];
   const dirs = [
     0,
@@ -1359,25 +1440,31 @@ function hospitalReleaseSpawn() {
     -Math.PI * 0.75,
   ];
 
-  for (const anchor of anchors) {
-    for (const radius of radii) {
-      for (const dir of dirs) {
-        const x = wrapWorldX(anchor.x + Math.cos(dir) * radius + randRange(-2, 2));
-        const y = wrapWorldY(anchor.y + Math.sin(dir) * radius + randRange(-2, 2));
-        if (!isSolidForPed(x, y) && isPreferredPedGround(groundTypeAt(x, y))) {
-          return { x, y };
+  for (const hospital of hospitals) {
+    const anchors = hospitalSpawnAnchors(hospital);
+    for (const anchor of anchors) {
+      for (const radius of radii) {
+        for (const dir of dirs) {
+          const x = wrapWorldX(anchor.x + Math.cos(dir) * radius + randRange(-2, 2));
+          const y = wrapWorldY(anchor.y + Math.sin(dir) * radius + randRange(-2, 2));
+          if (!isSolidForPed(x, y) && isPreferredPedGround(groundTypeAt(x, y))) {
+            return { x, y };
+          }
         }
       }
     }
   }
 
-  for (const anchor of anchors) {
-    for (const radius of radii) {
-      for (const dir of dirs) {
-        const x = wrapWorldX(anchor.x + Math.cos(dir) * radius);
-        const y = wrapWorldY(anchor.y + Math.sin(dir) * radius);
-        if (!isSolidForPed(x, y)) {
-          return { x, y };
+  for (const hospital of hospitals) {
+    const anchors = hospitalSpawnAnchors(hospital);
+    for (const anchor of anchors) {
+      for (const radius of radii) {
+        for (const dir of dirs) {
+          const x = wrapWorldX(anchor.x + Math.cos(dir) * radius);
+          const y = wrapWorldY(anchor.y + Math.sin(dir) * radius);
+          if (!isSolidForPed(x, y)) {
+            return { x, y };
+          }
         }
       }
     }
@@ -1974,7 +2061,7 @@ function tryRespawn(player) {
   player.respawnTimer -= DT;
   if (player.respawnTimer > 0) return;
 
-  const spawn = hospitalReleaseSpawn();
+  const spawn = hospitalReleaseSpawn(player.x, player.y);
   player.x = spawn.x;
   player.y = spawn.y;
   player.health = 100;
@@ -3005,7 +3092,10 @@ function dropAmbulanceLoadAtCar(car) {
   car.ambulanceLoad = [];
 }
 
-function deliverAmbulanceLoadToHospital(car) {
+function deliverAmbulanceLoadToHospital(car, destinationHospital = null) {
+  const hospital = destinationHospital || nearestHospitalTo(car.x, car.y);
+  const releaseNearX = hospital ? hospital.x : car.x;
+  const releaseNearY = hospital ? hospital.y : car.y;
   const load = ensureAmbulanceLoad(car);
   for (const item of load) {
     const entity = getCorpseEntityByRef(item.type, item.id);
@@ -3015,7 +3105,7 @@ function deliverAmbulanceLoadToHospital(car) {
     entity.bodyCarriedBy = null;
     entity.bodyClaimedBy = null;
     entity.reviveTimer = randRange(3.5, 5.2);
-    const release = hospitalReleaseSpawn();
+    const release = hospitalReleaseSpawn(releaseNearX, releaseNearY);
     entity.x = release.x;
     entity.y = release.y;
     entity.dir = Math.PI * 0.5;
@@ -3099,9 +3189,10 @@ function stepAmbulanceCar(car, dt) {
       return;
     }
 
-    const dist = driveAiToward(car, HOSPITAL.dropX, HOSPITAL.dropY, dt, 96, 30);
+    const hospital = nearestHospitalTo(car.x, car.y) || HOSPITAL;
+    const dist = driveAiToward(car, hospital.dropX, hospital.dropY, dt, 96, 30);
     if (dist < 24) {
-      deliverAmbulanceLoadToHospital(car);
+      deliverAmbulanceLoadToHospital(car, hospital);
       car.ambulanceMode = 'idle';
       clearAmbulanceTarget(car);
       car.aiCooldown = randRange(0.25, 0.95);
@@ -3950,7 +4041,7 @@ function stepNpcs(dt) {
           }
           npc.bodyClaimedBy = null;
           npc.bodyCarriedBy = null;
-          const release = hospitalReleaseSpawn();
+          const release = hospitalReleaseSpawn(npc.x, npc.y);
           respawnNpc(npc, release);
           emitEvent('npcHospital', {
             x: release.x,
@@ -3974,7 +4065,7 @@ function stepNpcs(dt) {
       } else if (npc.corpseState === 'reviving') {
         npc.reviveTimer -= dt;
         if (npc.reviveTimer <= 0) {
-          respawnNpc(npc, hospitalReleaseSpawn());
+          respawnNpc(npc, hospitalReleaseSpawn(npc.x, npc.y));
         }
       }
       continue;
@@ -4129,7 +4220,7 @@ function stepCops(dt) {
           }
           cop.bodyClaimedBy = null;
           cop.bodyCarriedBy = null;
-          const release = hospitalReleaseSpawn();
+          const release = hospitalReleaseSpawn(cop.x, cop.y);
           respawnCop(cop, release, true);
           emitEvent('copHospital', {
             x: release.x,
@@ -4153,7 +4244,7 @@ function stepCops(dt) {
       } else if (cop.corpseState === 'reviving') {
         cop.reviveTimer -= dt;
         if (cop.reviveTimer <= 0) {
-          respawnCop(cop, hospitalReleaseSpawn(), true);
+          respawnCop(cop, hospitalReleaseSpawn(cop.x, cop.y), true);
         }
       }
       continue;
@@ -4513,7 +4604,7 @@ function resetAmbientSceneWhenEmpty() {
 
   for (const cop of cops.values()) {
     if (!cop.alive) {
-      respawnCop(cop, hospitalReleaseSpawn(), true);
+      respawnCop(cop, hospitalReleaseSpawn(cop.x, cop.y), true);
       continue;
     }
     cop.targetPlayerId = null;
