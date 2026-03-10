@@ -21,6 +21,9 @@ const toColorBtn = document.getElementById('toColorBtn');
 const openCrimeBoardBtn = document.getElementById('openCrimeBoardBtn');
 const crimeBoardList = document.getElementById('crimeBoardList');
 const crimeBoardStatus = document.getElementById('crimeBoardStatus');
+const crimeBoardSearchInput = document.getElementById('crimeBoardSearchInput');
+const crimeBoardSearchBtn = document.getElementById('crimeBoardSearchBtn');
+const crimeBoardSearchClearBtn = document.getElementById('crimeBoardSearchClearBtn');
 const crimeBoardPrevBtn = document.getElementById('crimeBoardPrevBtn');
 const crimeBoardNextBtn = document.getElementById('crimeBoardNextBtn');
 const crimeBoardPage = document.getElementById('crimeBoardPage');
@@ -171,6 +174,7 @@ let crimeBoardEntries = [];
 let crimeBoardLoading = false;
 let crimeBoardRefreshTimer = null;
 let crimeBoardFetchToken = 0;
+let crimeBoardSearchQuery = '';
 
 const snapshotEntityState = {
   players: new Map(),
@@ -532,6 +536,14 @@ function setCrimeBoardStatus(text = '') {
   }
 }
 
+function normalizeCrimeBoardSearchQuery(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .slice(0, 16);
+}
+
 function drawCrimeBoardAvatar(canvasNode, bodyColor) {
   if (!canvasNode) return;
   const g = canvasNode.getContext('2d');
@@ -566,6 +578,12 @@ function drawCrimeBoardAvatar(canvasNode, bodyColor) {
 function refreshCrimeBoardControls() {
   if (crimeBoardPage) {
     crimeBoardPage.textContent = `Page ${crimeBoardCurrentPage} / ${crimeBoardTotalPages}`;
+  }
+  if (crimeBoardSearchBtn) {
+    crimeBoardSearchBtn.disabled = crimeBoardLoading;
+  }
+  if (crimeBoardSearchClearBtn) {
+    crimeBoardSearchClearBtn.disabled = crimeBoardLoading;
   }
   if (crimeBoardPrevBtn) {
     crimeBoardPrevBtn.disabled = crimeBoardLoading || crimeBoardCurrentPage <= 1;
@@ -655,7 +673,13 @@ async function fetchCrimeBoardPage(page, silent = false) {
   }
 
   try {
-    const response = await fetch(`/api/crime-leaderboard?page=${nextPage}&pageSize=${CRIME_BOARD_PAGE_SIZE}`, {
+    const params = new URLSearchParams();
+    params.set('page', String(nextPage));
+    params.set('pageSize', String(CRIME_BOARD_PAGE_SIZE));
+    if (crimeBoardSearchQuery) {
+      params.set('q', crimeBoardSearchQuery);
+    }
+    const response = await fetch(`/api/crime-leaderboard?${params.toString()}`, {
       cache: 'no-store',
     });
     if (!response.ok) {
@@ -667,9 +691,25 @@ async function fetchCrimeBoardPage(page, silent = false) {
     crimeBoardCurrentPage = Math.max(1, Math.round(Number(payload.page) || 1));
     crimeBoardTotalPages = Math.max(1, Math.round(Number(payload.totalPages) || 1));
     crimeBoardTotal = Math.max(0, Math.round(Number(payload.total) || 0));
+    if (typeof payload.query === 'string') {
+      crimeBoardSearchQuery = normalizeCrimeBoardSearchQuery(payload.query);
+      if (crimeBoardSearchInput) {
+        crimeBoardSearchInput.value = crimeBoardSearchQuery;
+      }
+    }
     crimeBoardEntries = Array.isArray(payload.players) ? payload.players : [];
     renderCrimeBoardRows();
-    setCrimeBoardStatus(crimeBoardTotal > 0 ? `Tracked profiles: ${crimeBoardTotal}` : 'No crime records yet.');
+    if (crimeBoardTotal > 0) {
+      setCrimeBoardStatus(
+        crimeBoardSearchQuery
+          ? `Tracked profiles: ${crimeBoardTotal} | filter: "${crimeBoardSearchQuery}"`
+          : `Tracked profiles: ${crimeBoardTotal}`
+      );
+    } else if (crimeBoardSearchQuery) {
+      setCrimeBoardStatus(`No crime records found for "${crimeBoardSearchQuery}".`);
+    } else {
+      setCrimeBoardStatus('No crime records yet.');
+    }
   } catch {
     if (requestToken !== crimeBoardFetchToken) return;
     crimeBoardCurrentPage = 1;
@@ -684,6 +724,28 @@ async function fetchCrimeBoardPage(page, silent = false) {
       refreshCrimeBoardControls();
     }
   }
+}
+
+function applyCrimeBoardSearch() {
+  const nextQuery = normalizeCrimeBoardSearchQuery(crimeBoardSearchInput ? crimeBoardSearchInput.value : '');
+  if (crimeBoardSearchInput) {
+    crimeBoardSearchInput.value = nextQuery;
+  }
+  if (nextQuery === crimeBoardSearchQuery && crimeBoardCurrentPage === 1 && !crimeBoardLoading) {
+    fetchCrimeBoardPage(1, true);
+    return;
+  }
+  crimeBoardSearchQuery = nextQuery;
+  fetchCrimeBoardPage(1);
+}
+
+function clearCrimeBoardSearch() {
+  if (crimeBoardSearchInput) {
+    crimeBoardSearchInput.value = '';
+  }
+  if (!crimeBoardSearchQuery && !crimeBoardLoading) return;
+  crimeBoardSearchQuery = '';
+  fetchCrimeBoardPage(1);
 }
 
 function stopCrimeBoardRefresh() {
@@ -707,6 +769,9 @@ function openCrimeBoardPanel() {
   crimeBoardTotalPages = 1;
   crimeBoardTotal = 0;
   crimeBoardEntries = [];
+  if (crimeBoardSearchInput) {
+    crimeBoardSearchInput.value = crimeBoardSearchQuery;
+  }
   setCrimeBoardStatus('Loading crime board...');
   renderCrimeBoardRows();
   fetchCrimeBoardPage(1);
@@ -5104,6 +5169,26 @@ function attachUiEvents() {
       setJoinError('');
       setStep('crime');
       openCrimeBoardPanel();
+    });
+  }
+
+  if (crimeBoardSearchBtn) {
+    crimeBoardSearchBtn.addEventListener('click', () => {
+      applyCrimeBoardSearch();
+    });
+  }
+
+  if (crimeBoardSearchClearBtn) {
+    crimeBoardSearchClearBtn.addEventListener('click', () => {
+      clearCrimeBoardSearch();
+    });
+  }
+
+  if (crimeBoardSearchInput) {
+    crimeBoardSearchInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      applyCrimeBoardSearch();
     });
   }
 

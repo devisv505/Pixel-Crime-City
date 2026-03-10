@@ -731,6 +731,19 @@ function normalizeCrimeReputationRecord(record, fallbackProfileId = '') {
   };
 }
 
+function normalizeCrimeBoardSearchQuery(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .slice(0, MAX_NAME_LENGTH);
+}
+
+function escapeSqlLikePattern(raw) {
+  return String(raw || '').replace(/[\\%_]/g, '\\$&');
+}
+
 function crimeRecordFromRow(row, fallbackProfileId = '') {
   if (!row || typeof row !== 'object') return null;
   return normalizeCrimeReputationRecord(
@@ -802,6 +815,11 @@ function ensureCrimeReputationDb() {
       WHERE profile_id = @profileId
     `);
     crimeReputationSql.countAll = crimeReputationDb.prepare('SELECT COUNT(1) AS total FROM crime_reputation');
+    crimeReputationSql.countByName = crimeReputationDb.prepare(`
+      SELECT COUNT(1) AS total
+      FROM crime_reputation
+      WHERE name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
+    `);
     crimeReputationSql.listPage = crimeReputationDb.prepare(`
       SELECT
         profile_id AS profileId,
@@ -810,6 +828,18 @@ function ensureCrimeReputationDb() {
         last_color AS lastColor,
         updated_at AS updatedAt
       FROM crime_reputation
+      ORDER BY crime_rating DESC, updated_at DESC, name ASC
+      LIMIT @limit OFFSET @offset
+    `);
+    crimeReputationSql.listPageByName = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        name,
+        crime_rating AS crimeRating,
+        last_color AS lastColor,
+        updated_at AS updatedAt
+      FROM crime_reputation
+      WHERE name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
       ORDER BY crime_rating DESC, updated_at DESC, name ASC
       LIMIT @limit OFFSET @offset
     `);
@@ -1052,6 +1082,7 @@ app.get('/api/crime-leaderboard', (req, res) => {
       pageSize: CRIME_BOARD_DEFAULT_PAGE_SIZE,
       total: 0,
       totalPages: 1,
+      query: '',
       players: [],
       error: 'Crime store unavailable',
     });
@@ -1060,6 +1091,9 @@ app.get('/api/crime-leaderboard', (req, res) => {
 
   const requestedPage = Number.parseInt(String(req.query.page || '1'), 10);
   const requestedPageSize = Number.parseInt(String(req.query.pageSize || CRIME_BOARD_DEFAULT_PAGE_SIZE), 10);
+  const searchQuery = normalizeCrimeBoardSearchQuery(String(req.query.q || ''));
+  const hasSearch = searchQuery.length > 0;
+  const nameLike = `%${escapeSqlLikePattern(searchQuery)}%`;
   const pageSize = clamp(
     Number.isFinite(requestedPageSize) ? requestedPageSize : CRIME_BOARD_DEFAULT_PAGE_SIZE,
     1,
@@ -1067,18 +1101,28 @@ app.get('/api/crime-leaderboard', (req, res) => {
   );
 
   try {
-    const total = Number(crimeReputationSql.countAll.get()?.total) || 0;
+    const total = Number(
+      hasSearch
+        ? crimeReputationSql.countByName.get({ nameLike })?.total
+        : crimeReputationSql.countAll.get()?.total
+    ) || 0;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
     const start = (page - 1) * pageSize;
     const onlineIds = onlineCrimeProfileIds();
-    const rows = total > 0 ? crimeReputationSql.listPage.all({ limit: pageSize, offset: start }) : [];
+    const rows =
+      total > 0
+        ? hasSearch
+          ? crimeReputationSql.listPageByName.all({ nameLike, limit: pageSize, offset: start })
+          : crimeReputationSql.listPage.all({ limit: pageSize, offset: start })
+        : [];
 
     res.json({
       page,
       pageSize,
       total,
       totalPages,
+      query: searchQuery,
       players: rows
         .map((row, index) => {
           const record = crimeRecordFromRow(row, row.profileId);
@@ -1102,6 +1146,7 @@ app.get('/api/crime-leaderboard', (req, res) => {
       pageSize,
       total: 0,
       totalPages: 1,
+      query: searchQuery,
       players: [],
       error: 'Crime leaderboard query failed',
     });

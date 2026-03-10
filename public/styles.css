@@ -259,6 +259,17 @@ button.secondary {
   min-height: 264px;
 }
 
+.crime-board-search {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.crime-board-search input {
+  min-width: 0;
+}
+
 .crime-board-row {
   display: grid;
   grid-template-columns: 34px 30px 1fr auto;

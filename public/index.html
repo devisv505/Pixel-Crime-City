@@ -51,6 +51,17 @@
 
         <section id="stepCrime" class="step" aria-label="Crime board">
           <h2>Crime Board</h2>
+          <div class="crime-board-search">
+            <input
+              id="crimeBoardSearchInput"
+              maxlength="16"
+              placeholder="Search player name"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="crimeBoardSearchBtn" class="secondary" type="button">Search</button>
+            <button id="crimeBoardSearchClearBtn" class="secondary" type="button">Clear</button>
+          </div>
           <div id="crimeBoardList" class="crime-board-list"></div>
           <div id="crimeBoardStatus" class="profile-hint"></div>
           <div class="crime-board-pagination">
