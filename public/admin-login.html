@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 20% 10%, #1f3547, #0d1620 60%);
+        color: #e7f1f8;
+      }
+      .card {
+        width: min(92vw, 360px);
+        border: 1px solid #3e5f77;
+        background: rgba(13, 28, 39, 0.9);
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+      label {
+        display: block;
+        margin: 8px 0 4px;
+        font-size: 12px;
+        color: #a9c1d2;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #4f738d;
+        background: #0d1b26;
+        color: #e7f1f8;
+        padding: 8px;
+        font: inherit;
+      }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        border: 1px solid #4f738d;
+        background: #1f3344;
+        color: #e7f1f8;
+        padding: 8px;
+        cursor: pointer;
+      }
+      .error {
+        min-height: 18px;
+        margin-top: 10px;
+        color: #ffc790;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="card" id="loginForm" autocomplete="off">
+      <h1>Quest Admin Login</h1>
+      <label for="user">Username</label>
+      <input id="user" name="user" maxlength="64" required />
+      <label for="pass">Password</label>
+      <input id="pass" name="pass" type="password" maxlength="128" required />
+      <button id="submitBtn" type="submit">Sign in</button>
+      <div class="error" id="error"></div>
+    </form>
+
+    <script>
+      const loginForm = document.getElementById('loginForm');
+      const userInput = document.getElementById('user');
+      const passInput = document.getElementById('pass');
+      const submitBtn = document.getElementById('submitBtn');
+      const errorNode = document.getElementById('error');
+
+      function setError(text) {
+        errorNode.textContent = text || '';
+      }
+
+      loginForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const user = String(userInput.value || '').trim();
+        const pass = String(passInput.value || '');
+        if (!user || !pass) {
+          setError('Enter username and password.');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        setError('');
+        try {
+          const response = await fetch('/api/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user, pass }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload.ok) {
+            setError(payload.error || 'Login failed.');
+            return;
+          }
+          window.location.href = '/admin/quests';
+        } catch {
+          setError('Network error. Try again.');
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+
+      userInput.focus();
+    </script>
+  </body>
+</html>

@@ -7,6 +7,7 @@ function createWorldFeature(deps) {
     LANE_A,
     LANE_B,
     HOSPITALS,
+    GARAGES,
     BUILDING_COLLIDER_TOP_OFFSET_PX,
     CAR_BUILDING_COLLISION_INSET_X_PX,
     CAR_BUILDING_COLLISION_INSET_Y_PX,
@@ -47,9 +48,30 @@ function createWorldFeature(deps) {
     return keys;
   })();
 
+  const GARAGE_PLOT_KEYS = (() => {
+    const keys = new Set();
+    const garages = Array.isArray(GARAGES) ? GARAGES : [];
+    for (const garage of garages) {
+      if (!garage || !Number.isFinite(garage.x) || !Number.isFinite(garage.y)) continue;
+      const blockX = Math.floor(garage.x / BLOCK_PX);
+      const blockY = Math.floor(garage.y / BLOCK_PX);
+      const localX = mod(garage.x, BLOCK_PX);
+      const localY = mod(garage.y, BLOCK_PX);
+      const plotIndex = plotIndexForLocalCoord(localX, localY);
+      if (plotIndex === null) continue;
+      keys.add(specialPlotKey(blockX, blockY, plotIndex));
+    }
+    return keys;
+  })();
+
   function isHospitalPlot(blockX, blockY, plotIndex) {
     if (plotIndex === null) return false;
     return HOSPITAL_PLOT_KEYS.has(specialPlotKey(blockX, blockY, plotIndex));
+  }
+
+  function isGaragePlot(blockX, blockY, plotIndex) {
+    if (plotIndex === null) return false;
+    return GARAGE_PLOT_KEYS.has(specialPlotKey(blockX, blockY, plotIndex));
   }
 
   function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
@@ -133,11 +155,16 @@ function createWorldFeature(deps) {
     const blockX = Math.floor(worldX / BLOCK_PX);
     const blockY = Math.floor(worldY / BLOCK_PX);
     const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+    let bottomLimit = rect.y1;
+    if (isGaragePlot(blockX, blockY, plotIndex)) {
+      // Keep the lower garage mouth open for pedestrian movement too.
+      bottomLimit = Math.min(bottomLimit, rect.y1 - 34);
+    }
     return (
       localX >= rect.x0 &&
       localX < rect.x1 &&
       localY >= rect.y0 + BUILDING_COLLIDER_TOP_OFFSET_PX &&
-      localY < rect.y1
+      localY < bottomLimit
     );
   }
 
@@ -159,11 +186,16 @@ function createWorldFeature(deps) {
     const xInset = CAR_BUILDING_COLLISION_INSET_X_PX;
     const yInset = CAR_BUILDING_COLLISION_INSET_Y_PX;
     const topInset = yInset + BUILDING_COLLIDER_TOP_OFFSET_PX;
+    let bottomLimit = rect.y1 - yInset;
+    if (isGaragePlot(blockX, blockY, plotIndex)) {
+      // Keep the lower garage mouth open so cars can enter up to the threshold line.
+      bottomLimit = Math.min(bottomLimit, rect.y1 - 34);
+    }
     return (
       localX >= rect.x0 + xInset &&
       localX < rect.x1 - xInset &&
       localY >= rect.y0 + topInset &&
-      localY < rect.y1 - yInset
+      localY < bottomLimit
     );
   }
 

@@ -23,6 +23,8 @@ Working rules for agents editing this project (`Pixel Crime City`), based on imp
 - `public/client/features/*`: client feature modules (`menu`, `crime-board`, `hud`, plus domain wrappers for incremental extraction).
 - `public/client/render/*`: render-domain wrappers for incremental extraction.
 - `public/client-protocol.js`: client binary protocol codec surface exposed as `window.ClientProtocol`.
+- `public/admin-login.html`: admin login UI page (`/admin`, form-based login entry point).
+- `public/admin-quests.html`: admin quest management UI (`/admin/quests`, CRUD + reorder + activation).
 - `server-supervisor.js`: local keep-alive launcher that auto-restarts `server.js`.
 - `public/assets/cars/car.png`: optional user-provided reference image used to generate in-game car sprite template.
 
@@ -169,6 +171,45 @@ Important:
   - `const desiredX = laneFor(car.x, Math.sin(car.angle) < 0);`
 - Do not revert this unless replacing with a better tested lane model.
 
+### Quest + Reputation Contract
+- Quests are server-authoritative and ordered.
+- A player can have only one `active` quest at a time; later quests stay `locked` until previous completion.
+- Quest progress/rewards persist in SQLite (`quests`, `player_quest_progress`, `player_quest_profile`, target tables).
+- Reputation is a separate persistent stat and must not be merged with `crimeRating`.
+- Gun-shop access lock is quest-driven (`gun_shop_unlocked`), with safe fallback if no active quests exist.
+- Reward application is automatic on completion (money/reputation/unlock), no claim button.
+- `reset_on_death` must reset only current active quest progress when player dies.
+- Supported quest actions currently include:
+- `kill_npc`
+- `kill_cop`
+- `steal_car_any`
+- `steal_car_cop`
+- `steal_car_ambulance`
+- `kill_target_npc`
+- `steal_target_car`
+- Target-area quests (`kill_target_npc`, `steal_target_car`) must keep live zone sync and reassignment semantics.
+
+### Quest UI Contract
+- Left quest panel is default visible in gameplay.
+- `Q` toggles quest panel visibility.
+- Panel currently shows active quest + next quest (or one quest if active is last).
+- If all quests are completed, quest rows are hidden and completion state is shown instead.
+- Quest target zones are rendered on map overlay.
+- When inside interior mode (gun shop or garage), hide HUD, quest panel, and map overlay.
+
+### Garage Contract
+- Two world garages exist and use `public/assets/buildings/garage_01.png` visual variant.
+- Map legend/markers use garage red square marker.
+- Garage entry requires being in a car and pressing `E` in the garage driveway/entrance zone.
+- Garage interior actions:
+- `1`: sell car for `$50` (`garage_sell`), auto-exit garage on success.
+- `2`: repaint random color for `$10` (`garage_repaint_random`).
+- `3`: repaint selected player color for `$100` (`garage_repaint_selected`).
+- Repaint actions reset police pursuit (clear stars/chase targeting).
+- Sold cars must respawn back into world traffic population.
+- Garage mouth collision opening is intentional:
+- Cars, players, NPCs, and cops can move into lower garage opening up to threshold line before solid wall.
+
 ## Car Sprite Pipeline Contract
 - Car visuals are generated in-code from a token template, not drawn as raw full image textures.
 - If `public/assets/cars/car.png` exists:
@@ -185,12 +226,41 @@ Important:
 - Car collision clipping into buildings.
 - Car front/back readability (lights and orientation cues).
 
+## Quest/Admin/API Contract
+- Admin access uses env-driven auth:
+- `ADMIN_USER`
+- `ADMIN_PASS`
+- Admin UI routes:
+- `/admin` (login UI)
+- `/admin/quests` (quest manager UI)
+- Admin quest APIs:
+- `GET /api/admin/quests`
+- `POST /api/admin/quests`
+- `PUT /api/admin/quests/:id`
+- `DELETE /api/admin/quests/:id`
+- `POST /api/admin/quests/reorder`
+- Public leaderboard API:
+- `GET /api/reputation-leaderboard?page=&pageSize=&q=`
+- Crime leaderboard must remain unchanged while reputation leaderboard is separate.
+
+## Protocol Contract (Quest + Garage)
+- Joined frame includes optional quest bootstrap block (reputation, gun-shop unlock, ordered quest list).
+- Snapshot event stream includes quest sync event for live progress/status updates.
+- `insideShopIndex` now represents interior index space (gun shops + garages).
+- Buy item protocol item-code mappings must include garage actions:
+- `garage_sell`
+- `garage_repaint_random`
+- `garage_repaint_selected`
+
 ## Required Validation After Changes
 Run at minimum:
 - `node --check server.js`
 - `node --check public/client.js`
 - `node --check server-protocol.js`
 - `node --check public/client-protocol.js`
+- `node --check server/runtime/app.js`
+- `node --check server/features/world.js`
+- `node --check public/client/app.js`
 
 If gameplay logic changed, also perform a runtime smoke check for:
 - NPC count and no-road spawn behavior.
@@ -198,6 +268,12 @@ If gameplay logic changed, also perform a runtime smoke check for:
 - Shop/world payload validity.
 - Player spawn, weapon slot behavior, and event flow.
 - Crime meter + crime board flow.
+- Ordered quest progression (only active quest increments).
+- Reputation persistence and reputation leaderboard flow.
+- Gun-shop lock/unlock behavior from quest rewards.
+- Garage enter/menu behavior and pricing.
+- Sell-car flow auto-exit + sold-car respawn.
+- Repaint flow (random vs selected) and police-pursuit reset.
 
 ## Local Runtime Notes
 - Default local URL: `http://localhost:3000`

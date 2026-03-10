@@ -86,6 +86,7 @@
           if (record.npcDriver) flagsCar |= 1;
           if (record.sirenOn) flagsCar |= 2;
           if (record.smoking) flagsCar |= 4;
+          if (record.questTarget) flagsCar |= 8;
           writer.u8(flagsCar);
           return;
         }
@@ -99,6 +100,9 @@
           writer.color24(record.skinColor || '#f0c39a');
           writer.color24(record.shirtColor || '#808891');
           writer.color24(record.shirtDark || '#2a3342');
+          let flagsNpc = 0;
+          if (record.questTarget) flagsNpc |= 1;
+          writer.u8(flagsNpc);
           return;
         }
         if (name === 'cops') {
@@ -222,6 +226,22 @@
           eventWriter.u32(event.victimId ? event.victimId >>> 0 : 0);
           eventWriter.u32(event.carId ? event.carId >>> 0 : 0);
           break;
+        case 'questSync': {
+          const quests = Array.isArray(event.quests) ? event.quests : [];
+          eventWriter.u32(event.playerId ? event.playerId >>> 0 : 0);
+          eventWriter.u32(clamp(Math.round(event.reputation || 0), 0, 0xffffffff));
+          eventWriter.u8(event.gunShopUnlocked ? 1 : 0);
+          eventWriter.u16(clamp(quests.length, 0, 65535));
+          for (const quest of quests) {
+            eventWriter.u32((quest?.id >>> 0) || 0);
+            eventWriter.u16(clamp(Math.round(quest?.progress || 0), 0, 65535));
+            eventWriter.u8(clamp(Math.round(quest?.statusCode || 0), 0, 255));
+            eventWriter.u16(packCoord(quest?.targetZoneX || 0));
+            eventWriter.u16(packCoord(quest?.targetZoneY || 0));
+            eventWriter.u16(clamp(Math.round(quest?.targetZoneRadius || 0), 0, 65535));
+          }
+          break;
+        }
         default:
           break;
       }

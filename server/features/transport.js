@@ -13,6 +13,9 @@ function createTransportFeature(deps) {
     makeId,
     restoreProgressForPlayer,
     attachCrimeReputationToPlayer,
+    attachQuestStateToPlayer,
+    releaseQuestTargetReservationsForProfile,
+    createQuestBootstrapForPlayer,
     progressSignatureFromPlayer,
     createProgressTicketForPlayer,
     protocolIdForEntity,
@@ -36,6 +39,7 @@ function createTransportFeature(deps) {
 
     const player = players.get(client.playerId);
     if (player) {
+      releaseQuestTargetReservationsForProfile(player.profileId);
       if (player.inCarId) {
         const car = cars.get(player.inCarId);
         if (car) {
@@ -103,6 +107,13 @@ function createTransportFeature(deps) {
       ownedMachinegun: false,
       ownedBazooka: false,
       profileId: '',
+      questReputation: 0,
+      gunShopUnlocked: false,
+      questEntries: [],
+      activeQuestTargetNpcId: '',
+      activeQuestTargetQuestId: 0,
+      activeQuestTargetCarId: '',
+      activeQuestTargetCarQuestId: 0,
       requestStats: false,
       lastInputSeq: 0,
       lastClientSendTime: 0,
@@ -127,6 +138,7 @@ function createTransportFeature(deps) {
 
     restoreProgressForPlayer(player, profileTicket, name);
     attachCrimeReputationToPlayer(player, profileId);
+    attachQuestStateToPlayer(player);
     const initialProgressSignature = progressSignatureFromPlayer(player);
     const initialProgressTicket = createProgressTicketForPlayer(player);
 
@@ -146,6 +158,7 @@ function createTransportFeature(deps) {
         worldRev: WORLD_REV,
         world: STATIC_WORLD_PAYLOAD,
         progressTicket: initialProgressTicket,
+        quest: createQuestBootstrapForPlayer(player),
       })
     );
 
