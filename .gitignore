@@ -4,3 +4,4 @@ server.log
 server-*.log
 logs/
 data/crime-reputation.json
+data/crime-reputation.sqlite*

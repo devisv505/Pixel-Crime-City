@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const Database = require('better-sqlite3');
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 const {
@@ -50,13 +51,23 @@ const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(proces
 const PROGRESS_SECRET = String(process.env.PROGRESS_SECRET || 'pcc-progress-secret-v1');
 const PROGRESS_TOKEN_VERSION = 1;
 const PROGRESS_KEY = crypto.createHash('sha256').update(PROGRESS_SECRET).digest();
-const CRIME_REPUTATION_FILE_ENV = String(process.env.CRIME_REPUTATION_FILE || '').trim();
+const CRIME_REPUTATION_LEGACY_FILE_ENV = String(process.env.CRIME_REPUTATION_FILE || '').trim();
+const CRIME_REPUTATION_DB_FILE_ENV = String(process.env.CRIME_REPUTATION_DB_FILE || '').trim();
 const CRIME_REPUTATION_DIR_ENV = String(process.env.CRIME_REPUTATION_DIR || '').trim();
-const CRIME_REPUTATION_FILE = path.resolve(
-  CRIME_REPUTATION_FILE_ENV ||
-    path.join(CRIME_REPUTATION_DIR_ENV || path.join(__dirname, 'data'), 'crime-reputation.json')
+const CRIME_REPUTATION_DB_DIR_ENV = String(process.env.CRIME_REPUTATION_DB_DIR || '').trim();
+const CRIME_REPUTATION_DATA_DIR = path.resolve(
+  CRIME_REPUTATION_DB_DIR_ENV ||
+    CRIME_REPUTATION_DIR_ENV ||
+    (CRIME_REPUTATION_LEGACY_FILE_ENV
+      ? path.dirname(path.resolve(CRIME_REPUTATION_LEGACY_FILE_ENV))
+      : path.join(__dirname, 'data'))
 );
-const CRIME_REPUTATION_SAVE_DELAY_MS = 350;
+const CRIME_REPUTATION_DB_FILE = path.resolve(
+  CRIME_REPUTATION_DB_FILE_ENV || path.join(CRIME_REPUTATION_DATA_DIR, 'crime-reputation.sqlite')
+);
+const CRIME_REPUTATION_LEGACY_JSON_FILE = path.resolve(
+  CRIME_REPUTATION_LEGACY_FILE_ENV || path.join(CRIME_REPUTATION_DATA_DIR, 'crime-reputation.json')
+);
 const CRIME_BOARD_DEFAULT_PAGE_SIZE = 8;
 const CRIME_BOARD_MAX_PAGE_SIZE = 32;
 const CRIME_WEIGHTS = Object.freeze({
@@ -134,7 +145,8 @@ const npcs = new Map();
 const cops = new Map();
 const cashDrops = new Map();
 const bloodStains = new Map();
-const crimeReputationByProfileId = new Map();
+let crimeReputationDb = null;
+const crimeReputationSql = {};
 
 let nextId = 1;
 let nextEventId = 1;
@@ -146,8 +158,6 @@ const protocolIdsByEntityId = new Map();
 const entityIdByProtocolId = new Map();
 let bytesSentSinceReport = 0;
 let nextMetricsAt = Date.now() + 5_000;
-let crimeReputationDirty = false;
-let crimeReputationSaveTimer = null;
 const tickMsWindow = [];
 const snapshotBuildMsWindow = [];
 let snapshotAccumulator = 0;
@@ -721,61 +731,169 @@ function normalizeCrimeReputationRecord(record, fallbackProfileId = '') {
   };
 }
 
-function loadCrimeReputationStore() {
-  crimeReputationByProfileId.clear();
+function crimeRecordFromRow(row, fallbackProfileId = '') {
+  if (!row || typeof row !== 'object') return null;
+  return normalizeCrimeReputationRecord(
+    {
+      profileId: row.profileId,
+      name: row.name,
+      crimeRating: row.crimeRating,
+      lastColor: row.lastColor,
+      updatedAt: row.updatedAt,
+    },
+    fallbackProfileId
+  );
+}
+
+function ensureCrimeReputationDb() {
+  if (crimeReputationDb) return true;
+  try {
+    fs.mkdirSync(path.dirname(CRIME_REPUTATION_DB_FILE), { recursive: true });
+    crimeReputationDb = new Database(CRIME_REPUTATION_DB_FILE);
+    crimeReputationDb.pragma('journal_mode = WAL');
+    crimeReputationDb.pragma('synchronous = NORMAL');
+    crimeReputationDb.exec(`
+      CREATE TABLE IF NOT EXISTS crime_reputation (
+        profile_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        crime_rating INTEGER NOT NULL DEFAULT 0,
+        last_color TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_crime_reputation_ranking
+        ON crime_reputation (crime_rating DESC, updated_at DESC, name ASC);
+    `);
+    crimeReputationSql.selectByProfileId = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        name,
+        crime_rating AS crimeRating,
+        last_color AS lastColor,
+        updated_at AS updatedAt
+      FROM crime_reputation
+      WHERE profile_id = @profileId
+      LIMIT 1
+    `);
+    crimeReputationSql.upsertMeta = crimeReputationDb.prepare(`
+      INSERT INTO crime_reputation (profile_id, name, crime_rating, last_color, updated_at)
+      VALUES (@profileId, @name, @crimeRating, @lastColor, @updatedAt)
+      ON CONFLICT(profile_id) DO UPDATE SET
+        name = excluded.name,
+        last_color = excluded.last_color,
+        updated_at = excluded.updated_at
+    `);
+    crimeReputationSql.upsertFull = crimeReputationDb.prepare(`
+      INSERT INTO crime_reputation (profile_id, name, crime_rating, last_color, updated_at)
+      VALUES (@profileId, @name, @crimeRating, @lastColor, @updatedAt)
+      ON CONFLICT(profile_id) DO UPDATE SET
+        name = excluded.name,
+        crime_rating = excluded.crime_rating,
+        last_color = excluded.last_color,
+        updated_at = excluded.updated_at
+    `);
+    crimeReputationSql.renameLegacyProfileId = crimeReputationDb.prepare(`
+      UPDATE crime_reputation
+      SET profile_id = @nextProfileId, name = @name, last_color = @lastColor, updated_at = @updatedAt
+      WHERE profile_id = @legacyProfileId
+    `);
+    crimeReputationSql.setCrimeRating = crimeReputationDb.prepare(`
+      UPDATE crime_reputation
+      SET crime_rating = @crimeRating, name = @name, last_color = @lastColor, updated_at = @updatedAt
+      WHERE profile_id = @profileId
+    `);
+    crimeReputationSql.countAll = crimeReputationDb.prepare('SELECT COUNT(1) AS total FROM crime_reputation');
+    crimeReputationSql.listPage = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        name,
+        crime_rating AS crimeRating,
+        last_color AS lastColor,
+        updated_at AS updatedAt
+      FROM crime_reputation
+      ORDER BY crime_rating DESC, updated_at DESC, name ASC
+      LIMIT @limit OFFSET @offset
+    `);
+    return true;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to open sqlite store at ${CRIME_REPUTATION_DB_FILE}: ${error.message}`);
+    if (crimeReputationDb) {
+      try {
+        crimeReputationDb.close();
+      } catch {}
+    }
+    crimeReputationDb = null;
+    for (const key of Object.keys(crimeReputationSql)) {
+      delete crimeReputationSql[key];
+    }
+    return false;
+  }
+}
+
+function importLegacyCrimeReputationJsonIfNeeded() {
+  if (!crimeReputationDb) return;
+  if (path.resolve(CRIME_REPUTATION_LEGACY_JSON_FILE) === path.resolve(CRIME_REPUTATION_DB_FILE)) return;
+
+  const currentCount = Number(crimeReputationSql.countAll.get()?.total) || 0;
+  if (currentCount > 0) return;
+
   let parsed = null;
   try {
-    const raw = fs.readFileSync(CRIME_REPUTATION_FILE, 'utf8');
+    const raw = fs.readFileSync(CRIME_REPUTATION_LEGACY_JSON_FILE, 'utf8');
     if (!raw.trim()) return;
     parsed = JSON.parse(raw);
   } catch (error) {
     if (error && error.code === 'ENOENT') return;
     // eslint-disable-next-line no-console
-    console.warn(`[crime] failed to load ${CRIME_REPUTATION_FILE}: ${error.message}`);
+    console.warn(`[crime] failed to read legacy json ${CRIME_REPUTATION_LEGACY_JSON_FILE}: ${error.message}`);
     return;
   }
 
   const entries = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : null;
-  if (!entries) {
-    // eslint-disable-next-line no-console
-    console.warn(`[crime] invalid reputation store format in ${CRIME_REPUTATION_FILE}; starting with empty store`);
-    return;
-  }
+  if (!entries || entries.length === 0) return;
 
+  const records = [];
   for (const entry of entries) {
     const normalized = normalizeCrimeReputationRecord(entry, entry?.profileId);
-    if (!normalized) continue;
-    crimeReputationByProfileId.set(normalized.profileId, normalized);
+    if (normalized) records.push(normalized);
   }
-}
+  if (records.length === 0) return;
 
-function flushCrimeReputationStore() {
-  if (!crimeReputationDirty) return;
-  crimeReputationDirty = false;
-  const payload = {
-    version: 1,
-    updatedAt: Date.now(),
-    records: Array.from(crimeReputationByProfileId.values()),
-  };
+  const insertMany = crimeReputationDb.transaction((items) => {
+    for (const record of items) {
+      crimeReputationSql.upsertFull.run({
+        profileId: record.profileId,
+        name: record.name,
+        crimeRating: record.crimeRating,
+        lastColor: record.lastColor,
+        updatedAt: record.updatedAt,
+      });
+    }
+  });
+
   try {
-    fs.mkdirSync(path.dirname(CRIME_REPUTATION_FILE), { recursive: true });
-    fs.writeFileSync(CRIME_REPUTATION_FILE, JSON.stringify(payload, null, 2), 'utf8');
-  } catch (error) {
-    crimeReputationDirty = true;
+    insertMany(records);
     // eslint-disable-next-line no-console
-    console.warn(`[crime] failed to save ${CRIME_REPUTATION_FILE}: ${error.message}`);
+    console.log(`[crime] imported ${records.length} legacy records into sqlite store`);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to import legacy json into sqlite store: ${error.message}`);
   }
 }
 
-function scheduleCrimeReputationSave() {
-  crimeReputationDirty = true;
-  if (crimeReputationSaveTimer) return;
-  crimeReputationSaveTimer = setTimeout(() => {
-    crimeReputationSaveTimer = null;
-    flushCrimeReputationStore();
-  }, CRIME_REPUTATION_SAVE_DELAY_MS);
-  if (typeof crimeReputationSaveTimer.unref === 'function') {
-    crimeReputationSaveTimer.unref();
+function loadCrimeReputationStore() {
+  if (!ensureCrimeReputationDb()) return;
+  importLegacyCrimeReputationJsonIfNeeded();
+}
+
+function closeCrimeReputationStore() {
+  if (!crimeReputationDb) return;
+  try {
+    crimeReputationDb.close();
+  } catch {}
+  crimeReputationDb = null;
+  for (const key of Object.keys(crimeReputationSql)) {
+    delete crimeReputationSql[key];
   }
 }
 
@@ -784,40 +902,65 @@ function resolveCrimeProfileIdForJoin(name, profileId) {
 }
 
 function upsertCrimeReputationRecord(profileId, name, color) {
+  if (!ensureCrimeReputationDb()) return null;
   const safeName = sanitizeName(name);
   if (!safeName) return null;
   const normalizedProfileId = resolveCrimeProfileIdForJoin(safeName, profileId);
   if (!normalizedProfileId) return null;
   const safeColor = normalizeHexColor(color, '#58d2ff');
+  const now = Date.now();
 
-  let record = crimeReputationByProfileId.get(normalizedProfileId) || null;
-  if (!record && !normalizedProfileId.startsWith('legacy:')) {
-    const legacyId = legacyProfileIdForName(safeName);
-    const legacyRecord = crimeReputationByProfileId.get(legacyId);
-    if (legacyRecord) {
-      crimeReputationByProfileId.delete(legacyId);
-      record = { ...legacyRecord, profileId: normalizedProfileId };
-      crimeReputationByProfileId.set(normalizedProfileId, record);
+  try {
+    let record = crimeRecordFromRow(
+      crimeReputationSql.selectByProfileId.get({ profileId: normalizedProfileId }),
+      normalizedProfileId
+    );
+
+    if (!record && !normalizedProfileId.startsWith('legacy:')) {
+      const legacyId = legacyProfileIdForName(safeName);
+      const legacyRecord = crimeRecordFromRow(crimeReputationSql.selectByProfileId.get({ profileId: legacyId }), legacyId);
+      if (legacyRecord) {
+        crimeReputationSql.renameLegacyProfileId.run({
+          nextProfileId: normalizedProfileId,
+          name: safeName,
+          lastColor: safeColor,
+          updatedAt: now,
+          legacyProfileId: legacyId,
+        });
+        record = crimeRecordFromRow(
+          crimeReputationSql.selectByProfileId.get({ profileId: normalizedProfileId }),
+          normalizedProfileId
+        );
+      }
     }
-  }
 
-  if (!record) {
-    record = {
-      profileId: normalizedProfileId,
-      name: safeName,
-      crimeRating: 0,
-      lastColor: safeColor,
-      updatedAt: Date.now(),
-    };
-    crimeReputationByProfileId.set(normalizedProfileId, record);
-  } else {
-    record.name = safeName;
-    record.lastColor = safeColor;
-    record.updatedAt = Date.now();
-  }
+    if (!record) {
+      crimeReputationSql.upsertFull.run({
+        profileId: normalizedProfileId,
+        name: safeName,
+        crimeRating: 0,
+        lastColor: safeColor,
+        updatedAt: now,
+      });
+    } else {
+      crimeReputationSql.upsertMeta.run({
+        profileId: normalizedProfileId,
+        name: safeName,
+        crimeRating: record.crimeRating,
+        lastColor: safeColor,
+        updatedAt: now,
+      });
+    }
 
-  scheduleCrimeReputationSave();
-  return record;
+    return crimeRecordFromRow(
+      crimeReputationSql.selectByProfileId.get({ profileId: normalizedProfileId }),
+      normalizedProfileId
+    );
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to upsert reputation record ${normalizedProfileId}: ${error.message}`);
+    return null;
+  }
 }
 
 function attachCrimeReputationToPlayer(player, profileId) {
@@ -844,11 +987,18 @@ function addCrimeRating(player, amount) {
   const record = upsertCrimeReputationRecord(player.profileId, player.name, player.color);
   if (!record) return;
   player.profileId = record.profileId;
-  record.crimeRating = next;
-  record.name = player.name;
-  record.lastColor = normalizeHexColor(player.color, record.lastColor || '#58d2ff');
-  record.updatedAt = Date.now();
-  scheduleCrimeReputationSave();
+  try {
+    crimeReputationSql.setCrimeRating.run({
+      profileId: record.profileId,
+      name: sanitizeName(player.name) || record.name,
+      crimeRating: next,
+      lastColor: normalizeHexColor(player.color, record.lastColor || '#58d2ff'),
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to persist crime gain for ${record.profileId}: ${error.message}`);
+  }
 }
 
 function removeCrimeRating(player, amount) {
@@ -863,11 +1013,18 @@ function removeCrimeRating(player, amount) {
   const record = upsertCrimeReputationRecord(player.profileId, player.name, player.color);
   if (!record) return;
   player.profileId = record.profileId;
-  record.crimeRating = next;
-  record.name = player.name;
-  record.lastColor = normalizeHexColor(player.color, record.lastColor || '#58d2ff');
-  record.updatedAt = Date.now();
-  scheduleCrimeReputationSave();
+  try {
+    crimeReputationSql.setCrimeRating.run({
+      profileId: record.profileId,
+      name: sanitizeName(player.name) || record.name,
+      crimeRating: next,
+      lastColor: normalizeHexColor(player.color, record.lastColor || '#58d2ff'),
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to persist crime loss for ${record.profileId}: ${error.message}`);
+  }
 }
 
 function crimeWeightForDestroyedCar(car) {
@@ -875,16 +1032,6 @@ function crimeWeightForDestroyedCar(car) {
   if (car.type === 'cop') return CRIME_WEIGHTS.car_destroy_cop;
   if (car.type === 'ambulance') return CRIME_WEIGHTS.car_destroy_ambulance;
   return CRIME_WEIGHTS.car_destroy_civilian;
-}
-
-function sortedCrimeReputationRecords() {
-  const records = Array.from(crimeReputationByProfileId.values());
-  records.sort((a, b) => {
-    if (b.crimeRating !== a.crimeRating) return b.crimeRating - a.crimeRating;
-    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
-    return a.name.localeCompare(b.name);
-  });
-  return records;
 }
 
 function onlineCrimeProfileIds() {
@@ -899,6 +1046,18 @@ function onlineCrimeProfileIds() {
 }
 
 app.get('/api/crime-leaderboard', (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({
+      page: 1,
+      pageSize: CRIME_BOARD_DEFAULT_PAGE_SIZE,
+      total: 0,
+      totalPages: 1,
+      players: [],
+      error: 'Crime store unavailable',
+    });
+    return;
+  }
+
   const requestedPage = Number.parseInt(String(req.query.page || '1'), 10);
   const requestedPageSize = Number.parseInt(String(req.query.pageSize || CRIME_BOARD_DEFAULT_PAGE_SIZE), 10);
   const pageSize = clamp(
@@ -907,36 +1066,50 @@ app.get('/api/crime-leaderboard', (req, res) => {
     CRIME_BOARD_MAX_PAGE_SIZE
   );
 
-  const records = sortedCrimeReputationRecords();
-  const total = records.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
-  const start = (page - 1) * pageSize;
-  const onlineIds = onlineCrimeProfileIds();
-  const slice = records.slice(start, start + pageSize);
+  try {
+    const total = Number(crimeReputationSql.countAll.get()?.total) || 0;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
+    const start = (page - 1) * pageSize;
+    const onlineIds = onlineCrimeProfileIds();
+    const rows = total > 0 ? crimeReputationSql.listPage.all({ limit: pageSize, offset: start }) : [];
 
-  res.json({
-    page,
-    pageSize,
-    total,
-    totalPages,
-    players: slice.map((record, index) => ({
-      rank: start + index + 1,
-      name: record.name,
-      crimeRating: clampCrimeRating(record.crimeRating),
-      color: normalizeHexColor(record.lastColor, '#58d2ff'),
-      profileTag: crimeProfileTag(record.profileId),
-      online: onlineIds.has(record.profileId),
-    })),
-  });
+    res.json({
+      page,
+      pageSize,
+      total,
+      totalPages,
+      players: rows
+        .map((row, index) => {
+          const record = crimeRecordFromRow(row, row.profileId);
+          if (!record) return null;
+          return {
+            rank: start + index + 1,
+            name: record.name,
+            crimeRating: clampCrimeRating(record.crimeRating),
+            color: normalizeHexColor(record.lastColor, '#58d2ff'),
+            profileTag: crimeProfileTag(record.profileId),
+            online: onlineIds.has(record.profileId),
+          };
+        })
+        .filter(Boolean),
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[crime] failed to query leaderboard: ${error.message}`);
+    res.status(500).json({
+      page: 1,
+      pageSize,
+      total: 0,
+      totalPages: 1,
+      players: [],
+      error: 'Crime leaderboard query failed',
+    });
+  }
 });
 
 process.on('exit', () => {
-  if (crimeReputationSaveTimer) {
-    clearTimeout(crimeReputationSaveTimer);
-    crimeReputationSaveTimer = null;
-  }
-  flushCrimeReputationStore();
+  closeCrimeReputationStore();
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
