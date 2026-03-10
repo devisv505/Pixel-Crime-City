@@ -192,7 +192,10 @@ const CAR_MAX_HEALTH = 100;
 const CAR_SMOKE_HEALTH = 50;
 const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
 const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
-const CAR_BUILDING_COLLISION_INSET_PX = 2;
+const CAR_BUILDING_COLLISION_INSET_X_PX = 0;
+const CAR_BUILDING_COLLISION_INSET_Y_PX = 2;
+const BUILDING_COLLIDER_TOP_OFFSET_PX = 4;
+const BUILDING_OCCLUSION_BAND_PX = 34;
 const INPUT_SEND_RATE = 72;
 const LOCAL_PREDICTION_RATE = 120;
 const REMOTE_INTERP_MIN_MS = 70;
@@ -1662,8 +1665,26 @@ function groundTypeAtWrapped(x, y) {
 }
 
 function isSolidForPed(x, y) {
-  const g = groundTypeAtWrapped(x, y);
-  return g === 'building' || g === 'void';
+  const worldX = wrapWorldX(x);
+  const worldY = wrapWorldY(y);
+  const g = groundTypeAtWrapped(worldX, worldY);
+  if (g === 'void') return true;
+  if (g !== 'building') return false;
+
+  const localX = mod(worldX, WORLD.blockPx);
+  const localY = mod(worldY, WORLD.blockPx);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return false;
+
+  const blockX = Math.floor(worldX / WORLD.blockPx);
+  const blockY = Math.floor(worldY / WORLD.blockPx);
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  return (
+    localX >= rect.x0 &&
+    localX < rect.x1 &&
+    localY >= rect.y0 + BUILDING_COLLIDER_TOP_OFFSET_PX &&
+    localY < rect.y1
+  );
 }
 
 function isSolidForCar(x, y) {
@@ -1681,12 +1702,14 @@ function isSolidForCar(x, y) {
   const blockX = Math.floor(worldX / WORLD.blockPx);
   const blockY = Math.floor(worldY / WORLD.blockPx);
   const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
-  const inset = CAR_BUILDING_COLLISION_INSET_PX;
+  const xInset = CAR_BUILDING_COLLISION_INSET_X_PX;
+  const yInset = CAR_BUILDING_COLLISION_INSET_Y_PX;
+  const topInset = yInset + BUILDING_COLLIDER_TOP_OFFSET_PX;
   return (
-    localX > rect.x0 + inset &&
-    localX < rect.x1 - inset &&
-    localY > rect.y0 + inset &&
-    localY < rect.y1 - inset
+    localX >= rect.x0 + xInset &&
+    localX < rect.x1 - xInset &&
+    localY >= rect.y0 + topInset &&
+    localY < rect.y1 - yInset
   );
 }
 
@@ -1773,8 +1796,7 @@ function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
   const lotY0 = ySide === 0 ? 0 : WORLD.roadEnd;
   const lotY1 = ySide === 0 ? WORLD.roadStart : WORLD.blockPx;
   const lotSize = Math.min(lotX1 - lotX0, lotY1 - lotY0);
-  const seed = hash2D(blockX * 71 + plotIndex * 17 + 11, blockY * 89 - plotIndex * 23 - 7);
-  const size = Math.max(56, Math.min(lotSize - 20, 72 + Math.floor(seed * 12)));
+  const size = Math.max(56, Math.min(lotSize - 8, 96));
   const x0 = Math.floor((lotX0 + lotX1 - size) * 0.5);
   const y0 = Math.floor((lotY0 + lotY1 - size) * 0.5);
   return { x0, y0, x1: x0 + size, y1: y0 + size };
@@ -1836,7 +1858,7 @@ function getBuildingPlotInfo(localX, localY, blockX, blockY) {
   if (plotIndex === null) return null;
 
   const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
-  if (localX <= rect.x0 || localX >= rect.x1 || localY <= rect.y0 || localY >= rect.y1) {
+  if (localX < rect.x0 || localX >= rect.x1 || localY < rect.y0 || localY >= rect.y1) {
     return null;
   }
 
@@ -2052,15 +2074,15 @@ function drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY, ha
 
   const spanX = Math.max(1, plot.x1 - plot.x0);
   const spanY = Math.max(1, plot.y1 - plot.y0);
-  const u0 = clamp((localX - plot.x0) / spanX, 0, 1);
-  const v0 = clamp((localY - plot.y0) / spanY, 0, 1);
-  const u1 = clamp((localX + tile - plot.x0) / spanX, 0, 1);
-  const v1 = clamp((localY + tile - plot.y0) / spanY, 0, 1);
+  const relX0 = clamp(localX - plot.x0, 0, spanX);
+  const relY0 = clamp(localY - plot.y0, 0, spanY);
+  const relX1 = clamp(localX + tile - plot.x0, 0, spanX);
+  const relY1 = clamp(localY + tile - plot.y0, 0, spanY);
 
-  const srcX = clamp(Math.floor(u0 * (texture.width - 1)), 0, texture.width - 1);
-  const srcY = clamp(Math.floor(v0 * (texture.height - 1)), 0, texture.height - 1);
-  const srcX2 = clamp(Math.ceil(u1 * (texture.width - 1)), srcX + 1, texture.width);
-  const srcY2 = clamp(Math.ceil(v1 * (texture.height - 1)), srcY + 1, texture.height);
+  const srcX = clamp(Math.floor((relX0 / spanX) * texture.width), 0, texture.width - 1);
+  const srcY = clamp(Math.floor((relY0 / spanY) * texture.height), 0, texture.height - 1);
+  const srcX2 = clamp(Math.ceil((relX1 / spanX) * texture.width), srcX + 1, texture.width);
+  const srcY2 = clamp(Math.ceil((relY1 / spanY) * texture.height), srcY + 1, texture.height);
   const srcW = Math.max(1, srcX2 - srcX);
   const srcH = Math.max(1, srcY2 - srcY);
 
@@ -3497,6 +3519,43 @@ function drawWorld(state) {
   }
 }
 
+function drawBuildingsOverlay(state, worldLeft, worldTop) {
+  ensureBuildingTexturesLoaded();
+  ensureBlockTexturesLoaded();
+  const specialPlotVariants = buildSpecialPlotVariantMap(state?.world);
+  const viewW = canvas.width;
+  const viewH = canvas.height;
+  const tile = WORLD.tileSize;
+  const startX = Math.floor(worldLeft / tile) - 1;
+  const startY = Math.floor(worldTop / tile) - 1;
+  const endX = Math.floor((worldLeft + viewW) / tile) + 2;
+  const endY = Math.floor((worldTop + viewH) / tile) + 2;
+
+  for (let ty = startY; ty <= endY; ty += 1) {
+    const worldY = ty * tile;
+    const sy = Math.floor(worldY - worldTop);
+    for (let tx = startX; tx <= endX; tx += 1) {
+      const worldX = tx * tile;
+      const sx = Math.floor(worldX - worldLeft);
+      const type = worldGroundTypeAt(worldX + tile * 0.5, worldY + tile * 0.5);
+      if (type !== 'building') continue;
+      const localX = mod(worldX, WORLD.blockPx);
+      const localY = mod(worldY, WORLD.blockPx);
+      const blockX = Math.floor(worldX / WORLD.blockPx);
+      const blockY = Math.floor(worldY / WORLD.blockPx);
+      const plot = getBuildingPlotInfo(localX, localY, blockX, blockY);
+      if (!plot) continue;
+      if (localY >= plot.y0 + BUILDING_OCCLUSION_BAND_PX) continue;
+      const plotKey = `${blockX},${blockY},${plot.plotIndex}`;
+      const specialVariant = specialPlotVariants?.get(plotKey);
+      const variant = Number.isInteger(specialVariant)
+        ? specialVariant
+        : buildingVariantForPlot(blockX, blockY, plot.plotIndex);
+      drawBuildingTextureTile(variant, plot, sx, sy, tile, localX, localY, true);
+    }
+  }
+}
+
 function findShopByIdInWorld(world, id) {
   const shops = world?.shops || [];
   for (const shop of shops) {
@@ -4317,7 +4376,7 @@ function drawInCarPlayerLabels(state, worldLeft, worldTop) {
   }
   labelGroups.sort((a, b) => a.car.y - b.car.y);
 
-  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  ctx.font = '7px "Lucida Console", Monaco, monospace';
   for (const group of labelGroups) {
     const sx = Math.round(group.car.x - worldLeft);
     const sy = Math.round(group.car.y - worldTop);
@@ -4331,16 +4390,19 @@ function drawInCarPlayerLabels(state, worldLeft, worldTop) {
       return an.localeCompare(bn);
     });
 
-    const baseY = sy - 12;
+    const baseY = sy - 14;
     for (let i = 0; i < group.occupants.length; i += 1) {
       const player = group.occupants[i];
       const label = String(player.name || '').trim() || 'Player';
       const textW = Math.ceil(ctx.measureText(label).width);
       const textX = Math.round(sx - textW * 0.5);
-      const textY = baseY - i * 9;
-      ctx.fillStyle = '#10161f';
+      const textY = baseY - i * 10;
+      ctx.fillStyle = 'rgba(4, 8, 12, 1)';
       ctx.fillText(label, textX + 1, textY + 1);
-      ctx.fillStyle = '#f3f7ff';
+      ctx.fillText(label, textX - 1, textY + 1);
+      ctx.fillText(label, textX + 1, textY - 1);
+      ctx.fillText(label, textX - 1, textY - 1);
+      ctx.fillStyle = '#e3ebf5';
       ctx.fillText(label, textX, textY);
     }
   }
@@ -4842,6 +4904,7 @@ function renderState(state, dt) {
   }
 
   drawInCarPlayerLabels(state, worldLeft, worldTop);
+  drawBuildingsOverlay(state, worldLeft, worldTop);
   drawSpecialBuildingSigns(state, worldLeft, worldTop);
   drawEffects(worldLeft, worldTop);
   drawCrosshair(worldLeft, worldTop, state);

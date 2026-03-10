@@ -221,7 +221,9 @@ const STATIC_WORLD_PAYLOAD = Object.freeze({
 });
 const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
 const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
-const CAR_BUILDING_COLLISION_INSET_PX = 2;
+const CAR_BUILDING_COLLISION_INSET_X_PX = 0;
+const CAR_BUILDING_COLLISION_INSET_Y_PX = 2;
+const BUILDING_COLLIDER_TOP_OFFSET_PX = 4;
 const WEAPONS = {
   fist: {
     cooldown: 0.42,
@@ -455,8 +457,7 @@ function centeredBuildingRectForPlot(blockX, blockY, plotIndex) {
   const lotY0 = ySide === 0 ? 0 : ROAD_END;
   const lotY1 = ySide === 0 ? ROAD_START : BLOCK_PX;
   const lotSize = Math.min(lotX1 - lotX0, lotY1 - lotY0);
-  const seed = hash2D(blockX * 71 + plotIndex * 17 + 11, blockY * 89 - plotIndex * 23 - 7);
-  const size = Math.max(56, Math.min(lotSize - 20, 72 + Math.floor(seed * 12)));
+  const size = Math.max(56, Math.min(lotSize - 8, 96));
   const x0 = Math.floor((lotX0 + lotX1 - size) * 0.5);
   const y0 = Math.floor((lotY0 + lotY1 - size) * 0.5);
   return { x0, y0, x1: x0 + size, y1: y0 + size };
@@ -509,8 +510,26 @@ function roadInfoAt(x, y) {
 }
 
 function isSolidForPed(x, y) {
-  const g = groundTypeAt(x, y);
-  return g === 'building' || g === 'void';
+  const worldX = wrapWorldX(x);
+  const worldY = wrapWorldY(y);
+  const g = groundTypeAt(worldX, worldY);
+  if (g === 'void') return true;
+  if (g !== 'building') return false;
+
+  const localX = mod(worldX, BLOCK_PX);
+  const localY = mod(worldY, BLOCK_PX);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return false;
+
+  const blockX = Math.floor(worldX / BLOCK_PX);
+  const blockY = Math.floor(worldY / BLOCK_PX);
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  return (
+    localX >= rect.x0 &&
+    localX < rect.x1 &&
+    localY >= rect.y0 + BUILDING_COLLIDER_TOP_OFFSET_PX &&
+    localY < rect.y1
+  );
 }
 
 function isSolidForCar(x, y) {
@@ -528,12 +547,14 @@ function isSolidForCar(x, y) {
   const blockX = Math.floor(worldX / BLOCK_PX);
   const blockY = Math.floor(worldY / BLOCK_PX);
   const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
-  const inset = CAR_BUILDING_COLLISION_INSET_PX;
+  const xInset = CAR_BUILDING_COLLISION_INSET_X_PX;
+  const yInset = CAR_BUILDING_COLLISION_INSET_Y_PX;
+  const topInset = yInset + BUILDING_COLLIDER_TOP_OFFSET_PX;
   return (
-    localX > rect.x0 + inset &&
-    localX < rect.x1 - inset &&
-    localY > rect.y0 + inset &&
-    localY < rect.y1 - inset
+    localX >= rect.x0 + xInset &&
+    localX < rect.x1 - xInset &&
+    localY >= rect.y0 + topInset &&
+    localY < rect.y1 - yInset
   );
 }
 
