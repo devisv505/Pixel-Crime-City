@@ -4296,6 +4296,56 @@ function drawPixelPlayer(player, worldLeft, worldTop) {
   }
 }
 
+function drawInCarPlayerLabels(state, worldLeft, worldTop) {
+  if (!state || !Array.isArray(state.players) || !state.carsById) return;
+  const occupantsByCarId = new Map();
+  for (const player of state.players) {
+    if (!player || !player.inCarId || player.insideShopId || player.health <= 0) continue;
+    const car = state.carsById.get(player.inCarId);
+    if (!car) continue;
+    if (!occupantsByCarId.has(car.id)) {
+      occupantsByCarId.set(car.id, []);
+    }
+    occupantsByCarId.get(car.id).push(player);
+  }
+
+  const labelGroups = [];
+  for (const [carId, occupants] of occupantsByCarId.entries()) {
+    const car = state.carsById.get(carId);
+    if (!car) continue;
+    labelGroups.push({ car, occupants });
+  }
+  labelGroups.sort((a, b) => a.car.y - b.car.y);
+
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  for (const group of labelGroups) {
+    const sx = Math.round(group.car.x - worldLeft);
+    const sy = Math.round(group.car.y - worldTop);
+    if (sx < -60 || sy < -60 || sx > canvas.width + 60 || sy > canvas.height + 60) {
+      continue;
+    }
+
+    group.occupants.sort((a, b) => {
+      const an = String(a.name || '');
+      const bn = String(b.name || '');
+      return an.localeCompare(bn);
+    });
+
+    const baseY = sy - 12;
+    for (let i = 0; i < group.occupants.length; i += 1) {
+      const player = group.occupants[i];
+      const label = String(player.name || '').trim() || 'Player';
+      const textW = Math.ceil(ctx.measureText(label).width);
+      const textX = Math.round(sx - textW * 0.5);
+      const textY = baseY - i * 9;
+      ctx.fillStyle = '#10161f';
+      ctx.fillText(label, textX + 1, textY + 1);
+      ctx.fillStyle = '#f3f7ff';
+      ctx.fillText(label, textX, textY);
+    }
+  }
+}
+
 function drawNpc(npc, worldLeft, worldTop) {
   const x = Math.round(npc.x - worldLeft);
   const y = Math.round(npc.y - worldTop);
@@ -4791,6 +4841,7 @@ function renderState(state, dt) {
     }
   }
 
+  drawInCarPlayerLabels(state, worldLeft, worldTop);
   drawSpecialBuildingSigns(state, worldLeft, worldTop);
   drawEffects(worldLeft, worldTop);
   drawCrosshair(worldLeft, worldTop, state);
