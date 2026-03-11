@@ -1,5 +1,5 @@
-﻿function createEncodeJoinedFrame(deps) {
-  const { Writer, OPCODES, clamp, packCoord } = deps;
+function createEncodeJoinedFrame(deps) {
+  const { Writer, OPCODES, clamp, packCoord, QUEST_ACTION_TO_CODE, QUEST_STATUS_TO_CODE } = deps;
 
   return function encodeJoinedFrame(payload) {
     const writer = new Writer(1024);
@@ -55,6 +55,31 @@
       writer.u16(packCoord(item?.x || 0));
       writer.u16(packCoord(item?.y || 0));
       writer.u16(clamp(Math.round(item?.radius || 0), 0, 65535));
+    }
+
+    const quest = payload?.quest && typeof payload.quest === 'object' ? payload.quest : null;
+    const questList = Array.isArray(quest?.quests) ? quest.quests : [];
+    writer.u8(quest ? 1 : 0);
+    if (quest) {
+      writer.u32(clamp(Math.round(quest.reputation || 0), 0, 0xffffffff));
+      writer.u8(quest.gunShopUnlocked ? 1 : 0);
+      writer.u16(clamp(questList.length, 0, 65535));
+      for (const item of questList) {
+        writer.u32((item?.id >>> 0) || 0);
+        writer.u8(QUEST_ACTION_TO_CODE[item?.actionType] ?? 0);
+        writer.string8(item?.title || '');
+        writer.string16(item?.description || '');
+        writer.u16(clamp(Math.round(item?.targetCount || 0), 0, 65535));
+        writer.u16(clamp(Math.round(item?.progress || 0), 0, 65535));
+        writer.u8(QUEST_STATUS_TO_CODE[item?.status] ?? 0);
+        writer.u32(clamp(Math.round(item?.rewardMoney || 0), 0, 0xffffffff));
+        writer.u32(clamp(Math.round(item?.rewardReputation || 0), 0, 0xffffffff));
+        writer.u8(item?.rewardUnlockGunShop ? 1 : 0);
+        writer.u8(item?.resetOnDeath ? 1 : 0);
+        writer.u16(packCoord(item?.targetZoneX || 0));
+        writer.u16(packCoord(item?.targetZoneY || 0));
+        writer.u16(clamp(Math.round(item?.targetZoneRadius || 0), 0, 65535));
+      }
     }
 
     return writer.toBuffer();

@@ -27,7 +27,11 @@ export function createHudFeature(deps) {
               ? 'gun'
               : 'fists';
     if (p.insideShopId) {
-      elements.hudMode.textContent = 'Mode: In Gun Shop';
+      if (typeof p.insideShopId === 'string' && p.insideShopId.startsWith('garage_')) {
+        elements.hudMode.textContent = 'Mode: In Garage';
+      } else {
+        elements.hudMode.textContent = 'Mode: In Gun Shop';
+      }
     } else if (p.inCarId) {
       elements.hudMode.textContent = 'Mode: Driving';
     } else {

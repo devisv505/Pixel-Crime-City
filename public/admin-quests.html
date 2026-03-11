@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quest Admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0f1822;
+        color: #e8f2fb;
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 22px;
+      }
+      .topbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      button {
+        border: 1px solid #4a6b84;
+        background: #1f3344;
+        color: #ebf5ff;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #162531;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .status {
+        min-height: 18px;
+        color: #ffd08e;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 14px;
+      }
+      .card {
+        border: 1px solid #355167;
+        background: #13222f;
+        padding: 12px;
+      }
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        margin: 8px 0 4px;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #4a6b84;
+        background: #0d1b26;
+        color: #e8f2fb;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+      .form-actions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #284457;
+        text-align: left;
+        padding: 6px;
+        vertical-align: top;
+      }
+      th {
+        font-size: 12px;
+        color: #a8c0d3;
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .mono {
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+      }
+      .muted {
+        color: #9cb5c8;
+        font-size: 12px;
+      }
+      @media (max-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Quest Admin</h1>
+      <div class="topbar">
+        <button id="reloadBtn" type="button">Reload</button>
+        <button id="saveOrderBtn" type="button" class="secondary">Save Order</button>
+        <button id="logoutBtn" type="button" class="secondary">Logout</button>
+        <span id="status" class="status"></span>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h2 id="formTitle">Create Quest</h2>
+          <input id="questId" type="hidden" />
+
+          <label for="title">Title</label>
+          <input id="title" maxlength="80" required />
+
+          <label for="description">Description</label>
+          <textarea id="description" maxlength="400"></textarea>
+
+          <label for="actionType">Action Type</label>
+          <select id="actionType">
+            <option value="kill_npc">kill_npc</option>
+            <option value="kill_cop">kill_cop</option>
+            <option value="steal_car_any">steal_car_any</option>
+            <option value="steal_car_cop">steal_car_cop</option>
+            <option value="steal_car_cop_sell_garage">steal_car_cop_sell_garage</option>
+            <option value="steal_car_ambulance_sell_garage">steal_car_ambulance_sell_garage</option>
+            <option value="steal_car_civilian_sell_garage">steal_car_civilian_sell_garage</option>
+            <option value="steal_car_ambulance">steal_car_ambulance</option>
+            <option value="kill_target_npc">kill_target_npc</option>
+            <option value="steal_target_car">steal_target_car</option>
+          </select>
+
+          <label for="actionParams">Action Params JSON</label>
+          <textarea
+            id="actionParams"
+            rows="3"
+            placeholder='{}'
+            class="mono"
+          ></textarea>
+
+          <label for="targetCount">Target Count</label>
+          <input id="targetCount" type="number" min="1" step="1" value="1" />
+
+          <label for="sortOrder">Sort Order</label>
+          <input id="sortOrder" type="number" step="1" value="10" />
+
+          <label for="rewardMoney">Reward Money</label>
+          <input id="rewardMoney" type="number" min="0" step="1" value="0" />
+
+          <label for="rewardReputation">Reward Reputation</label>
+          <input id="rewardReputation" type="number" min="0" step="1" value="0" />
+
+          <label for="rewardPayload">Reward Payload JSON</label>
+          <textarea
+            id="rewardPayload"
+            rows="3"
+            placeholder='{"money":0,"reputation":0,"unlockGunShop":false}'
+            class="mono"
+          ></textarea>
+
+          <label>
+            <input id="rewardUnlockGunShop" type="checkbox" /> Unlock Gun Shop
+          </label>
+
+          <label>
+            <input id="resetOnDeath" type="checkbox" /> Reset progress on death
+          </label>
+
+          <label>
+            <input id="isActive" type="checkbox" checked /> Active
+          </label>
+
+          <div class="form-actions">
+            <button id="saveBtn" type="button">Save</button>
+            <button id="resetBtn" type="button" class="secondary">Reset</button>
+          </div>
+          <div class="muted" style="margin-top:8px;">
+            Validation: action enum, target count > 0, rewards >= 0. JSON fields must parse to objects.
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Quest List</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Quest</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Rewards</th>
+                <th>Rules</th>
+                <th>State</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="questRows"></tbody>
+          </table>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const questIdInput = document.getElementById('questId');
+      const titleInput = document.getElementById('title');
+      const descriptionInput = document.getElementById('description');
+      const actionTypeInput = document.getElementById('actionType');
+      const actionParamsInput = document.getElementById('actionParams');
+      const targetCountInput = document.getElementById('targetCount');
+      const sortOrderInput = document.getElementById('sortOrder');
+      const rewardMoneyInput = document.getElementById('rewardMoney');
+      const rewardReputationInput = document.getElementById('rewardReputation');
+      const rewardPayloadInput = document.getElementById('rewardPayload');
+      const rewardUnlockGunShopInput = document.getElementById('rewardUnlockGunShop');
+      const resetOnDeathInput = document.getElementById('resetOnDeath');
+      const isActiveInput = document.getElementById('isActive');
+      const formTitle = document.getElementById('formTitle');
+      const statusNode = document.getElementById('status');
+      const questRows = document.getElementById('questRows');
+      const saveOrderBtn = document.getElementById('saveOrderBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+
+      let quests = [];
+      let orderDirty = false;
+      const allowedActions = new Set([
+        'kill_npc',
+        'kill_cop',
+        'steal_car_any',
+        'steal_car_cop',
+        'steal_car_cop_sell_garage',
+        'steal_car_ambulance_sell_garage',
+        'steal_car_civilian_sell_garage',
+        'steal_car_ambulance',
+        'kill_target_npc',
+        'steal_target_car',
+      ]);
+
+      function setStatus(text) {
+        statusNode.textContent = text || '';
+      }
+
+      function parseJsonObjectInput(text, fieldLabel) {
+        const raw = String(text || '').trim();
+        if (!raw) return {};
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error(`${fieldLabel} must be valid JSON.`);
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(`${fieldLabel} must be a JSON object.`);
+        }
+        return parsed;
+      }
+
+      function normalizePayloadFromForm() {
+        const title = String(titleInput.value || '').trim().slice(0, 80);
+        const description = String(descriptionInput.value || '').trim().slice(0, 400);
+        const actionType = String(actionTypeInput.value || '').trim();
+        const actionParams = parseJsonObjectInput(actionParamsInput.value, 'Action Params JSON');
+        const targetCount = Number.parseInt(String(targetCountInput.value || '0'), 10);
+        const sortOrder = Number.parseInt(String(sortOrderInput.value || '0'), 10);
+        const rewardMoney = Number.parseInt(String(rewardMoneyInput.value || '0'), 10);
+        const rewardReputation = Number.parseInt(String(rewardReputationInput.value || '0'), 10);
+        const rewardPayload = parseJsonObjectInput(rewardPayloadInput.value, 'Reward Payload JSON');
+        const rewardUnlockGunShop = !!rewardUnlockGunShopInput.checked;
+        const resetOnDeath = !!resetOnDeathInput.checked;
+        const isActive = !!isActiveInput.checked;
+
+        if (!title) throw new Error('Title is required.');
+        if (!allowedActions.has(actionType)) throw new Error('Invalid action type.');
+        if (!Number.isInteger(targetCount) || targetCount <= 0) throw new Error('Target count must be > 0.');
+        if (!Number.isInteger(rewardMoney) || rewardMoney < 0) throw new Error('Reward money must be >= 0.');
+        if (!Number.isInteger(rewardReputation) || rewardReputation < 0) throw new Error('Reward reputation must be >= 0.');
+
+        return {
+          title,
+          description,
+          actionType,
+          actionParams,
+          targetCount,
+          sortOrder: Number.isInteger(sortOrder) ? sortOrder : 0,
+          rewardMoney,
+          rewardReputation,
+          rewardPayload,
+          rewardUnlockGunShop,
+          resetOnDeath,
+          isActive,
+        };
+      }
+
+      function resetForm() {
+        questIdInput.value = '';
+        formTitle.textContent = 'Create Quest';
+        titleInput.value = '';
+        descriptionInput.value = '';
+        actionTypeInput.value = 'kill_npc';
+        actionParamsInput.value = '{}';
+        targetCountInput.value = '1';
+        sortOrderInput.value = String(quests.length > 0 ? (quests[quests.length - 1].sortOrder + 10) : 10);
+        rewardMoneyInput.value = '0';
+        rewardReputationInput.value = '0';
+        rewardPayloadInput.value = '{"money":0,"reputation":0,"unlockGunShop":false}';
+        rewardUnlockGunShopInput.checked = false;
+        resetOnDeathInput.checked = false;
+        isActiveInput.checked = true;
+      }
+
+      function setEditForm(quest) {
+        questIdInput.value = String(quest.id);
+        formTitle.textContent = `Edit Quest #${quest.id}`;
+        titleInput.value = quest.title || '';
+        descriptionInput.value = quest.description || '';
+        actionTypeInput.value = quest.actionType || 'kill_npc';
+        actionParamsInput.value = JSON.stringify(quest.actionParams || {}, null, 2);
+        targetCountInput.value = String(quest.targetCount || 1);
+        sortOrderInput.value = String(quest.sortOrder || 0);
+        rewardMoneyInput.value = String(quest.rewardMoney || 0);
+        rewardReputationInput.value = String(quest.rewardReputation || 0);
+        rewardPayloadInput.value = JSON.stringify(
+          quest.rewardPayload || {
+            money: Number(quest.rewardMoney) || 0,
+            reputation: Number(quest.rewardReputation) || 0,
+            unlockGunShop: !!quest.rewardUnlockGunShop,
+          },
+          null,
+          2
+        );
+        rewardUnlockGunShopInput.checked = !!quest.rewardUnlockGunShop;
+        resetOnDeathInput.checked = !!quest.resetOnDeath;
+        isActiveInput.checked = !!quest.isActive;
+      }
+
+      function questRewardsText(quest) {
+        const parts = [];
+        if (Number(quest.rewardMoney) > 0) parts.push(`$${quest.rewardMoney}`);
+        if (Number(quest.rewardReputation) > 0) parts.push(`Rep +${quest.rewardReputation}`);
+        if (quest.rewardUnlockGunShop) parts.push('Unlock Gun Shop');
+        return parts.length > 0 ? parts.join(' | ') : '-';
+      }
+
+      function moveQuest(id, delta) {
+        const idx = quests.findIndex((quest) => quest.id === id);
+        if (idx < 0) return;
+        const next = idx + delta;
+        if (next < 0 || next >= quests.length) return;
+        const current = quests[idx];
+        quests[idx] = quests[next];
+        quests[next] = current;
+        orderDirty = true;
+        renderQuestRows();
+      }
+
+      function renderQuestRows() {
+        questRows.innerHTML = '';
+        if (!Array.isArray(quests) || quests.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 8;
+          td.textContent = 'No quests found.';
+          tr.appendChild(td);
+          questRows.appendChild(tr);
+          saveOrderBtn.disabled = true;
+          return;
+        }
+
+        quests.forEach((quest, index) => {
+          const tr = document.createElement('tr');
+
+          const colOrder = document.createElement('td');
+          colOrder.textContent = String(index + 1);
+          tr.appendChild(colOrder);
+
+          const colQuest = document.createElement('td');
+          const title = document.createElement('div');
+          title.textContent = quest.title || `Quest #${quest.id}`;
+          const desc = document.createElement('div');
+          desc.className = 'muted';
+          desc.textContent = quest.description || '-';
+          colQuest.appendChild(title);
+          colQuest.appendChild(desc);
+          tr.appendChild(colQuest);
+
+          const colAction = document.createElement('td');
+          colAction.className = 'mono';
+          colAction.textContent = quest.actionType || '-';
+          tr.appendChild(colAction);
+
+          const colTarget = document.createElement('td');
+          colTarget.textContent = String(quest.targetCount || 0);
+          tr.appendChild(colTarget);
+
+          const colRewards = document.createElement('td');
+          colRewards.textContent = questRewardsText(quest);
+          tr.appendChild(colRewards);
+
+          const colRules = document.createElement('td');
+          colRules.textContent = quest.resetOnDeath ? 'Reset on death' : '-';
+          tr.appendChild(colRules);
+
+          const colState = document.createElement('td');
+          colState.textContent = quest.isActive ? 'active' : 'inactive';
+          tr.appendChild(colState);
+
+          const colActions = document.createElement('td');
+          const actions = document.createElement('div');
+          actions.className = 'row-actions';
+
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.textContent = 'Edit';
+          editBtn.addEventListener('click', () => setEditForm(quest));
+          actions.appendChild(editBtn);
+
+          const toggleBtn = document.createElement('button');
+          toggleBtn.type = 'button';
+          toggleBtn.className = 'secondary';
+          toggleBtn.textContent = quest.isActive ? 'Deactivate' : 'Activate';
+          toggleBtn.addEventListener('click', async () => {
+            await updateQuestPartial(quest.id, { isActive: !quest.isActive });
+          });
+          actions.appendChild(toggleBtn);
+
+          const upBtn = document.createElement('button');
+          upBtn.type = 'button';
+          upBtn.className = 'secondary';
+          upBtn.textContent = 'Up';
+          upBtn.disabled = index === 0;
+          upBtn.addEventListener('click', () => moveQuest(quest.id, -1));
+          actions.appendChild(upBtn);
+
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.className = 'secondary';
+          downBtn.textContent = 'Down';
+          downBtn.disabled = index === quests.length - 1;
+          downBtn.addEventListener('click', () => moveQuest(quest.id, 1));
+          actions.appendChild(downBtn);
+
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'secondary';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', async () => {
+            if (!confirm(`Delete quest #${quest.id}?`)) return;
+            await deleteQuest(quest.id);
+          });
+          actions.appendChild(delBtn);
+
+          colActions.appendChild(actions);
+          tr.appendChild(colActions);
+
+          questRows.appendChild(tr);
+        });
+
+        saveOrderBtn.disabled = !orderDirty;
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, {
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+        });
+        if (response.status === 401) {
+          window.location.href = '/admin';
+          throw new Error('Authentication required');
+        }
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        if (!response.ok) {
+          const message = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+          throw new Error(message);
+        }
+        return payload || {};
+      }
+
+      async function loadQuests() {
+        const payload = await api('/api/admin/quests');
+        quests = Array.isArray(payload.quests) ? payload.quests.slice() : [];
+        quests.sort((a, b) => (a.sortOrder - b.sortOrder) || (a.id - b.id));
+        orderDirty = false;
+        renderQuestRows();
+        if (!questIdInput.value) {
+          resetForm();
+        }
+      }
+
+      async function createQuest() {
+        const payload = normalizePayloadFromForm();
+        await api('/api/admin/quests', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        setStatus('Quest created.');
+        await loadQuests();
+        resetForm();
+      }
+
+      async function updateQuest(id) {
+        const payload = normalizePayloadFromForm();
+        await api(`/api/admin/quests/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        setStatus(`Quest #${id} updated.`);
+        await loadQuests();
+      }
+
+      async function updateQuestPartial(id, partial) {
+        await api(`/api/admin/quests/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(partial),
+        });
+        setStatus(`Quest #${id} updated.`);
+        await loadQuests();
+      }
+
+      async function deleteQuest(id) {
+        await api(`/api/admin/quests/${id}`, { method: 'DELETE' });
+        setStatus(`Quest #${id} deleted.`);
+        await loadQuests();
+        if (String(id) === String(questIdInput.value || '')) {
+          resetForm();
+        }
+      }
+
+      async function saveOrder() {
+        if (!orderDirty) return;
+        const ids = quests.map((quest) => quest.id);
+        await api('/api/admin/quests/reorder', {
+          method: 'POST',
+          body: JSON.stringify({ ids }),
+        });
+        setStatus('Quest order saved.');
+        await loadQuests();
+      }
+
+      document.getElementById('reloadBtn').addEventListener('click', async () => {
+        setStatus('Loading...');
+        try {
+          await loadQuests();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      document.getElementById('saveBtn').addEventListener('click', async () => {
+        setStatus('Saving...');
+        try {
+          const id = Number.parseInt(String(questIdInput.value || '0'), 10);
+          if (Number.isInteger(id) && id > 0) {
+            await updateQuest(id);
+          } else {
+            await createQuest();
+          }
+        } catch (error) {
+          setStatus(error.message || 'Save failed.');
+        }
+      });
+
+      document.getElementById('resetBtn').addEventListener('click', () => {
+        resetForm();
+        setStatus('Form reset.');
+      });
+
+      saveOrderBtn.addEventListener('click', async () => {
+        setStatus('Saving order...');
+        try {
+          await saveOrder();
+        } catch (error) {
+          setStatus(error.message || 'Order save failed.');
+        }
+      });
+
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+          try {
+            await fetch('/api/admin/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch {}
+          window.location.href = '/admin';
+        });
+      }
+
+      (async () => {
+        setStatus('Loading...');
+        try {
+          await loadQuests();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      })();
+    </script>
+  </body>
+</html>

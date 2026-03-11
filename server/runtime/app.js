@@ -43,6 +43,8 @@ const {
   OPCODES,
   ITEM_TO_CODE,
   SNAPSHOT_SECTION_ORDER,
+  QUEST_ACTION_TO_CODE,
+  QUEST_STATUS_TO_CODE,
   decodeClientFrame,
   encodeErrorFrame,
   encodeNoticeFrame,
@@ -56,6 +58,7 @@ const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+app.use(express.json({ limit: '128kb' }));
 
 const PORT = Number(process.env.PORT || 3000);
 const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 36));
@@ -98,6 +101,189 @@ const CRIME_REPUTATION_LEGACY_JSON_FILE = path.resolve(
 );
 const CRIME_BOARD_DEFAULT_PAGE_SIZE = 8;
 const CRIME_BOARD_MAX_PAGE_SIZE = 32;
+const REPUTATION_BOARD_DEFAULT_PAGE_SIZE = 8;
+const REPUTATION_BOARD_MAX_PAGE_SIZE = 32;
+const QUEST_ACTION_TYPES = Object.freeze([
+  'kill_npc',
+  'kill_cop',
+  'steal_car_any',
+  'steal_car_cop',
+  'steal_car_cop_sell_garage',
+  'steal_car_ambulance_sell_garage',
+  'steal_car_civilian_sell_garage',
+  'steal_car_ambulance',
+  'kill_target_npc',
+  'steal_target_car',
+]);
+const INITIAL_QUEST_SEED_V1 = Object.freeze([
+  Object.freeze({
+    questKey: 'street_warmup_npc_10',
+    title: 'Street Warmup',
+    description: 'Take down 10 NPCs to prove yourself on the streets.',
+    actionType: 'kill_npc',
+    targetCount: 10,
+    rewardMoney: 120,
+    rewardReputation: 6,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'unlock_arms_car_any_5',
+    title: 'Booster One',
+    description: 'Steal 5 cars around the city.',
+    actionType: 'steal_car_any',
+    targetCount: 5,
+    rewardMoney: 150,
+    rewardReputation: 8,
+    rewardUnlockGunShop: true,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_car_theft_2',
+    title: 'Heat Magnet',
+    description: 'Steal 2 police cars.',
+    actionType: 'steal_car_cop',
+    targetCount: 2,
+    rewardMoney: 200,
+    rewardReputation: 12,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_car_sell_2',
+    title: 'Chop the Badge',
+    description: 'Sell 2 police cars in garage.',
+    actionType: 'steal_car_cop_sell_garage',
+    targetCount: 2,
+    rewardMoney: 260,
+    rewardReputation: 14,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'ambulance_theft_2',
+    title: 'Hijack Response',
+    description: 'Steal 2 ambulances.',
+    actionType: 'steal_car_ambulance',
+    targetCount: 2,
+    rewardMoney: 180,
+    rewardReputation: 10,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'ambulance_sell_2',
+    title: 'Scrap the Siren',
+    description: 'Sell 2 ambulances in garage.',
+    actionType: 'steal_car_ambulance_sell_garage',
+    targetCount: 2,
+    rewardMoney: 240,
+    rewardReputation: 13,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'civilian_sell_5',
+    title: 'Garage Runner',
+    description: 'Sell 5 civilian cars in garage.',
+    actionType: 'steal_car_civilian_sell_garage',
+    targetCount: 5,
+    rewardMoney: 210,
+    rewardReputation: 11,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'cop_cleanup_8',
+    title: 'Blue Line Breaker',
+    description: 'Take down 8 cops.',
+    actionType: 'kill_cop',
+    targetCount: 8,
+    rewardMoney: 320,
+    rewardReputation: 18,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'target_npc_3',
+    title: 'Marked Faces',
+    description: 'Eliminate 3 marked targets.',
+    actionType: 'kill_target_npc',
+    targetCount: 3,
+    rewardMoney: 350,
+    rewardReputation: 20,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'target_car_3',
+    title: 'Exact Pickup',
+    description: 'Steal 3 assigned target cars.',
+    actionType: 'steal_target_car',
+    targetCount: 3,
+    rewardMoney: 420,
+    rewardReputation: 24,
+    rewardUnlockGunShop: false,
+    resetOnDeath: true,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'city_pressure_npc_40',
+    title: 'City Under Pressure',
+    description: 'Take down 40 NPCs.',
+    actionType: 'kill_npc',
+    targetCount: 40,
+    rewardMoney: 500,
+    rewardReputation: 28,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+  Object.freeze({
+    questKey: 'finale_mixed_sell_10',
+    title: 'Final Strip',
+    description: 'Sell 10 civilian cars in garage.',
+    actionType: 'steal_car_civilian_sell_garage',
+    targetCount: 10,
+    rewardMoney: 650,
+    rewardReputation: 35,
+    rewardUnlockGunShop: false,
+    resetOnDeath: false,
+    isActive: true,
+  }),
+]);
+const QUEST_TARGET_ZONE_RADIUS = 220;
+const QUEST_TARGET_ZONE_REFRESH_MS = 5_000;
+const QUEST_TARGET_SKIN_COLOR = '#ffd86b';
+const QUEST_TARGET_SHIRT_COLOR = '#f0b11a';
+const QUEST_TARGET_SHIRT_DARK = '#7e4f00';
+const QUEST_JSON_MAX_BYTES = 8 * 1024;
+const QUEST_KEY_MAX_LENGTH = 80;
+const QUEST_SCHEMA_MIGRATION_LATEST = 5;
+const SERVER_BOOT_TIME_MS = Date.now();
+const NODE_ENV = String(process.env.NODE_ENV || '').trim().toLowerCase();
+const ADMIN_LOCAL_DEFAULTS = NODE_ENV !== 'production' && envFlag('ADMIN_LOCAL_DEFAULTS', true);
+const ADMIN_USER = String(process.env.ADMIN_USER || '').trim();
+const ADMIN_PASS = String(process.env.ADMIN_PASS || '').trim();
+const ADMIN_AUTH_USER = ADMIN_USER || (ADMIN_LOCAL_DEFAULTS ? 'admin' : '');
+const ADMIN_AUTH_PASS = ADMIN_PASS || (ADMIN_LOCAL_DEFAULTS ? 'change_me' : '');
+const ADMIN_AUTH_ENABLED = ADMIN_AUTH_USER.length > 0 && ADMIN_AUTH_PASS.length > 0;
+const ADMIN_USING_LOCAL_DEFAULTS =
+  ADMIN_LOCAL_DEFAULTS &&
+  (!ADMIN_USER || !ADMIN_PASS) &&
+  ADMIN_AUTH_USER === 'admin' &&
+  ADMIN_AUTH_PASS === 'change_me';
+const ADMIN_SESSION_COOKIE = 'pcc_admin_session';
+const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const CRIME_WEIGHTS = Object.freeze({
   npc_kill: 10,
   npc_kill_witnessed: 16,
@@ -186,6 +372,13 @@ const cashDrops = new Map();
 const bloodStains = new Map();
 let crimeReputationDb = null;
 const crimeReputationSql = {};
+const questSql = {};
+let activeQuestCatalog = [];
+const adminSessions = new Map();
+const questTargetAssignmentsByKey = new Map();
+const questTargetOwnerByNpcId = new Map();
+const questTargetCarAssignmentsByKey = new Map();
+const questTargetCarOwnerByCarId = new Map();
 
 const makeId = createIdGenerator(1);
 const eventState = { nextEventId: 1, pending: [] };
@@ -220,6 +413,16 @@ const SHOP_STOCK = {
   machinegun: 1000,
   bazooka: 5000,
 };
+const EMPTY_SHOP_STOCK = Object.freeze({
+  shotgun: 0,
+  machinegun: 0,
+  bazooka: 0,
+});
+const GARAGE_SELL_PRICE = 50;
+const GARAGE_REPAINT_RANDOM_PRICE = 10;
+const GARAGE_REPAINT_SELECTED_PRICE = 100;
+const GARAGE_REPAINT_SELECTED_KEY = 'garage_repaint_selected';
+const GARAGE_REPAINT_SELECTED_PREFIX = 'garage_repaint_selected:';
 const SHOPS = [
   { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
   { id: 'shop_south', name: 'South Arms', x: BLOCK_PX * 4 + 236, y: BLOCK_PX * 9 + 234, radius: 34 },
@@ -228,7 +431,15 @@ const SHOPS = [
   { id: 'shop_mid', name: 'Midtown Arms', x: BLOCK_PX * 6 + 232, y: BLOCK_PX * 6 + 236, radius: 34 },
   { id: 'shop_dock', name: 'Dock Arms', x: BLOCK_PX * 10 + 232, y: BLOCK_PX * 10 + 232, radius: 34 },
 ];
-const SHOP_INDEX_BY_ID = new Map(SHOPS.map((shop, index) => [shop.id, index]));
+const GARAGES = [
+  { id: 'garage_north', name: 'North Garage', x: BLOCK_PX * 9 + 236, y: BLOCK_PX * 1 + 236, radius: 38 },
+  { id: 'garage_south', name: 'South Garage', x: BLOCK_PX * 2 + 236, y: BLOCK_PX * 10 + 236, radius: 38 },
+];
+const INTERIORS = [
+  ...SHOPS.map((shop) => ({ ...shop, stock: SHOP_STOCK })),
+  ...GARAGES.map((garage) => ({ ...garage, stock: EMPTY_SHOP_STOCK })),
+];
+const INTERIOR_INDEX_BY_ID = new Map(INTERIORS.map((interior, index) => [interior.id, index]));
 const HOSPITALS = [
   {
     id: 'hospital_central',
@@ -264,14 +475,14 @@ const STATIC_WORLD_PAYLOAD = Object.freeze({
   roadEnd: ROAD_END,
   laneA: LANE_A,
   laneB: LANE_B,
-  shops: SHOPS.map((shop) =>
+  shops: INTERIORS.map((shop) =>
     Object.freeze({
       id: shop.id,
       name: shop.name,
       x: shop.x,
       y: shop.y,
       radius: shop.radius,
-      stock: SHOP_STOCK,
+      stock: shop.stock || EMPTY_SHOP_STOCK,
     })
   ),
   hospitals: HOSPITALS.map((hospital) =>
@@ -375,7 +586,7 @@ function normalizeHexColor(value, fallback = '#ffffff') {
 
 function shopIndexById(id) {
   if (!id) return null;
-  const index = SHOP_INDEX_BY_ID.get(id);
+  const index = INTERIOR_INDEX_BY_ID.get(id);
   return Number.isInteger(index) ? index : null;
 }
 
@@ -405,6 +616,7 @@ const {
   LANE_A,
   LANE_B,
   HOSPITALS,
+  GARAGES,
   BUILDING_COLLIDER_TOP_OFFSET_PX,
   CAR_BUILDING_COLLISION_INSET_X_PX,
   CAR_BUILDING_COLLISION_INSET_Y_PX,
@@ -560,6 +772,27 @@ function sanitizeProfileId(raw) {
   return cleaned;
 }
 
+function sanitizeQuestKey(raw) {
+  if (typeof raw !== 'string') return '';
+  let cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '');
+  if (!cleaned) return '';
+  if (cleaned.length > QUEST_KEY_MAX_LENGTH) {
+    cleaned = cleaned.slice(0, QUEST_KEY_MAX_LENGTH).replace(/^[_\-.]+|[_\-.]+$/g, '');
+  }
+  return cleaned;
+}
+
+function questKeyFromTitle(title) {
+  const fromTitle = sanitizeQuestKey(String(title || '').replace(/\s+/g, '_'));
+  if (fromTitle) return fromTitle;
+  return 'quest';
+}
+
 function legacyProfileIdForName(name) {
   const key = normalizedNameKey(name);
   if (!key) return '';
@@ -624,6 +857,315 @@ function crimeRecordFromRow(row, fallbackProfileId = '') {
   );
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sortObjectKeysDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortObjectKeysDeep(item));
+  }
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    out[key] = sortObjectKeysDeep(value[key]);
+  }
+  return out;
+}
+
+function normalizeQuestJsonObject(raw, fallback = {}) {
+  let value = raw;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      value = fallback;
+    } else {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        value = fallback;
+      }
+    }
+  } else if (value == null) {
+    value = fallback;
+  }
+
+  if (!isPlainObject(value)) {
+    value = fallback;
+  }
+
+  try {
+    const canonical = sortObjectKeysDeep(value);
+    const text = JSON.stringify(canonical);
+    if (Buffer.byteLength(text, 'utf8') > QUEST_JSON_MAX_BYTES) {
+      return sortObjectKeysDeep(isPlainObject(fallback) ? fallback : {});
+    }
+    return canonical;
+  } catch {
+    return sortObjectKeysDeep(isPlainObject(fallback) ? fallback : {});
+  }
+}
+
+function stringifyQuestJsonObject(raw, fallback = {}) {
+  const normalized = normalizeQuestJsonObject(raw, fallback);
+  return JSON.stringify(normalized);
+}
+
+function normalizeQuestRewardPayloadObject(payload, rewardMoney, rewardReputation, rewardUnlockGunShop) {
+  const base = normalizeQuestJsonObject(payload, {});
+  base.money = clamp(Math.round(Number(rewardMoney) || 0), 0, 0xffffffff);
+  base.reputation = clamp(Math.round(Number(rewardReputation) || 0), 0, 0xffffffff);
+  base.unlockGunShop = !!rewardUnlockGunShop;
+  return base;
+}
+
+function tableColumnSet(db, tableName) {
+  if (!db || !tableName) return new Set();
+  try {
+    return new Set(
+      db
+        .prepare(`PRAGMA table_info(${tableName})`)
+        .all()
+        .map((column) => String(column?.name || '').trim().toLowerCase())
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function runCrimeReputationMigrations(db) {
+  if (!db) return;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+  `);
+  const selectApplied = db.prepare('SELECT version FROM schema_migrations WHERE version = @version LIMIT 1');
+  const markApplied = db.prepare(
+    'INSERT INTO schema_migrations (version, name, applied_at) VALUES (@version, @name, @appliedAt)'
+  );
+
+  const migrations = [
+    {
+      version: 1,
+      name: 'quest_reset_on_death',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('reset_on_death')) {
+          db.exec('ALTER TABLE quests ADD COLUMN reset_on_death INTEGER NOT NULL DEFAULT 0');
+        }
+      },
+    },
+    {
+      version: 2,
+      name: 'quest_action_params_json',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('action_params_json')) {
+          db.exec("ALTER TABLE quests ADD COLUMN action_params_json TEXT NOT NULL DEFAULT '{}'");
+        }
+        const rows = db.prepare('SELECT id, action_params_json AS actionParamsJson FROM quests').all();
+        const update = db.prepare('UPDATE quests SET action_params_json = @actionParamsJson WHERE id = @id');
+        for (const row of rows) {
+          const normalized = stringifyQuestJsonObject(row?.actionParamsJson, {});
+          if (String(row?.actionParamsJson || '').trim() !== normalized) {
+            update.run({
+              id: Number(row.id) >>> 0,
+              actionParamsJson: normalized,
+            });
+          }
+        }
+      },
+    },
+    {
+      version: 3,
+      name: 'quest_reward_payload_json',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('reward_payload_json')) {
+          db.exec("ALTER TABLE quests ADD COLUMN reward_payload_json TEXT NOT NULL DEFAULT '{}'");
+        }
+        const rows = db
+          .prepare(`
+            SELECT
+              id,
+              reward_money AS rewardMoney,
+              reward_reputation AS rewardReputation,
+              reward_unlock_gun_shop AS rewardUnlockGunShop,
+              reward_payload_json AS rewardPayloadJson
+            FROM quests
+          `)
+          .all();
+        const update = db.prepare('UPDATE quests SET reward_payload_json = @rewardPayloadJson WHERE id = @id');
+        for (const row of rows) {
+          const normalizedPayload = normalizeQuestRewardPayloadObject(
+            row?.rewardPayloadJson,
+            row?.rewardMoney,
+            row?.rewardReputation,
+            !!Number(row?.rewardUnlockGunShop)
+          );
+          const normalized = JSON.stringify(normalizedPayload);
+          if (String(row?.rewardPayloadJson || '').trim() !== normalized) {
+            update.run({
+              id: Number(row.id) >>> 0,
+              rewardPayloadJson: normalized,
+            });
+          }
+        }
+      },
+    },
+    {
+      version: 4,
+      name: 'quest_key',
+      up() {
+        const questColumns = tableColumnSet(db, 'quests');
+        if (!questColumns.has('quest_key')) {
+          db.exec('ALTER TABLE quests ADD COLUMN quest_key TEXT');
+        }
+        const rows = db.prepare('SELECT id, quest_key AS questKey FROM quests ORDER BY id ASC').all();
+        const usedKeys = new Set();
+        const update = db.prepare('UPDATE quests SET quest_key = @questKey WHERE id = @id');
+        for (const row of rows) {
+          const id = Number(row?.id) >>> 0;
+          if (!id) continue;
+          const rawCurrent = String(row?.questKey || '').trim();
+          let nextKey = sanitizeQuestKey(rawCurrent);
+          if (!nextKey || usedKeys.has(nextKey)) {
+            nextKey = sanitizeQuestKey(`legacy_${id}`) || `legacy_${id}`;
+            let suffix = 2;
+            while (usedKeys.has(nextKey)) {
+              nextKey = sanitizeQuestKey(`legacy_${id}_${suffix}`) || `legacy_${id}_${suffix}`;
+              suffix += 1;
+            }
+          }
+          usedKeys.add(nextKey);
+          if (rawCurrent !== nextKey) {
+            update.run({ id, questKey: nextKey });
+          }
+        }
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_quests_quest_key ON quests (quest_key)');
+      },
+    },
+    {
+      version: 5,
+      name: 'initial_quest_seed_v1',
+      up() {
+        const totalRow = db.prepare('SELECT COUNT(1) AS total FROM quests').get();
+        const total = Math.max(0, Math.round(Number(totalRow?.total) || 0));
+        if (total > 0) return;
+        const insert = db.prepare(`
+          INSERT INTO quests (
+            quest_key,
+            title,
+            description,
+            action_type,
+            action_params_json,
+            target_count,
+            sort_order,
+            reward_money,
+            reward_reputation,
+            reward_unlock_gun_shop,
+            reward_payload_json,
+            reset_on_death,
+            is_active,
+            created_at,
+            updated_at
+          ) VALUES (
+            @questKey,
+            @title,
+            @description,
+            @actionType,
+            @actionParamsJson,
+            @targetCount,
+            @sortOrder,
+            @rewardMoney,
+            @rewardReputation,
+            @rewardUnlockGunShop,
+            @rewardPayloadJson,
+            @resetOnDeath,
+            @isActive,
+            @createdAt,
+            @updatedAt
+          )
+        `);
+        const usedKeys = new Set();
+        const now = Date.now();
+        let fallbackSortOrder = 10;
+        for (const seed of INITIAL_QUEST_SEED_V1) {
+          const title = String(seed?.title || '').trim().slice(0, 80);
+          const actionType = normalizeQuestActionType(seed?.actionType);
+          if (!title || !actionType) continue;
+          const targetCount = clamp(Math.round(Number(seed?.targetCount) || 0), 1, 65535);
+          const rewardMoney = clamp(Math.round(Number(seed?.rewardMoney) || 0), 0, 0xffffffff);
+          const rewardReputation = clamp(Math.round(Number(seed?.rewardReputation) || 0), 0, 0xffffffff);
+          const rewardUnlockGunShop = !!seed?.rewardUnlockGunShop;
+          const rewardPayload = normalizeQuestRewardPayloadObject(
+            seed?.rewardPayload,
+            rewardMoney,
+            rewardReputation,
+            rewardUnlockGunShop
+          );
+          const actionParams = normalizeQuestJsonObject(seed?.actionParams, {});
+          let questKey = sanitizeQuestKey(seed?.questKey) || questKeyFromTitle(title);
+          if (usedKeys.has(questKey)) {
+            let suffix = 2;
+            let candidate = questKey;
+            while (usedKeys.has(candidate)) {
+              const suffixText = `_${suffix}`;
+              const base = questKey.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - suffixText.length));
+              candidate = `${base}${suffixText}`;
+              suffix += 1;
+            }
+            questKey = candidate;
+          }
+          usedKeys.add(questKey);
+          const sortOrder = clamp(
+            Math.round(Number.isFinite(Number(seed?.sortOrder)) ? Number(seed.sortOrder) : fallbackSortOrder),
+            -2147483648,
+            2147483647
+          );
+          insert.run({
+            questKey,
+            title,
+            description: String(seed?.description || '').trim().slice(0, 400),
+            actionType,
+            actionParamsJson: stringifyQuestJsonObject(actionParams, {}),
+            targetCount,
+            sortOrder,
+            rewardMoney,
+            rewardReputation,
+            rewardUnlockGunShop: rewardUnlockGunShop ? 1 : 0,
+            rewardPayloadJson: stringifyQuestJsonObject(rewardPayload, {}),
+            resetOnDeath: seed?.resetOnDeath ? 1 : 0,
+            isActive: seed?.isActive === false ? 0 : 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+          fallbackSortOrder += 10;
+        }
+      },
+    },
+  ];
+
+  for (const migration of migrations) {
+    const version = Number(migration?.version) || 0;
+    if (version <= 0 || version > QUEST_SCHEMA_MIGRATION_LATEST) continue;
+    const applied = selectApplied.get({ version });
+    if (applied) continue;
+    const tx = db.transaction(() => {
+      migration.up();
+      markApplied.run({
+        version,
+        name: String(migration.name || `migration_${version}`),
+        appliedAt: Date.now(),
+      });
+    });
+    tx();
+  }
+}
+
 function ensureCrimeReputationDb() {
   if (crimeReputationDb) return true;
   try {
@@ -641,7 +1183,72 @@ function ensureCrimeReputationDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_crime_reputation_ranking
         ON crime_reputation (crime_rating DESC, updated_at DESC, name ASC);
+      CREATE TABLE IF NOT EXISTS quests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quest_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        action_type TEXT NOT NULL,
+        action_params_json TEXT NOT NULL DEFAULT '{}',
+        target_count INTEGER NOT NULL,
+        sort_order INTEGER NOT NULL,
+        reward_money INTEGER NOT NULL DEFAULT 0,
+        reward_reputation INTEGER NOT NULL DEFAULT 0,
+        reward_unlock_gun_shop INTEGER NOT NULL DEFAULT 0,
+        reward_payload_json TEXT NOT NULL DEFAULT '{}',
+        reset_on_death INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_quests_order
+        ON quests (is_active DESC, sort_order ASC, id ASC);
+      CREATE TABLE IF NOT EXISTS player_quest_progress (
+        profile_id TEXT NOT NULL,
+        quest_id INTEGER NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (profile_id, quest_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_quest_progress_profile
+        ON player_quest_progress (profile_id);
+      CREATE TABLE IF NOT EXISTS player_quest_profile (
+        profile_id TEXT PRIMARY KEY,
+        reputation INTEGER NOT NULL DEFAULT 0,
+        gun_shop_unlocked INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_quest_profile_reputation
+        ON player_quest_profile (reputation DESC, updated_at DESC, profile_id ASC);
+      CREATE TABLE IF NOT EXISTS player_quest_target (
+        profile_id TEXT NOT NULL,
+        quest_id INTEGER NOT NULL,
+        target_npc_id TEXT NOT NULL,
+        zone_x REAL NOT NULL,
+        zone_y REAL NOT NULL,
+        zone_radius REAL NOT NULL,
+        assigned_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (profile_id, quest_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_quest_target_npc
+        ON player_quest_target (target_npc_id);
+      CREATE TABLE IF NOT EXISTS player_quest_target_car (
+        profile_id TEXT NOT NULL,
+        quest_id INTEGER NOT NULL,
+        target_car_id TEXT NOT NULL,
+        zone_x REAL NOT NULL,
+        zone_y REAL NOT NULL,
+        zone_radius REAL NOT NULL,
+        assigned_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (profile_id, quest_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_quest_target_car_id
+        ON player_quest_target_car (target_car_id);
     `);
+    runCrimeReputationMigrations(crimeReputationDb);
     crimeReputationSql.selectByProfileId = crimeReputationDb.prepare(`
       SELECT
         profile_id AS profileId,
@@ -709,6 +1316,331 @@ function ensureCrimeReputationDb() {
       ORDER BY crime_rating DESC, updated_at DESC, name ASC
       LIMIT @limit OFFSET @offset
     `);
+    questSql.listActive = crimeReputationDb.prepare(`
+      SELECT
+        id,
+        quest_key AS questKey,
+        title,
+        description,
+        action_type AS actionType,
+        action_params_json AS actionParamsJson,
+        target_count AS targetCount,
+        sort_order AS sortOrder,
+        reward_money AS rewardMoney,
+        reward_reputation AS rewardReputation,
+        reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
+        reset_on_death AS resetOnDeath,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM quests
+      WHERE is_active = 1
+      ORDER BY sort_order ASC, id ASC
+    `);
+    questSql.listAll = crimeReputationDb.prepare(`
+      SELECT
+        id,
+        quest_key AS questKey,
+        title,
+        description,
+        action_type AS actionType,
+        action_params_json AS actionParamsJson,
+        target_count AS targetCount,
+        sort_order AS sortOrder,
+        reward_money AS rewardMoney,
+        reward_reputation AS rewardReputation,
+        reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
+        reset_on_death AS resetOnDeath,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM quests
+      ORDER BY sort_order ASC, id ASC
+    `);
+    questSql.getById = crimeReputationDb.prepare(`
+      SELECT
+        id,
+        quest_key AS questKey,
+        title,
+        description,
+        action_type AS actionType,
+        action_params_json AS actionParamsJson,
+        target_count AS targetCount,
+        sort_order AS sortOrder,
+        reward_money AS rewardMoney,
+        reward_reputation AS rewardReputation,
+        reward_unlock_gun_shop AS rewardUnlockGunShop,
+        reward_payload_json AS rewardPayloadJson,
+        reset_on_death AS resetOnDeath,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM quests
+      WHERE id = @id
+      LIMIT 1
+    `);
+    questSql.insert = crimeReputationDb.prepare(`
+      INSERT INTO quests (
+        quest_key,
+        title,
+        description,
+        action_type,
+        action_params_json,
+        target_count,
+        sort_order,
+        reward_money,
+        reward_reputation,
+        reward_unlock_gun_shop,
+        reward_payload_json,
+        reset_on_death,
+        is_active,
+        created_at,
+        updated_at
+      ) VALUES (
+        @questKey,
+        @title,
+        @description,
+        @actionType,
+        @actionParamsJson,
+        @targetCount,
+        @sortOrder,
+        @rewardMoney,
+        @rewardReputation,
+        @rewardUnlockGunShop,
+        @rewardPayloadJson,
+        @resetOnDeath,
+        @isActive,
+        @createdAt,
+        @updatedAt
+      )
+    `);
+    questSql.update = crimeReputationDb.prepare(`
+      UPDATE quests
+      SET
+        quest_key = @questKey,
+        title = @title,
+        description = @description,
+        action_type = @actionType,
+        action_params_json = @actionParamsJson,
+        target_count = @targetCount,
+        sort_order = @sortOrder,
+        reward_money = @rewardMoney,
+        reward_reputation = @rewardReputation,
+        reward_unlock_gun_shop = @rewardUnlockGunShop,
+        reward_payload_json = @rewardPayloadJson,
+        reset_on_death = @resetOnDeath,
+        is_active = @isActive,
+        updated_at = @updatedAt
+      WHERE id = @id
+    `);
+    questSql.selectIdByQuestKey = crimeReputationDb.prepare(`
+      SELECT id
+      FROM quests
+      WHERE quest_key = @questKey
+      LIMIT 1
+    `);
+    questSql.delete = crimeReputationDb.prepare('DELETE FROM quests WHERE id = @id');
+    questSql.deleteProgressByQuestId = crimeReputationDb.prepare(
+      'DELETE FROM player_quest_progress WHERE quest_id = @questId'
+    );
+    questSql.deleteTargetsByQuestId = crimeReputationDb.prepare(
+      'DELETE FROM player_quest_target WHERE quest_id = @questId'
+    );
+    questSql.deleteCarTargetsByQuestId = crimeReputationDb.prepare(
+      'DELETE FROM player_quest_target_car WHERE quest_id = @questId'
+    );
+    questSql.updateSortOrder = crimeReputationDb.prepare(`
+      UPDATE quests
+      SET sort_order = @sortOrder, updated_at = @updatedAt
+      WHERE id = @id
+    `);
+    questSql.upsertPlayerQuestProfile = crimeReputationDb.prepare(`
+      INSERT INTO player_quest_profile (profile_id, reputation, gun_shop_unlocked, updated_at)
+      VALUES (@profileId, @reputation, @gunShopUnlocked, @updatedAt)
+      ON CONFLICT(profile_id) DO UPDATE SET
+        reputation = excluded.reputation,
+        gun_shop_unlocked = excluded.gun_shop_unlocked,
+        updated_at = excluded.updated_at
+    `);
+    questSql.selectPlayerQuestProfile = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        reputation,
+        gun_shop_unlocked AS gunShopUnlocked,
+        updated_at AS updatedAt
+      FROM player_quest_profile
+      WHERE profile_id = @profileId
+      LIMIT 1
+    `);
+    questSql.listProgressByProfileId = crimeReputationDb.prepare(`
+      SELECT
+        quest_id AS questId,
+        progress,
+        completed_at AS completedAt,
+        updated_at AS updatedAt
+      FROM player_quest_progress
+      WHERE profile_id = @profileId
+    `);
+    questSql.upsertProgress = crimeReputationDb.prepare(`
+      INSERT INTO player_quest_progress (profile_id, quest_id, progress, completed_at, updated_at)
+      VALUES (@profileId, @questId, @progress, @completedAt, @updatedAt)
+      ON CONFLICT(profile_id, quest_id) DO UPDATE SET
+        progress = excluded.progress,
+        completed_at = excluded.completed_at,
+        updated_at = excluded.updated_at
+    `);
+    questSql.selectTargetByProfileQuest = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        quest_id AS questId,
+        target_npc_id AS targetNpcId,
+        zone_x AS zoneX,
+        zone_y AS zoneY,
+        zone_radius AS zoneRadius,
+        assigned_at AS assignedAt,
+        updated_at AS updatedAt
+      FROM player_quest_target
+      WHERE profile_id = @profileId AND quest_id = @questId
+      LIMIT 1
+    `);
+    questSql.listTargetsByProfileId = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        quest_id AS questId,
+        target_npc_id AS targetNpcId,
+        zone_x AS zoneX,
+        zone_y AS zoneY,
+        zone_radius AS zoneRadius,
+        assigned_at AS assignedAt,
+        updated_at AS updatedAt
+      FROM player_quest_target
+      WHERE profile_id = @profileId
+    `);
+    questSql.upsertTarget = crimeReputationDb.prepare(`
+      INSERT INTO player_quest_target (
+        profile_id,
+        quest_id,
+        target_npc_id,
+        zone_x,
+        zone_y,
+        zone_radius,
+        assigned_at,
+        updated_at
+      ) VALUES (
+        @profileId,
+        @questId,
+        @targetNpcId,
+        @zoneX,
+        @zoneY,
+        @zoneRadius,
+        @assignedAt,
+        @updatedAt
+      )
+      ON CONFLICT(profile_id, quest_id) DO UPDATE SET
+        target_npc_id = excluded.target_npc_id,
+        zone_x = excluded.zone_x,
+        zone_y = excluded.zone_y,
+        zone_radius = excluded.zone_radius,
+        assigned_at = excluded.assigned_at,
+        updated_at = excluded.updated_at
+    `);
+    questSql.deleteTargetByProfileQuest = crimeReputationDb.prepare(
+      'DELETE FROM player_quest_target WHERE profile_id = @profileId AND quest_id = @questId'
+    );
+    questSql.selectCarTargetByProfileQuest = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        quest_id AS questId,
+        target_car_id AS targetCarId,
+        zone_x AS zoneX,
+        zone_y AS zoneY,
+        zone_radius AS zoneRadius,
+        assigned_at AS assignedAt,
+        updated_at AS updatedAt
+      FROM player_quest_target_car
+      WHERE profile_id = @profileId AND quest_id = @questId
+      LIMIT 1
+    `);
+    questSql.listCarTargetsByProfileId = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        quest_id AS questId,
+        target_car_id AS targetCarId,
+        zone_x AS zoneX,
+        zone_y AS zoneY,
+        zone_radius AS zoneRadius,
+        assigned_at AS assignedAt,
+        updated_at AS updatedAt
+      FROM player_quest_target_car
+      WHERE profile_id = @profileId
+    `);
+    questSql.upsertCarTarget = crimeReputationDb.prepare(`
+      INSERT INTO player_quest_target_car (
+        profile_id,
+        quest_id,
+        target_car_id,
+        zone_x,
+        zone_y,
+        zone_radius,
+        assigned_at,
+        updated_at
+      ) VALUES (
+        @profileId,
+        @questId,
+        @targetCarId,
+        @zoneX,
+        @zoneY,
+        @zoneRadius,
+        @assignedAt,
+        @updatedAt
+      )
+      ON CONFLICT(profile_id, quest_id) DO UPDATE SET
+        target_car_id = excluded.target_car_id,
+        zone_x = excluded.zone_x,
+        zone_y = excluded.zone_y,
+        zone_radius = excluded.zone_radius,
+        assigned_at = excluded.assigned_at,
+        updated_at = excluded.updated_at
+    `);
+    questSql.deleteCarTargetByProfileQuest = crimeReputationDb.prepare(
+      'DELETE FROM player_quest_target_car WHERE profile_id = @profileId AND quest_id = @questId'
+    );
+    questSql.countQuestProfileAll = crimeReputationDb.prepare('SELECT COUNT(1) AS total FROM player_quest_profile');
+    questSql.countQuestProfileByName = crimeReputationDb.prepare(`
+      SELECT COUNT(1) AS total
+      FROM player_quest_profile qp
+      LEFT JOIN crime_reputation cr ON cr.profile_id = qp.profile_id
+      WHERE cr.name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
+    `);
+    questSql.listQuestProfilePage = crimeReputationDb.prepare(`
+      SELECT
+        qp.profile_id AS profileId,
+        qp.reputation AS reputation,
+        qp.gun_shop_unlocked AS gunShopUnlocked,
+        qp.updated_at AS updatedAt,
+        cr.name AS name,
+        cr.last_color AS lastColor
+      FROM player_quest_profile qp
+      LEFT JOIN crime_reputation cr ON cr.profile_id = qp.profile_id
+      ORDER BY qp.reputation DESC, qp.updated_at DESC, qp.profile_id ASC
+      LIMIT @limit OFFSET @offset
+    `);
+    questSql.listQuestProfilePageByName = crimeReputationDb.prepare(`
+      SELECT
+        qp.profile_id AS profileId,
+        qp.reputation AS reputation,
+        qp.gun_shop_unlocked AS gunShopUnlocked,
+        qp.updated_at AS updatedAt,
+        cr.name AS name,
+        cr.last_color AS lastColor
+      FROM player_quest_profile qp
+      LEFT JOIN crime_reputation cr ON cr.profile_id = qp.profile_id
+      WHERE cr.name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
+      ORDER BY qp.reputation DESC, qp.updated_at DESC, qp.profile_id ASC
+      LIMIT @limit OFFSET @offset
+    `);
     return true;
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -722,6 +1654,13 @@ function ensureCrimeReputationDb() {
     for (const key of Object.keys(crimeReputationSql)) {
       delete crimeReputationSql[key];
     }
+    for (const key of Object.keys(questSql)) {
+      delete questSql[key];
+    }
+    questTargetAssignmentsByKey.clear();
+    questTargetOwnerByNpcId.clear();
+    questTargetCarAssignmentsByKey.clear();
+    questTargetCarOwnerByCarId.clear();
     return false;
   }
 }
@@ -780,6 +1719,7 @@ function importLegacyCrimeReputationJsonIfNeeded() {
 function loadCrimeReputationStore() {
   if (!ensureCrimeReputationDb()) return;
   importLegacyCrimeReputationJsonIfNeeded();
+  reloadActiveQuestCatalog();
 }
 
 function closeCrimeReputationStore() {
@@ -790,6 +1730,1086 @@ function closeCrimeReputationStore() {
   crimeReputationDb = null;
   for (const key of Object.keys(crimeReputationSql)) {
     delete crimeReputationSql[key];
+  }
+  for (const key of Object.keys(questSql)) {
+    delete questSql[key];
+  }
+  questTargetAssignmentsByKey.clear();
+  questTargetOwnerByNpcId.clear();
+  questTargetCarAssignmentsByKey.clear();
+  questTargetCarOwnerByCarId.clear();
+}
+
+function normalizeQuestActionType(raw) {
+  const value = String(raw || '')
+    .trim()
+    .toLowerCase();
+  return QUEST_ACTION_TYPES.includes(value) ? value : '';
+}
+
+function isQuestKeyTaken(questKey, excludeQuestId = 0) {
+  const safeQuestKey = sanitizeQuestKey(questKey);
+  if (!safeQuestKey) return false;
+  if (!ensureCrimeReputationDb()) return false;
+  if (!questSql.selectIdByQuestKey) return false;
+  try {
+    const row = questSql.selectIdByQuestKey.get({ questKey: safeQuestKey });
+    const foundId = Number(row?.id) >>> 0;
+    if (!foundId) return false;
+    const excludedId = Number(excludeQuestId) >>> 0;
+    return foundId !== excludedId;
+  } catch {
+    return false;
+  }
+}
+
+function buildUniqueQuestKey(rawQuestKey, fallbackTitle, excludeQuestId = 0) {
+  const excludedId = Number(excludeQuestId) >>> 0;
+  const base = sanitizeQuestKey(rawQuestKey) || questKeyFromTitle(fallbackTitle);
+  let candidate = base;
+  if (!isQuestKeyTaken(candidate, excludedId)) return candidate;
+  let suffix = 2;
+  while (suffix < 100000) {
+    const suffixText = `_${suffix}`;
+    const prefix = base.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - suffixText.length));
+    candidate = `${prefix}${suffixText}`;
+    if (!isQuestKeyTaken(candidate, excludedId)) return candidate;
+    suffix += 1;
+  }
+  const fallbackSuffix = `_${Date.now().toString(36).slice(-6)}`;
+  return `${base.slice(0, Math.max(1, QUEST_KEY_MAX_LENGTH - fallbackSuffix.length))}${fallbackSuffix}`;
+}
+
+function clampQuestProgress(value, targetCount) {
+  return clamp(Math.round(Number(value) || 0), 0, Math.max(0, targetCount));
+}
+
+function normalizeQuestRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const id = Number(row.id) >>> 0;
+  if (!id) return null;
+  const actionType = normalizeQuestActionType(row.actionType);
+  const title = String(row.title || '').trim().slice(0, 80);
+  if (!actionType || !title) return null;
+  const questKey = sanitizeQuestKey(row.questKey) || sanitizeQuestKey(`legacy_${id}`) || `legacy_${id}`;
+  const targetCount = clamp(Math.round(Number(row.targetCount) || 0), 1, 65535);
+  const rewardMoney = clamp(Math.round(Number(row.rewardMoney) || 0), 0, 0xffffffff);
+  const rewardReputation = clamp(Math.round(Number(row.rewardReputation) || 0), 0, 0xffffffff);
+  const rewardUnlockGunShop = !!Number(row.rewardUnlockGunShop);
+  const actionParams = normalizeQuestJsonObject(row.actionParamsJson, {});
+  const rewardPayload = normalizeQuestRewardPayloadObject(
+    row.rewardPayloadJson,
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop
+  );
+  return {
+    id,
+    questKey,
+    title,
+    description: String(row.description || '').trim().slice(0, 400),
+    actionType,
+    actionParams,
+    targetCount,
+    sortOrder: clamp(Math.round(Number(row.sortOrder) || 0), -2147483648, 2147483647),
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop,
+    rewardPayload,
+    resetOnDeath: !!Number(row.resetOnDeath),
+    isActive: !!Number(row.isActive),
+    createdAt: Math.max(0, Math.round(Number(row.createdAt) || 0)),
+    updatedAt: Math.max(0, Math.round(Number(row.updatedAt) || 0)),
+  };
+}
+
+function normalizeQuestBoardSearchQuery(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .slice(0, MAX_NAME_LENGTH);
+}
+
+function normalizeQuestProfileRow(row, profileId = '') {
+  const safeProfileId = sanitizeProfileId(profileId) || sanitizeProfileId(row?.profileId) || '';
+  if (!safeProfileId) return null;
+  return {
+    profileId: safeProfileId,
+    reputation: clamp(Math.round(Number(row?.reputation) || 0), 0, 0xffffffff),
+    gunShopUnlocked: !!Number(row?.gunShopUnlocked),
+    updatedAt: Math.max(0, Math.round(Number(row?.updatedAt) || 0)),
+  };
+}
+
+function defaultQuestProfile(profileId) {
+  const safeProfileId = sanitizeProfileId(profileId) || '';
+  return {
+    profileId: safeProfileId,
+    reputation: 0,
+    gunShopUnlocked: false,
+    updatedAt: Date.now(),
+  };
+}
+
+function questTargetKey(profileId, questId) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  const safeQuestId = Number(questId) >>> 0;
+  if (!safeProfileId || !safeQuestId) return '';
+  return `${safeProfileId}:${safeQuestId}`;
+}
+
+function parseQuestTargetKey(key) {
+  const raw = String(key || '');
+  const idx = raw.lastIndexOf(':');
+  if (idx <= 0) return null;
+  const profileId = sanitizeProfileId(raw.slice(0, idx));
+  const questId = Number.parseInt(raw.slice(idx + 1), 10) >>> 0;
+  if (!profileId || !questId) return null;
+  return { profileId, questId };
+}
+
+function normalizeQuestTargetRow(row, fallbackProfileId = '', fallbackQuestId = 0) {
+  const profileId = sanitizeProfileId(row?.profileId) || sanitizeProfileId(fallbackProfileId);
+  const questId = (Number(row?.questId) >>> 0) || (Number(fallbackQuestId) >>> 0);
+  const targetNpcId = String(row?.targetNpcId || '').trim();
+  if (!profileId || !questId || !targetNpcId) return null;
+  return {
+    profileId,
+    questId,
+    targetNpcId,
+    zoneX: wrapWorldX(Number(row?.zoneX) || 0),
+    zoneY: wrapWorldY(Number(row?.zoneY) || 0),
+    zoneRadius: clamp(Math.round(Number(row?.zoneRadius) || QUEST_TARGET_ZONE_RADIUS), 40, 900),
+    assignedAt: Math.max(0, Math.round(Number(row?.assignedAt) || Date.now())),
+    updatedAt: Math.max(0, Math.round(Number(row?.updatedAt) || Date.now())),
+  };
+}
+
+function cacheQuestTargetAssignment(assignment) {
+  const normalized = normalizeQuestTargetRow(assignment);
+  if (!normalized) return null;
+  const key = questTargetKey(normalized.profileId, normalized.questId);
+  if (!key) return null;
+  const ownerKey = questTargetOwnerByNpcId.get(normalized.targetNpcId);
+  if (ownerKey && ownerKey !== key) {
+    return null;
+  }
+  questTargetAssignmentsByKey.set(key, normalized);
+  questTargetOwnerByNpcId.set(normalized.targetNpcId, key);
+  return normalized;
+}
+
+function uncacheQuestTargetAssignment(profileId, questId) {
+  const key = questTargetKey(profileId, questId);
+  if (!key) return;
+  const existing = questTargetAssignmentsByKey.get(key);
+  if (existing?.targetNpcId) {
+    const ownerKey = questTargetOwnerByNpcId.get(existing.targetNpcId);
+    if (ownerKey === key) {
+      questTargetOwnerByNpcId.delete(existing.targetNpcId);
+    }
+  }
+  questTargetAssignmentsByKey.delete(key);
+}
+
+function readQuestTargetAssignment(profileId, questId) {
+  const parsed = parseQuestTargetKey(questTargetKey(profileId, questId));
+  if (!parsed) return null;
+  const key = questTargetKey(parsed.profileId, parsed.questId);
+  const cached = questTargetAssignmentsByKey.get(key);
+  if (cached) return cached;
+  if (!ensureCrimeReputationDb()) return null;
+  try {
+    const row = questSql.selectTargetByProfileQuest.get({
+      profileId: parsed.profileId,
+      questId: parsed.questId,
+    });
+    const normalized = normalizeQuestTargetRow(row, parsed.profileId, parsed.questId);
+    if (!normalized) return null;
+    return cacheQuestTargetAssignment(normalized);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to read quest target assignment: ${error.message}`);
+    return null;
+  }
+}
+
+function listQuestTargetAssignmentsByProfile(profileId) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return [];
+  if (!ensureCrimeReputationDb()) return [];
+  try {
+    return questSql.listTargetsByProfileId
+      .all({ profileId: safeProfileId })
+      .map((row) => normalizeQuestTargetRow(row, safeProfileId))
+      .filter(Boolean)
+      .map((assignment) => cacheQuestTargetAssignment(assignment) || assignment);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to list quest target assignments: ${error.message}`);
+    return [];
+  }
+}
+
+function persistQuestTargetAssignment(assignment) {
+  const normalized = normalizeQuestTargetRow(assignment);
+  if (!normalized) return null;
+  if (!ensureCrimeReputationDb()) return null;
+  try {
+    questSql.upsertTarget.run({
+      profileId: normalized.profileId,
+      questId: normalized.questId,
+      targetNpcId: normalized.targetNpcId,
+      zoneX: normalized.zoneX,
+      zoneY: normalized.zoneY,
+      zoneRadius: normalized.zoneRadius,
+      assignedAt: normalized.assignedAt,
+      updatedAt: normalized.updatedAt,
+    });
+    return cacheQuestTargetAssignment(normalized);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to persist quest target assignment: ${error.message}`);
+    return null;
+  }
+}
+
+function deleteQuestTargetAssignment(profileId, questId) {
+  const parsed = parseQuestTargetKey(questTargetKey(profileId, questId));
+  if (!parsed) return;
+  if (ensureCrimeReputationDb()) {
+    try {
+      questSql.deleteTargetByProfileQuest.run({
+        profileId: parsed.profileId,
+        questId: parsed.questId,
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[quest] failed to delete quest target assignment: ${error.message}`);
+    }
+  }
+  uncacheQuestTargetAssignment(parsed.profileId, parsed.questId);
+}
+
+function normalizeQuestTargetCarRow(row, fallbackProfileId = '', fallbackQuestId = 0) {
+  const profileId = sanitizeProfileId(row?.profileId) || sanitizeProfileId(fallbackProfileId);
+  const questId = (Number(row?.questId) >>> 0) || (Number(fallbackQuestId) >>> 0);
+  const targetCarId = String(row?.targetCarId || '').trim();
+  if (!profileId || !questId || !targetCarId) return null;
+  return {
+    profileId,
+    questId,
+    targetCarId,
+    zoneX: wrapWorldX(Number(row?.zoneX) || 0),
+    zoneY: wrapWorldY(Number(row?.zoneY) || 0),
+    zoneRadius: clamp(Math.round(Number(row?.zoneRadius) || QUEST_TARGET_ZONE_RADIUS), 40, 900),
+    assignedAt: Math.max(0, Math.round(Number(row?.assignedAt) || Date.now())),
+    updatedAt: Math.max(0, Math.round(Number(row?.updatedAt) || Date.now())),
+  };
+}
+
+function cacheQuestTargetCarAssignment(assignment) {
+  const normalized = normalizeQuestTargetCarRow(assignment);
+  if (!normalized) return null;
+  const key = questTargetKey(normalized.profileId, normalized.questId);
+  if (!key) return null;
+  const ownerKey = questTargetCarOwnerByCarId.get(normalized.targetCarId);
+  if (ownerKey && ownerKey !== key) {
+    return null;
+  }
+  questTargetCarAssignmentsByKey.set(key, normalized);
+  questTargetCarOwnerByCarId.set(normalized.targetCarId, key);
+  return normalized;
+}
+
+function uncacheQuestTargetCarAssignment(profileId, questId) {
+  const key = questTargetKey(profileId, questId);
+  if (!key) return;
+  const existing = questTargetCarAssignmentsByKey.get(key);
+  if (existing?.targetCarId) {
+    const ownerKey = questTargetCarOwnerByCarId.get(existing.targetCarId);
+    if (ownerKey === key) {
+      questTargetCarOwnerByCarId.delete(existing.targetCarId);
+    }
+  }
+  questTargetCarAssignmentsByKey.delete(key);
+}
+
+function uncacheQuestAssignmentsByQuestId(questId) {
+  const safeQuestId = Number(questId) >>> 0;
+  if (!safeQuestId) return;
+
+  for (const key of Array.from(questTargetAssignmentsByKey.keys())) {
+    const parsed = parseQuestTargetKey(key);
+    if (!parsed || parsed.questId !== safeQuestId) continue;
+    uncacheQuestTargetAssignment(parsed.profileId, parsed.questId);
+  }
+
+  for (const key of Array.from(questTargetCarAssignmentsByKey.keys())) {
+    const parsed = parseQuestTargetKey(key);
+    if (!parsed || parsed.questId !== safeQuestId) continue;
+    uncacheQuestTargetCarAssignment(parsed.profileId, parsed.questId);
+  }
+}
+
+function readQuestTargetCarAssignment(profileId, questId) {
+  const parsed = parseQuestTargetKey(questTargetKey(profileId, questId));
+  if (!parsed) return null;
+  const key = questTargetKey(parsed.profileId, parsed.questId);
+  const cached = questTargetCarAssignmentsByKey.get(key);
+  if (cached) return cached;
+  if (!ensureCrimeReputationDb()) return null;
+  try {
+    const row = questSql.selectCarTargetByProfileQuest.get({
+      profileId: parsed.profileId,
+      questId: parsed.questId,
+    });
+    const normalized = normalizeQuestTargetCarRow(row, parsed.profileId, parsed.questId);
+    if (!normalized) return null;
+    return cacheQuestTargetCarAssignment(normalized);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to read quest target car assignment: ${error.message}`);
+    return null;
+  }
+}
+
+function listQuestTargetCarAssignmentsByProfile(profileId) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return [];
+  if (!ensureCrimeReputationDb()) return [];
+  try {
+    return questSql.listCarTargetsByProfileId
+      .all({ profileId: safeProfileId })
+      .map((row) => normalizeQuestTargetCarRow(row, safeProfileId))
+      .filter(Boolean)
+      .map((assignment) => cacheQuestTargetCarAssignment(assignment) || assignment);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to list quest target car assignments: ${error.message}`);
+    return [];
+  }
+}
+
+function persistQuestTargetCarAssignment(assignment) {
+  const normalized = normalizeQuestTargetCarRow(assignment);
+  if (!normalized) return null;
+  if (!ensureCrimeReputationDb()) return null;
+  try {
+    questSql.upsertCarTarget.run({
+      profileId: normalized.profileId,
+      questId: normalized.questId,
+      targetCarId: normalized.targetCarId,
+      zoneX: normalized.zoneX,
+      zoneY: normalized.zoneY,
+      zoneRadius: normalized.zoneRadius,
+      assignedAt: normalized.assignedAt,
+      updatedAt: normalized.updatedAt,
+    });
+    return cacheQuestTargetCarAssignment(normalized);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to persist quest target car assignment: ${error.message}`);
+    return null;
+  }
+}
+
+function deleteQuestTargetCarAssignment(profileId, questId) {
+  const parsed = parseQuestTargetKey(questTargetKey(profileId, questId));
+  if (!parsed) return;
+  if (ensureCrimeReputationDb()) {
+    try {
+      questSql.deleteCarTargetByProfileQuest.run({
+        profileId: parsed.profileId,
+        questId: parsed.questId,
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[quest] failed to delete quest target car assignment: ${error.message}`);
+    }
+  }
+  uncacheQuestTargetCarAssignment(parsed.profileId, parsed.questId);
+}
+
+function pickAvailableQuestTargetNpc() {
+  const candidates = [];
+  for (const npc of npcs.values()) {
+    if (!npc?.alive) continue;
+    if (npc.corpseState !== 'none') continue;
+    if (questTargetOwnerByNpcId.has(npc.id)) continue;
+    candidates.push(npc);
+  }
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)] || null;
+}
+
+function pickOrCreateQuestTargetNpc() {
+  const existing = pickAvailableQuestTargetNpc();
+  if (existing) return existing;
+  const created = makeNpc();
+  if (!created) return null;
+  return created;
+}
+
+function pickQuestTargetCar() {
+  const available = [];
+  const fallback = [];
+  for (const car of cars.values()) {
+    if (!car || car.destroyed) continue;
+    if (car.driverId) continue;
+    fallback.push(car);
+    if (!questTargetCarOwnerByCarId.has(car.id)) {
+      available.push(car);
+    }
+  }
+  if (available.length > 0) {
+    return available[Math.floor(Math.random() * available.length)] || null;
+  }
+  if (fallback.length > 0) {
+    return fallback[Math.floor(Math.random() * fallback.length)] || null;
+  }
+  return null;
+}
+
+function buildQuestTargetZone(npc) {
+  return {
+    zoneX: wrapWorldX(npc.x),
+    zoneY: wrapWorldY(npc.y),
+    zoneRadius: QUEST_TARGET_ZONE_RADIUS,
+  };
+}
+
+function buildQuestTargetCarZone(car) {
+  return {
+    zoneX: wrapWorldX(car.x),
+    zoneY: wrapWorldY(car.y),
+    zoneRadius: QUEST_TARGET_ZONE_RADIUS,
+  };
+}
+
+function findOnlinePlayerByProfileId(profileId) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return null;
+  for (const player of players.values()) {
+    if (sanitizeProfileId(player.profileId) === safeProfileId) {
+      return player;
+    }
+  }
+  return null;
+}
+
+function pruneQuestTargetAssignmentsForPlayer(profileId, expectedActiveQuestId = 0) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return;
+  const assignments = listQuestTargetAssignmentsByProfile(safeProfileId);
+  for (const assignment of assignments) {
+    if ((assignment.questId >>> 0) === (Number(expectedActiveQuestId) >>> 0)) continue;
+    deleteQuestTargetAssignment(assignment.profileId, assignment.questId);
+  }
+}
+
+function pruneQuestTargetCarAssignmentsForPlayer(profileId, expectedActiveQuestId = 0) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return;
+  const assignments = listQuestTargetCarAssignmentsByProfile(safeProfileId);
+  for (const assignment of assignments) {
+    if ((assignment.questId >>> 0) === (Number(expectedActiveQuestId) >>> 0)) continue;
+    deleteQuestTargetCarAssignment(assignment.profileId, assignment.questId);
+  }
+}
+
+function releaseQuestTargetReservationsForProfile(profileId) {
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return;
+  const assignments = listQuestTargetAssignmentsByProfile(safeProfileId);
+  for (const assignment of assignments) {
+    uncacheQuestTargetAssignment(assignment.profileId, assignment.questId);
+  }
+  const carAssignments = listQuestTargetCarAssignmentsByProfile(safeProfileId);
+  for (const assignment of carAssignments) {
+    uncacheQuestTargetCarAssignment(assignment.profileId, assignment.questId);
+  }
+}
+
+function ensureQuestTargetForActiveEntry(player, activeEntry) {
+  if (!player || !activeEntry) return null;
+  if (activeEntry.actionType !== 'kill_target_npc' || activeEntry.status !== 'active') return null;
+  const safeProfileId = sanitizeProfileId(player.profileId);
+  if (!safeProfileId) return null;
+  const questId = activeEntry.id >>> 0;
+  if (!questId) return null;
+
+  const existing = readQuestTargetAssignment(safeProfileId, questId);
+  if (existing) {
+    // Force a fresh target after each server restart so stale persisted assignments do not pin old zones.
+    if ((Number(existing.assignedAt) || 0) < SERVER_BOOT_TIME_MS) {
+      deleteQuestTargetAssignment(safeProfileId, questId);
+    } else {
+    const ownerKey = questTargetOwnerByNpcId.get(existing.targetNpcId);
+    const key = questTargetKey(safeProfileId, questId);
+    const npc = npcs.get(existing.targetNpcId);
+    if (npc && (!ownerKey || ownerKey === key)) {
+      if (!npc.alive || npc.corpseState !== 'none') {
+        respawnNpc(npc);
+      }
+      questTargetOwnerByNpcId.set(npc.id, key);
+      const zone = buildQuestTargetZone(npc);
+      const refreshed = persistQuestTargetAssignment({
+        ...existing,
+        targetNpcId: npc.id,
+        zoneX: zone.zoneX,
+        zoneY: zone.zoneY,
+        zoneRadius: zone.zoneRadius,
+        updatedAt: Date.now(),
+      });
+      if (refreshed) return refreshed;
+      return {
+        ...existing,
+        targetNpcId: npc.id,
+        zoneX: zone.zoneX,
+        zoneY: zone.zoneY,
+        zoneRadius: zone.zoneRadius,
+      };
+    }
+    deleteQuestTargetAssignment(safeProfileId, questId);
+    }
+  }
+
+  const npc = pickOrCreateQuestTargetNpc();
+  if (!npc) return null;
+  if (!npc.alive || npc.corpseState !== 'none') {
+    respawnNpc(npc);
+  }
+  const zone = buildQuestTargetZone(npc);
+  const now = Date.now();
+  return persistQuestTargetAssignment({
+    profileId: safeProfileId,
+    questId,
+    targetNpcId: npc.id,
+    zoneX: zone.zoneX,
+    zoneY: zone.zoneY,
+    zoneRadius: zone.zoneRadius,
+    assignedAt: now,
+    updatedAt: now,
+  });
+}
+
+function ensureQuestTargetCarForActiveEntry(player, activeEntry) {
+  if (!player || !activeEntry) return null;
+  if (activeEntry.actionType !== 'steal_target_car' || activeEntry.status !== 'active') return null;
+  const safeProfileId = sanitizeProfileId(player.profileId);
+  if (!safeProfileId) return null;
+  const questId = activeEntry.id >>> 0;
+  if (!questId) return null;
+
+  const existing = readQuestTargetCarAssignment(safeProfileId, questId);
+  if (existing) {
+    if ((Number(existing.assignedAt) || 0) < SERVER_BOOT_TIME_MS) {
+      deleteQuestTargetCarAssignment(safeProfileId, questId);
+    } else {
+      const ownerKey = questTargetCarOwnerByCarId.get(existing.targetCarId);
+      const key = questTargetKey(safeProfileId, questId);
+      const car = cars.get(existing.targetCarId);
+      if (car && !car.destroyed && (!ownerKey || ownerKey === key)) {
+        questTargetCarOwnerByCarId.set(car.id, key);
+        const zone = buildQuestTargetCarZone(car);
+        const refreshed = persistQuestTargetCarAssignment({
+          ...existing,
+          targetCarId: car.id,
+          zoneX: zone.zoneX,
+          zoneY: zone.zoneY,
+          zoneRadius: zone.zoneRadius,
+          updatedAt: Date.now(),
+        });
+        if (refreshed) return refreshed;
+        return {
+          ...existing,
+          targetCarId: car.id,
+          zoneX: zone.zoneX,
+          zoneY: zone.zoneY,
+          zoneRadius: zone.zoneRadius,
+        };
+      }
+      deleteQuestTargetCarAssignment(safeProfileId, questId);
+    }
+  }
+
+  const car = pickQuestTargetCar();
+  if (!car) return null;
+  const zone = buildQuestTargetCarZone(car);
+  const now = Date.now();
+  return persistQuestTargetCarAssignment({
+    profileId: safeProfileId,
+    questId,
+    targetCarId: car.id,
+    zoneX: zone.zoneX,
+    zoneY: zone.zoneY,
+    zoneRadius: zone.zoneRadius,
+    assignedAt: now,
+    updatedAt: now,
+  });
+}
+
+function applyQuestTargetDataToEntries(player, entries) {
+  const out = Array.isArray(entries)
+    ? entries.map((entry) => ({
+        ...entry,
+        targetNpcId: '',
+        targetCarId: '',
+        targetZoneX: null,
+        targetZoneY: null,
+        targetZoneRadius: null,
+      }))
+    : [];
+  player.activeQuestTargetNpcId = '';
+  player.activeQuestTargetQuestId = 0;
+  player.activeQuestTargetCarId = '';
+  player.activeQuestTargetCarQuestId = 0;
+  if (out.length === 0) return out;
+
+  const activeTargetEntry = out.find((entry) => entry.status === 'active' && entry.actionType === 'kill_target_npc');
+  const activeTargetCarEntry = out.find((entry) => entry.status === 'active' && entry.actionType === 'steal_target_car');
+  pruneQuestTargetAssignmentsForPlayer(player.profileId, activeTargetEntry ? activeTargetEntry.id : 0);
+  pruneQuestTargetCarAssignmentsForPlayer(player.profileId, activeTargetCarEntry ? activeTargetCarEntry.id : 0);
+
+  if (activeTargetEntry) {
+    const assignment = ensureQuestTargetForActiveEntry(player, activeTargetEntry);
+    if (assignment) {
+      activeTargetEntry.targetNpcId = assignment.targetNpcId;
+      activeTargetEntry.targetZoneX = assignment.zoneX;
+      activeTargetEntry.targetZoneY = assignment.zoneY;
+      activeTargetEntry.targetZoneRadius = assignment.zoneRadius;
+      player.activeQuestTargetNpcId = assignment.targetNpcId;
+      player.activeQuestTargetQuestId = assignment.questId >>> 0;
+    }
+  }
+
+  if (activeTargetCarEntry) {
+    const assignment = ensureQuestTargetCarForActiveEntry(player, activeTargetCarEntry);
+    if (assignment) {
+      activeTargetCarEntry.targetCarId = assignment.targetCarId;
+      activeTargetCarEntry.targetZoneX = assignment.zoneX;
+      activeTargetCarEntry.targetZoneY = assignment.zoneY;
+      activeTargetCarEntry.targetZoneRadius = assignment.zoneRadius;
+      player.activeQuestTargetCarId = assignment.targetCarId;
+      player.activeQuestTargetCarQuestId = assignment.questId >>> 0;
+    }
+  }
+  return out;
+}
+
+function reloadActiveQuestCatalog() {
+  if (!ensureCrimeReputationDb()) {
+    activeQuestCatalog = [];
+    return activeQuestCatalog;
+  }
+  try {
+    const rows = questSql.listActive.all();
+    activeQuestCatalog = rows.map(normalizeQuestRow).filter(Boolean);
+    return activeQuestCatalog;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to load active quest catalog: ${error.message}`);
+    activeQuestCatalog = [];
+    return activeQuestCatalog;
+  }
+}
+
+function listAllQuestDefinitions() {
+  if (!ensureCrimeReputationDb()) return [];
+  try {
+    return questSql.listAll.all().map(normalizeQuestRow).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function ensurePlayerQuestProfile(profileId) {
+  if (!ensureCrimeReputationDb()) return defaultQuestProfile(profileId);
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return defaultQuestProfile(profileId);
+  const now = Date.now();
+  try {
+    const row = questSql.selectPlayerQuestProfile.get({ profileId: safeProfileId });
+    const existing = normalizeQuestProfileRow(row, safeProfileId);
+    if (existing) return existing;
+    const next = defaultQuestProfile(safeProfileId);
+    questSql.upsertPlayerQuestProfile.run({
+      profileId: safeProfileId,
+      reputation: next.reputation,
+      gunShopUnlocked: next.gunShopUnlocked ? 1 : 0,
+      updatedAt: now,
+    });
+    return { ...next, updatedAt: now };
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to ensure quest profile for ${safeProfileId}: ${error.message}`);
+    return defaultQuestProfile(safeProfileId);
+  }
+}
+
+function upsertPlayerQuestProfile(profileId, reputation, gunShopUnlocked) {
+  if (!ensureCrimeReputationDb()) return defaultQuestProfile(profileId);
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return defaultQuestProfile(profileId);
+  const now = Date.now();
+  const normalized = {
+    profileId: safeProfileId,
+    reputation: clamp(Math.round(Number(reputation) || 0), 0, 0xffffffff),
+    gunShopUnlocked: !!gunShopUnlocked,
+    updatedAt: now,
+  };
+  try {
+    questSql.upsertPlayerQuestProfile.run({
+      profileId: normalized.profileId,
+      reputation: normalized.reputation,
+      gunShopUnlocked: normalized.gunShopUnlocked ? 1 : 0,
+      updatedAt: now,
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to upsert quest profile for ${safeProfileId}: ${error.message}`);
+  }
+  return normalized;
+}
+
+function listQuestProgressByProfileId(profileId) {
+  if (!ensureCrimeReputationDb()) return new Map();
+  const safeProfileId = sanitizeProfileId(profileId);
+  if (!safeProfileId) return new Map();
+  const map = new Map();
+  try {
+    const rows = questSql.listProgressByProfileId.all({ profileId: safeProfileId });
+    for (const row of rows) {
+      const questId = Number(row.questId) >>> 0;
+      if (!questId) continue;
+      map.set(questId, {
+        progress: clamp(Math.round(Number(row.progress) || 0), 0, 65535),
+        completedAt: Number.isFinite(Number(row.completedAt)) ? Math.max(0, Math.round(Number(row.completedAt))) : 0,
+      });
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to load quest progress for ${safeProfileId}: ${error.message}`);
+  }
+  return map;
+}
+
+function deriveQuestEntries(profileId) {
+  const quests = Array.isArray(activeQuestCatalog) ? activeQuestCatalog : [];
+  if (quests.length === 0) return [];
+  const progressMap = listQuestProgressByProfileId(profileId);
+  let activeAssigned = false;
+  const out = [];
+  for (const quest of quests) {
+    const progressRow = progressMap.get(quest.id) || { progress: 0, completedAt: 0 };
+    const progress = clampQuestProgress(progressRow.progress, quest.targetCount);
+    const completed = !!progressRow.completedAt || progress >= quest.targetCount;
+    let status = 'locked';
+    if (completed) {
+      status = 'completed';
+    } else if (!activeAssigned) {
+      status = 'active';
+      activeAssigned = true;
+    }
+    out.push({
+      id: quest.id,
+      title: quest.title,
+      description: quest.description,
+      actionType: quest.actionType,
+      targetCount: quest.targetCount,
+      progress,
+      status,
+      statusCode: QUEST_STATUS_TO_CODE[status] ?? 0,
+      rewardMoney: quest.rewardMoney,
+      rewardReputation: quest.rewardReputation,
+      rewardUnlockGunShop: quest.rewardUnlockGunShop,
+      resetOnDeath: !!quest.resetOnDeath,
+      completedAt: progressRow.completedAt || 0,
+    });
+  }
+  return out;
+}
+
+function syncQuestStateToPlayer(player) {
+  if (!player) return;
+  const safeProfileId = sanitizeProfileId(player.profileId);
+  if (!safeProfileId) {
+    player.questReputation = 0;
+    player.gunShopUnlocked = false;
+    player.questEntries = [];
+    player.activeQuestTargetNpcId = '';
+    player.activeQuestTargetQuestId = 0;
+    player.activeQuestTargetCarId = '';
+    player.activeQuestTargetCarQuestId = 0;
+    return;
+  }
+  const profile = ensurePlayerQuestProfile(safeProfileId);
+  player.questReputation = profile.reputation;
+  player.gunShopUnlocked = profile.gunShopUnlocked;
+  player.questEntries = applyQuestTargetDataToEntries(player, deriveQuestEntries(safeProfileId));
+}
+
+function attachQuestStateToPlayer(player) {
+  if (!player) return;
+  if (!Array.isArray(activeQuestCatalog)) {
+    activeQuestCatalog = [];
+  }
+  syncQuestStateToPlayer(player);
+}
+
+function hasActiveQuestsConfigured() {
+  return Array.isArray(activeQuestCatalog) && activeQuestCatalog.length > 0;
+}
+
+function createQuestBootstrapForPlayer(player) {
+  if (!player) return null;
+  const entries = Array.isArray(player.questEntries) ? player.questEntries : [];
+  return {
+    reputation: clamp(Math.round(Number(player.questReputation) || 0), 0, 0xffffffff),
+    gunShopUnlocked: !!player.gunShopUnlocked,
+    quests: entries.map((entry) => ({
+      id: entry.id >>> 0,
+      actionType: entry.actionType,
+      title: entry.title,
+      description: entry.description,
+      targetCount: clamp(Math.round(entry.targetCount || 0), 0, 65535),
+      progress: clamp(Math.round(entry.progress || 0), 0, 65535),
+      status: entry.status,
+      rewardMoney: clamp(Math.round(entry.rewardMoney || 0), 0, 0xffffffff),
+      rewardReputation: clamp(Math.round(entry.rewardReputation || 0), 0, 0xffffffff),
+      rewardUnlockGunShop: !!entry.rewardUnlockGunShop,
+      resetOnDeath: !!entry.resetOnDeath,
+      targetZoneX: Number.isFinite(entry.targetZoneX) ? wrapWorldX(entry.targetZoneX) : 0,
+      targetZoneY: Number.isFinite(entry.targetZoneY) ? wrapWorldY(entry.targetZoneY) : 0,
+      targetZoneRadius: clamp(Math.round(Number(entry.targetZoneRadius) || 0), 0, 65535),
+    })),
+  };
+}
+
+function emitQuestSyncForPlayer(player) {
+  if (!player || !player.id) return;
+  emitEvent('questSync', {
+    playerId: player.id,
+    x: player.x,
+    y: player.y,
+    reputation: clamp(Math.round(Number(player.questReputation) || 0), 0, 0xffffffff),
+    gunShopUnlocked: !!player.gunShopUnlocked,
+    quests: (Array.isArray(player.questEntries) ? player.questEntries : []).map((entry) => ({
+      id: entry.id >>> 0,
+      progress: clamp(Math.round(entry.progress || 0), 0, 65535),
+      statusCode: QUEST_STATUS_TO_CODE[entry.status] ?? 0,
+      targetZoneX: Number.isFinite(entry.targetZoneX) ? wrapWorldX(entry.targetZoneX) : 0,
+      targetZoneY: Number.isFinite(entry.targetZoneY) ? wrapWorldY(entry.targetZoneY) : 0,
+      targetZoneRadius: clamp(Math.round(Number(entry.targetZoneRadius) || 0), 0, 65535),
+    })),
+  });
+}
+
+function rewardQuestCompletion(player, questEntry) {
+  if (!player || !questEntry) return;
+  const rewardMoney = clamp(Math.round(Number(questEntry.rewardMoney) || 0), 0, 0xffffffff);
+  const rewardReputation = clamp(Math.round(Number(questEntry.rewardReputation) || 0), 0, 0xffffffff);
+  if (rewardMoney > 0) {
+    player.money = clamp(Math.round(Number(player.money) || 0) + rewardMoney, 0, 0xffffffff);
+  }
+  const currentReputation = clamp(Math.round(Number(player.questReputation) || 0), 0, 0xffffffff);
+  const nextReputation = clamp(currentReputation + rewardReputation, 0, 0xffffffff);
+  const nextUnlock = !!player.gunShopUnlocked || !!questEntry.rewardUnlockGunShop;
+  const profile = upsertPlayerQuestProfile(player.profileId, nextReputation, nextUnlock);
+  player.questReputation = profile.reputation;
+  player.gunShopUnlocked = profile.gunShopUnlocked;
+}
+
+function incrementQuestAction(player, actionType, amount = 1) {
+  if (!player || player.health <= 0) return;
+  if (!ensureCrimeReputationDb()) return;
+  if (!hasActiveQuestsConfigured()) return;
+  if (!sanitizeProfileId(player.profileId)) return;
+  const safeAction = normalizeQuestActionType(actionType);
+  if (!safeAction) return;
+  if (!Array.isArray(player.questEntries) || player.questEntries.length === 0) {
+    syncQuestStateToPlayer(player);
+  }
+  const activeEntry = (player.questEntries || []).find((entry) => entry.status === 'active');
+  if (!activeEntry || activeEntry.actionType !== safeAction) return;
+  const gain = Math.max(1, Math.round(Number(amount) || 0));
+  const targetCount = clamp(Math.round(activeEntry.targetCount || 0), 1, 65535);
+  const previousProgress = clampQuestProgress(activeEntry.progress, targetCount);
+  if (previousProgress >= targetCount) return;
+  const nextProgress = clampQuestProgress(previousProgress + gain, targetCount);
+  if (nextProgress === previousProgress) return;
+  const completedAt = nextProgress >= targetCount ? Date.now() : 0;
+  try {
+    questSql.upsertProgress.run({
+      profileId: player.profileId,
+      questId: activeEntry.id >>> 0,
+      progress: nextProgress,
+      completedAt: completedAt || null,
+      updatedAt: Date.now(),
+    });
+    if (completedAt) {
+      rewardQuestCompletion(player, activeEntry);
+    }
+    syncQuestStateToPlayer(player);
+    emitQuestSyncForPlayer(player);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to update quest progress: ${error.message}`);
+  }
+}
+
+function resetQuestProgressOnDeath(player) {
+  if (!player) return;
+  if (!ensureCrimeReputationDb()) return;
+  if (!hasActiveQuestsConfigured()) return;
+  if (!sanitizeProfileId(player.profileId)) return;
+
+  if (!Array.isArray(player.questEntries) || player.questEntries.length === 0) {
+    syncQuestStateToPlayer(player);
+  }
+  const activeEntry = (player.questEntries || []).find((entry) => entry.status === 'active');
+  if (!activeEntry || !activeEntry.resetOnDeath) return;
+
+  const targetCount = clamp(Math.round(activeEntry.targetCount || 0), 1, 65535);
+  const currentProgress = clampQuestProgress(activeEntry.progress, targetCount);
+  if (currentProgress <= 0) return;
+
+  try {
+    questSql.upsertProgress.run({
+      profileId: player.profileId,
+      questId: activeEntry.id >>> 0,
+      progress: 0,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
+    syncQuestStateToPlayer(player);
+    emitQuestSyncForPlayer(player);
+    sendNoticeToPlayer(player.id, false, `Quest reset on death: ${activeEntry.title}`);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to reset quest progress on death: ${error.message}`);
+  }
+}
+
+function handleQuestTargetNpcDeath(npc, killerId = null) {
+  if (!npc?.id) return;
+  const ownerKey = questTargetOwnerByNpcId.get(npc.id);
+  if (!ownerKey) return;
+  const parsed = parseQuestTargetKey(ownerKey);
+  if (!parsed) {
+    questTargetOwnerByNpcId.delete(npc.id);
+    return;
+  }
+
+  deleteQuestTargetAssignment(parsed.profileId, parsed.questId);
+  const ownerPlayer = findOnlinePlayerByProfileId(parsed.profileId);
+  if (!ownerPlayer) return;
+
+  if (killerId && ownerPlayer.id === killerId) {
+    incrementQuestAction(ownerPlayer, 'kill_target_npc', 1);
+    return;
+  }
+
+  syncQuestStateToPlayer(ownerPlayer);
+  emitQuestSyncForPlayer(ownerPlayer);
+  sendNoticeToPlayer(ownerPlayer.id, false, 'Target eliminated by someone else. New area marked.');
+}
+
+function handleQuestTargetCarUnavailable(car, actorPlayerId = null) {
+  if (!car?.id) return;
+  const ownerKey = questTargetCarOwnerByCarId.get(car.id);
+  if (!ownerKey) return;
+  const parsed = parseQuestTargetKey(ownerKey);
+  if (!parsed) {
+    questTargetCarOwnerByCarId.delete(car.id);
+    return;
+  }
+
+  deleteQuestTargetCarAssignment(parsed.profileId, parsed.questId);
+  const ownerPlayer = findOnlinePlayerByProfileId(parsed.profileId);
+  if (!ownerPlayer) return;
+
+  syncQuestStateToPlayer(ownerPlayer);
+  emitQuestSyncForPlayer(ownerPlayer);
+  if (!(actorPlayerId && ownerPlayer.id === actorPlayerId)) {
+    sendNoticeToPlayer(ownerPlayer.id, false, 'Target car changed. New area marked.');
+  }
+}
+
+function handleQuestTargetCarEntered(car, driverPlayer) {
+  if (!car?.id || !driverPlayer) return;
+  const ownerKey = questTargetCarOwnerByCarId.get(car.id);
+  if (!ownerKey) return;
+  const parsed = parseQuestTargetKey(ownerKey);
+  if (!parsed) {
+    questTargetCarOwnerByCarId.delete(car.id);
+    return;
+  }
+
+  const ownerPlayer = findOnlinePlayerByProfileId(parsed.profileId);
+  if (ownerPlayer && ownerPlayer.id === driverPlayer.id) {
+    incrementQuestAction(ownerPlayer, 'steal_target_car', 1);
+    return;
+  }
+  handleQuestTargetCarUnavailable(car, driverPlayer.id);
+}
+
+function refreshQuestTargetCarZoneIfDue(assignment, car, nowMs) {
+  if (!assignment || !car) return assignment;
+  const lastUpdatedAt = Math.max(0, Math.round(Number(assignment.updatedAt) || 0));
+  if (nowMs - lastUpdatedAt < QUEST_TARGET_ZONE_REFRESH_MS) return assignment;
+
+  const next = persistQuestTargetCarAssignment({
+    ...assignment,
+    zoneX: wrapWorldX(car.x),
+    zoneY: wrapWorldY(car.y),
+    zoneRadius: Math.max(24, Number(assignment.zoneRadius) || QUEST_TARGET_ZONE_RADIUS),
+    updatedAt: nowMs,
+  });
+  if (!next) return assignment;
+
+  const ownerPlayer = findOnlinePlayerByProfileId(next.profileId);
+  if (ownerPlayer && Array.isArray(ownerPlayer.questEntries)) {
+    const entry = ownerPlayer.questEntries.find((item) => (item.id >>> 0) === (next.questId >>> 0));
+    if (entry) {
+      entry.targetCarId = next.targetCarId;
+      entry.targetZoneX = next.zoneX;
+      entry.targetZoneY = next.zoneY;
+      entry.targetZoneRadius = next.zoneRadius;
+    }
+    emitQuestSyncForPlayer(ownerPlayer);
+  }
+  return next;
+}
+
+function stepQuestTargetCarTracking() {
+  const nowMs = Date.now();
+  for (const [key, assignment] of questTargetCarAssignmentsByKey.entries()) {
+    const parsed = parseQuestTargetKey(key);
+    if (!parsed) continue;
+    const car = cars.get(assignment.targetCarId);
+    if (!car || car.destroyed) {
+      deleteQuestTargetCarAssignment(parsed.profileId, parsed.questId);
+      const ownerPlayer = findOnlinePlayerByProfileId(parsed.profileId);
+      if (ownerPlayer) {
+        syncQuestStateToPlayer(ownerPlayer);
+        emitQuestSyncForPlayer(ownerPlayer);
+      }
+      continue;
+    }
+    refreshQuestTargetCarZoneIfDue(assignment, car, nowMs);
+  }
+}
+
+function refreshAllOnlinePlayerQuestState(emitSync = false) {
+  for (const player of players.values()) {
+    syncQuestStateToPlayer(player);
+    if (emitSync) {
+      emitQuestSyncForPlayer(player);
+    }
   }
 }
 
@@ -941,6 +2961,506 @@ function onlineCrimeProfileIds() {
   return online;
 }
 
+function timingSafeEqualText(a, b) {
+  const left = Buffer.from(String(a || ''), 'utf8');
+  const right = Buffer.from(String(b || ''), 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function parseBasicAuthHeader(headerValue) {
+  if (typeof headerValue !== 'string') return null;
+  const trimmed = headerValue.trim();
+  if (!trimmed.toLowerCase().startsWith('basic ')) return null;
+  const encoded = trimmed.slice(6).trim();
+  if (!encoded) return null;
+  try {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const idx = decoded.indexOf(':');
+    if (idx <= 0) return null;
+    return {
+      user: decoded.slice(0, idx),
+      pass: decoded.slice(idx + 1),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseCookieHeader(headerValue) {
+  if (typeof headerValue !== 'string' || !headerValue.trim()) return {};
+  const out = {};
+  for (const pair of headerValue.split(';')) {
+    const item = String(pair || '').trim();
+    if (!item) continue;
+    const idx = item.indexOf('=');
+    if (idx <= 0) continue;
+    const key = item.slice(0, idx).trim();
+    const value = item.slice(idx + 1).trim();
+    if (!key) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function cleanupExpiredAdminSessions(now = Date.now()) {
+  for (const [token, record] of adminSessions.entries()) {
+    if (!record || !Number.isFinite(record.expiresAt) || record.expiresAt <= now) {
+      adminSessions.delete(token);
+    }
+  }
+}
+
+function issueAdminSession(user) {
+  const token = crypto.randomBytes(24).toString('hex');
+  adminSessions.set(token, {
+    user: String(user || ''),
+    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS,
+  });
+  return token;
+}
+
+function setAdminSessionCookie(res, token) {
+  const maxAgeSec = Math.max(1, Math.round(ADMIN_SESSION_TTL_MS / 1000));
+  res.setHeader(
+    'Set-Cookie',
+    `${ADMIN_SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`
+  );
+}
+
+function clearAdminSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
+function validateAdminCredentials(user, pass) {
+  if (!ADMIN_AUTH_ENABLED) return false;
+  const userOk = timingSafeEqualText(user, ADMIN_AUTH_USER);
+  const passOk = timingSafeEqualText(pass, ADMIN_AUTH_PASS);
+  return userOk && passOk;
+}
+
+function resolveAdminAuthState(req) {
+  cleanupExpiredAdminSessions();
+  const cookies = parseCookieHeader(req.headers.cookie);
+  const token = String(cookies[ADMIN_SESSION_COOKIE] || '').trim();
+  if (token) {
+    const session = adminSessions.get(token);
+    if (session && session.expiresAt > Date.now()) {
+      return {
+        ok: true,
+        user: session.user || 'admin',
+        token,
+      };
+    }
+    if (session) adminSessions.delete(token);
+  }
+
+  const parsedBasic = parseBasicAuthHeader(req.headers.authorization);
+  if (parsedBasic && validateAdminCredentials(parsedBasic.user, parsedBasic.pass)) {
+    const newToken = issueAdminSession(parsedBasic.user);
+    return {
+      ok: true,
+      user: parsedBasic.user,
+      token: newToken,
+      freshSession: true,
+    };
+  }
+
+  return { ok: false };
+}
+
+function requireAdminPageAuth(req, res, next) {
+  if (!ADMIN_AUTH_ENABLED) {
+    res.status(503).send('Admin panel disabled: set ADMIN_USER and ADMIN_PASS.');
+    return;
+  }
+
+  const authState = resolveAdminAuthState(req);
+  if (!authState.ok) {
+    res.redirect('/admin');
+    return;
+  }
+
+  if (authState.freshSession && authState.token) {
+    setAdminSessionCookie(res, authState.token);
+  }
+  next();
+}
+
+function requireAdminApiAuth(req, res, next) {
+  if (!ADMIN_AUTH_ENABLED) {
+    res.status(503).json({ ok: false, error: 'Admin panel disabled: set ADMIN_USER and ADMIN_PASS.' });
+    return;
+  }
+
+  const authState = resolveAdminAuthState(req);
+  if (!authState.ok) {
+    res.status(401).json({ ok: false, error: 'Authentication required' });
+    return;
+  }
+
+  if (authState.freshSession && authState.token) {
+    setAdminSessionCookie(res, authState.token);
+  }
+  next();
+}
+
+function normalizeQuestInput(payload, fallbackSortOrder = 0) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rawQuestKey = payload.questKey;
+  const questKeyProvided = rawQuestKey !== undefined && rawQuestKey !== null;
+  const questKey = questKeyProvided ? sanitizeQuestKey(String(rawQuestKey || '')) : '';
+  if (questKeyProvided && !questKey) return null;
+  const title = String(payload.title || '').trim().slice(0, 80);
+  const description = String(payload.description || '').trim().slice(0, 400);
+  const actionType = normalizeQuestActionType(payload.actionType);
+  const actionParamsSource =
+    payload.actionParamsJson !== undefined ? payload.actionParamsJson : payload.actionParams;
+  const actionParams = normalizeQuestJsonObject(actionParamsSource, {});
+  const rawTargetCount = Number(payload.targetCount);
+  if (!Number.isFinite(rawTargetCount)) return null;
+  const targetCount = Math.round(rawTargetCount);
+  if (!Number.isInteger(targetCount) || targetCount <= 0 || targetCount > 65535) return null;
+  const sortOrder = clamp(
+    Math.round(Number.isFinite(Number(payload.sortOrder)) ? Number(payload.sortOrder) : fallbackSortOrder),
+    -2147483648,
+    2147483647
+  );
+  const rawRewardPayload =
+    payload.rewardPayloadJson !== undefined ? payload.rewardPayloadJson : payload.rewardPayload;
+  const parsedRewardPayload = normalizeQuestJsonObject(rawRewardPayload, {});
+  const rawRewardMoney = Number.isFinite(Number(payload.rewardMoney))
+    ? Number(payload.rewardMoney)
+    : Number(parsedRewardPayload.money || 0);
+  const rewardMoney = Math.round(rawRewardMoney);
+  if (!Number.isInteger(rewardMoney) || rewardMoney < 0 || rewardMoney > 0xffffffff) return null;
+  const rawRewardReputation = Number.isFinite(Number(payload.rewardReputation))
+    ? Number(payload.rewardReputation)
+    : Number(parsedRewardPayload.reputation || 0);
+  const rewardReputation = Math.round(rawRewardReputation);
+  if (!Number.isInteger(rewardReputation) || rewardReputation < 0 || rewardReputation > 0xffffffff) return null;
+  const rewardUnlockGunShop =
+    payload.rewardUnlockGunShop == null ? !!parsedRewardPayload.unlockGunShop : !!payload.rewardUnlockGunShop;
+  const rewardPayload = normalizeQuestRewardPayloadObject(
+    parsedRewardPayload,
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop
+  );
+  const resetOnDeath = !!payload.resetOnDeath;
+  const isActive = payload.isActive == null ? true : !!payload.isActive;
+  if (!title || !actionType) return null;
+  return {
+    questKey,
+    title,
+    description,
+    actionType,
+    actionParams,
+    actionParamsJson: stringifyQuestJsonObject(actionParams, {}),
+    targetCount,
+    sortOrder,
+    rewardMoney,
+    rewardReputation,
+    rewardUnlockGunShop,
+    rewardPayload,
+    rewardPayloadJson: stringifyQuestJsonObject(rewardPayload, {}),
+    resetOnDeath,
+    isActive,
+  };
+}
+
+function questCoreDefinitionChanged(previousQuest, nextQuestInput) {
+  if (!previousQuest || !nextQuestInput) return false;
+  if (String(previousQuest.actionType || '') !== String(nextQuestInput.actionType || '')) return true;
+  if ((Number(previousQuest.targetCount) >>> 0) !== (Number(nextQuestInput.targetCount) >>> 0)) return true;
+  const prevActionParams = stringifyQuestJsonObject(previousQuest.actionParams, {});
+  const nextActionParams = stringifyQuestJsonObject(nextQuestInput.actionParams, {});
+  return prevActionParams !== nextActionParams;
+}
+
+function serializeQuestForAdmin(quest) {
+  if (!quest) return null;
+  return {
+    id: quest.id >>> 0,
+    questKey: String(quest.questKey || ''),
+    title: quest.title,
+    description: quest.description,
+    actionType: quest.actionType,
+    actionParams: normalizeQuestJsonObject(quest.actionParams, {}),
+    targetCount: quest.targetCount,
+    sortOrder: quest.sortOrder,
+    rewardMoney: quest.rewardMoney,
+    rewardReputation: quest.rewardReputation,
+    rewardUnlockGunShop: !!quest.rewardUnlockGunShop,
+    rewardPayload: normalizeQuestRewardPayloadObject(
+      quest.rewardPayload,
+      quest.rewardMoney,
+      quest.rewardReputation,
+      !!quest.rewardUnlockGunShop
+    ),
+    resetOnDeath: !!quest.resetOnDeath,
+    isActive: !!quest.isActive,
+    createdAt: quest.createdAt || 0,
+    updatedAt: quest.updatedAt || 0,
+  };
+}
+
+function sendNoticeToPlayer(playerId, ok, message) {
+  if (!playerId) return;
+  for (const [ws, client] of clients.entries()) {
+    if (!client || client.playerId !== playerId) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    ws.send(encodeNoticeFrame(!!ok, String(message || '')));
+    break;
+  }
+}
+
+function applyQuestCatalogReloadAndResync() {
+  reloadActiveQuestCatalog();
+  refreshAllOnlinePlayerQuestState(true);
+}
+
+app.get('/admin', (req, res) => {
+  if (!ADMIN_AUTH_ENABLED) {
+    res.status(503).send('Admin panel disabled: set ADMIN_USER and ADMIN_PASS.');
+    return;
+  }
+  const authState = resolveAdminAuthState(req);
+  if (authState.ok) {
+    if (authState.freshSession && authState.token) {
+      setAdminSessionCookie(res, authState.token);
+    }
+    res.redirect('/admin/quests');
+    return;
+  }
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-login.html'));
+});
+
+app.get('/admin/quests', requireAdminPageAuth, (req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-quests.html'));
+});
+
+app.post('/api/admin/login', (req, res) => {
+  if (!ADMIN_AUTH_ENABLED) {
+    res.status(503).json({ ok: false, error: 'Admin panel disabled: set ADMIN_USER and ADMIN_PASS.' });
+    return;
+  }
+  const user = String(req.body?.user || '').trim();
+  const pass = String(req.body?.pass || '');
+  if (!validateAdminCredentials(user, pass)) {
+    res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    return;
+  }
+  const token = issueAdminSession(user);
+  setAdminSessionCookie(res, token);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/logout', (req, res) => {
+  const cookies = parseCookieHeader(req.headers.cookie);
+  const token = String(cookies[ADMIN_SESSION_COOKIE] || '').trim();
+  if (token) {
+    adminSessions.delete(token);
+  }
+  clearAdminSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/session', (req, res) => {
+  if (!ADMIN_AUTH_ENABLED) {
+    res.status(503).json({ ok: false, enabled: false, authenticated: false });
+    return;
+  }
+  const authState = resolveAdminAuthState(req);
+  if (authState.ok && authState.freshSession && authState.token) {
+    setAdminSessionCookie(res, authState.token);
+  }
+  res.json({ ok: true, enabled: true, authenticated: !!authState.ok });
+});
+
+app.get('/api/admin/quests', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({ error: 'Quest store unavailable', quests: [] });
+    return;
+  }
+  const quests = listAllQuestDefinitions().map(serializeQuestForAdmin).filter(Boolean);
+  res.json({ quests });
+});
+
+app.post('/api/admin/quests', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({ ok: false, error: 'Quest store unavailable' });
+    return;
+  }
+  const quests = listAllQuestDefinitions();
+  const fallbackSortOrder = quests.length > 0 ? quests[quests.length - 1].sortOrder + 10 : 10;
+  const input = normalizeQuestInput(req.body, fallbackSortOrder);
+  if (!input) {
+    res.status(400).json({ ok: false, error: 'Invalid quest payload' });
+    return;
+  }
+  const now = Date.now();
+  try {
+    const questKey = buildUniqueQuestKey(input.questKey, input.title);
+    const result = questSql.insert.run({
+      questKey,
+      title: input.title,
+      description: input.description,
+      actionType: input.actionType,
+      actionParamsJson: input.actionParamsJson,
+      targetCount: input.targetCount,
+      sortOrder: input.sortOrder,
+      rewardMoney: input.rewardMoney,
+      rewardReputation: input.rewardReputation,
+      rewardUnlockGunShop: input.rewardUnlockGunShop ? 1 : 0,
+      rewardPayloadJson: input.rewardPayloadJson,
+      resetOnDeath: input.resetOnDeath ? 1 : 0,
+      isActive: input.isActive ? 1 : 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    applyQuestCatalogReloadAndResync();
+    const created = normalizeQuestRow(questSql.getById.get({ id: Number(result.lastInsertRowid) }));
+    res.json({ ok: true, quest: serializeQuestForAdmin(created) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: `Create failed: ${error.message}` });
+  }
+});
+
+app.put('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({ ok: false, error: 'Quest store unavailable' });
+    return;
+  }
+  const id = Number.parseInt(String(req.params.id || '0'), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'Invalid quest id' });
+    return;
+  }
+  const existing = normalizeQuestRow(questSql.getById.get({ id }));
+  if (!existing) {
+    res.status(404).json({ ok: false, error: 'Quest not found' });
+    return;
+  }
+  const input = normalizeQuestInput(
+    {
+      title: req.body?.title ?? existing.title,
+      questKey: req.body?.questKey ?? existing.questKey,
+      description: req.body?.description ?? existing.description,
+      actionType: req.body?.actionType ?? existing.actionType,
+      actionParams: req.body?.actionParams ?? existing.actionParams,
+      targetCount: req.body?.targetCount ?? existing.targetCount,
+      sortOrder: req.body?.sortOrder ?? existing.sortOrder,
+      rewardMoney: req.body?.rewardMoney ?? existing.rewardMoney,
+      rewardReputation: req.body?.rewardReputation ?? existing.rewardReputation,
+      rewardUnlockGunShop: req.body?.rewardUnlockGunShop ?? existing.rewardUnlockGunShop,
+      rewardPayload: req.body?.rewardPayload ?? existing.rewardPayload,
+      resetOnDeath: req.body?.resetOnDeath ?? existing.resetOnDeath,
+      isActive: req.body?.isActive ?? existing.isActive,
+    },
+    existing.sortOrder
+  );
+  if (!input) {
+    res.status(400).json({ ok: false, error: 'Invalid quest payload' });
+    return;
+  }
+  const shouldResetProgress = questCoreDefinitionChanged(existing, input);
+  try {
+    const questKey = buildUniqueQuestKey(input.questKey || existing.questKey, input.title, id);
+    const tx = crimeReputationDb.transaction((questId) => {
+      questSql.update.run({
+        id: questId,
+        questKey,
+        title: input.title,
+        description: input.description,
+        actionType: input.actionType,
+        actionParamsJson: input.actionParamsJson,
+        targetCount: input.targetCount,
+        sortOrder: input.sortOrder,
+        rewardMoney: input.rewardMoney,
+        rewardReputation: input.rewardReputation,
+        rewardUnlockGunShop: input.rewardUnlockGunShop ? 1 : 0,
+        rewardPayloadJson: input.rewardPayloadJson,
+        resetOnDeath: input.resetOnDeath ? 1 : 0,
+        isActive: input.isActive ? 1 : 0,
+        updatedAt: Date.now(),
+      });
+      if (shouldResetProgress) {
+        questSql.deleteProgressByQuestId.run({ questId });
+        questSql.deleteTargetsByQuestId.run({ questId });
+        questSql.deleteCarTargetsByQuestId.run({ questId });
+        uncacheQuestAssignmentsByQuestId(questId);
+      }
+    });
+    tx(id);
+    applyQuestCatalogReloadAndResync();
+    const updated = normalizeQuestRow(questSql.getById.get({ id }));
+    res.json({ ok: true, quest: serializeQuestForAdmin(updated), progressReset: shouldResetProgress });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: `Update failed: ${error.message}` });
+  }
+});
+
+app.delete('/api/admin/quests/:id', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({ ok: false, error: 'Quest store unavailable' });
+    return;
+  }
+  const id = Number.parseInt(String(req.params.id || '0'), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'Invalid quest id' });
+    return;
+  }
+  try {
+    const tx = crimeReputationDb.transaction((questId) => {
+      questSql.deleteProgressByQuestId.run({ questId });
+      questSql.deleteTargetsByQuestId.run({ questId });
+      questSql.deleteCarTargetsByQuestId.run({ questId });
+      uncacheQuestAssignmentsByQuestId(questId);
+      questSql.delete.run({ id: questId });
+    });
+    tx(id);
+    applyQuestCatalogReloadAndResync();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: `Delete failed: ${error.message}` });
+  }
+});
+
+app.post('/api/admin/quests/reorder', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({ ok: false, error: 'Quest store unavailable' });
+    return;
+  }
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  if (ids.length === 0) {
+    res.status(400).json({ ok: false, error: 'ids array is required' });
+    return;
+  }
+  const normalizedIds = ids
+    .map((value) => Number.parseInt(String(value), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  if (normalizedIds.length !== ids.length) {
+    res.status(400).json({ ok: false, error: 'ids must be positive integers' });
+    return;
+  }
+  try {
+    const tx = crimeReputationDb.transaction((orderedIds) => {
+      const now = Date.now();
+      let order = 10;
+      for (const id of orderedIds) {
+        questSql.updateSortOrder.run({ id, sortOrder: order, updatedAt: now });
+        order += 10;
+      }
+    });
+    tx(normalizedIds);
+    applyQuestCatalogReloadAndResync();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: `Reorder failed: ${error.message}` });
+  }
+});
+
 app.get('/api/crime-leaderboard', (req, res) => {
   if (!ensureCrimeReputationDb()) {
     res.status(503).json({
@@ -997,6 +3517,7 @@ app.get('/api/crime-leaderboard', (req, res) => {
             rank: start + index + 1,
             name: record.name,
             crimeRating: clampCrimeRating(record.crimeRating),
+            score: clampCrimeRating(record.crimeRating),
             color: normalizeHexColor(record.lastColor, '#58d2ff'),
             profileTag: crimeProfileTag(record.profileId),
             online: onlineIds.has(record.profileId),
@@ -1015,6 +3536,88 @@ app.get('/api/crime-leaderboard', (req, res) => {
       query: searchQuery,
       players: [],
       error: 'Crime leaderboard query failed',
+    });
+  }
+});
+
+app.get('/api/reputation-leaderboard', (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({
+      page: 1,
+      pageSize: REPUTATION_BOARD_DEFAULT_PAGE_SIZE,
+      total: 0,
+      totalPages: 1,
+      query: '',
+      players: [],
+      error: 'Reputation store unavailable',
+    });
+    return;
+  }
+
+  const requestedPage = Number.parseInt(String(req.query.page || '1'), 10);
+  const requestedPageSize = Number.parseInt(String(req.query.pageSize || REPUTATION_BOARD_DEFAULT_PAGE_SIZE), 10);
+  const searchQuery = normalizeQuestBoardSearchQuery(String(req.query.q || ''));
+  const hasSearch = searchQuery.length > 0;
+  const nameLike = `%${escapeSqlLikePattern(searchQuery)}%`;
+  const pageSize = clamp(
+    Number.isFinite(requestedPageSize) ? requestedPageSize : REPUTATION_BOARD_DEFAULT_PAGE_SIZE,
+    1,
+    REPUTATION_BOARD_MAX_PAGE_SIZE
+  );
+
+  try {
+    const total = Number(
+      hasSearch
+        ? questSql.countQuestProfileByName.get({ nameLike })?.total
+        : questSql.countQuestProfileAll.get()?.total
+    ) || 0;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
+    const start = (page - 1) * pageSize;
+    const onlineIds = onlineCrimeProfileIds();
+    const rows =
+      total > 0
+        ? hasSearch
+          ? questSql.listQuestProfilePageByName.all({ nameLike, limit: pageSize, offset: start })
+          : questSql.listQuestProfilePage.all({ limit: pageSize, offset: start })
+        : [];
+
+    res.json({
+      page,
+      pageSize,
+      total,
+      totalPages,
+      query: searchQuery,
+      players: rows
+        .map((row, index) => {
+          const profileId = sanitizeProfileId(row.profileId);
+          if (!profileId) return null;
+          const name = sanitizeName(row.name) || `Profile ${crimeProfileTag(profileId)}`;
+          const color = normalizeHexColor(row.lastColor, '#58d2ff');
+          const reputation = clamp(Math.round(Number(row.reputation) || 0), 0, 0xffffffff);
+          return {
+            rank: start + index + 1,
+            name,
+            reputation,
+            score: reputation,
+            color,
+            profileTag: crimeProfileTag(profileId),
+            online: onlineIds.has(profileId),
+          };
+        })
+        .filter(Boolean),
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to query reputation leaderboard: ${error.message}`);
+    res.status(500).json({
+      page: 1,
+      pageSize,
+      total: 0,
+      totalPages: 1,
+      query: searchQuery,
+      players: [],
+      error: 'Reputation leaderboard query failed',
     });
   }
 });
@@ -1062,6 +3665,22 @@ function findShopById(id) {
   return null;
 }
 
+function findGarageById(id) {
+  if (!id) return null;
+  for (const garage of GARAGES) {
+    if (garage.id === id) return garage;
+  }
+  return null;
+}
+
+function findInteriorById(id) {
+  return findShopById(id) || findGarageById(id);
+}
+
+function isGarageId(id) {
+  return typeof id === 'string' && id.startsWith('garage_');
+}
+
 function findNearbyShop(player, maxDistance) {
   const maxDistSq = maxDistance * maxDistance;
   for (const shop of SHOPS) {
@@ -1070,6 +3689,23 @@ function findNearbyShop(player, maxDistance) {
     if (dx * dx + dy * dy <= maxDistSq) {
       return shop;
     }
+  }
+  return null;
+}
+
+function findNearbyGarageEntrance(player, maxDistance = 88, requireBottomApproach = false) {
+  const maxDistSq = maxDistance * maxDistance;
+  for (const garage of GARAGES) {
+    const entryX = garage.x;
+    const entryY = garage.y + 58;
+    const dx = player.x - entryX;
+    const dy = player.y - entryY;
+    if (dx * dx + dy * dy > maxDistSq) continue;
+    if (requireBottomApproach) {
+      if (dy < -24) continue;
+      if (Math.abs(dx) > 84) continue;
+    }
+    return garage;
   }
   return null;
 }
@@ -1427,6 +4063,7 @@ function destroyCar(car, attacker = null) {
     addCrimeRating(killer, crimeWeightForDestroyedCar(car));
   }
 
+  handleQuestTargetCarUnavailable(car, killer ? killer.id : null);
   killCarOccupants(car, attacker);
   applyExplosionDamage(blastX, blastY, attacker, 72, { sourceCarId: car.id });
 }
@@ -1621,6 +4258,7 @@ function killCop(cop, killer = null) {
   if (killer && killer.health > 0) {
     addStars(killer, 1.25, 34);
     addCrimeRating(killer, CRIME_WEIGHTS.cop_kill);
+    incrementQuestAction(killer, 'kill_cop', 1);
     const reward = randInt(4, 21);
     const drop = makeCashDrop(cop.x, cop.y, reward);
     emitEvent('cashDrop', {
@@ -1682,6 +4320,7 @@ function awardNpcKill(killerId, x, y) {
     addStars(killer, 1.0, 28);
     addCrimeRating(killer, CRIME_WEIGHTS.npc_kill);
   }
+  incrementQuestAction(killer, 'kill_npc', 1);
   const drop = makeCashDrop(x, y, reward);
   emitEvent('cashDrop', {
     dropId: drop.id,
@@ -1703,6 +4342,7 @@ function killNpc(npc, killerId = null) {
   npc.corpseDownTimer = 0;
 
   if (!leaveCorpse) {
+    handleQuestTargetNpcDeath(npc, null);
     npc.corpseState = 'none';
     npc.bodyClaimedBy = null;
     npc.bodyCarriedBy = null;
@@ -1717,6 +4357,7 @@ function killNpc(npc, killerId = null) {
   npc.reviveTimer = 0;
   npc.corpseDownTimer = 0;
   makeBloodStain(npc.x, npc.y);
+  handleQuestTargetNpcDeath(npc, killerId);
 
   emitEvent('npcDown', {
     npcId: npc.id,
@@ -1735,6 +4376,7 @@ function defeatPlayer(player) {
   if (player.respawnTimer > 0) return;
   player.health = 0;
   removeCrimeRating(player, 50);
+  resetQuestProgressOnDeath(player);
   player.respawnTimer = 2.6;
   player.hitCooldown = 0;
   player.insideShopId = null;
@@ -1959,34 +4601,52 @@ function enterShop(player, shop) {
 
 function exitShop(player) {
   if (!player.insideShopId) return;
-  const shop = findShopById(player.insideShopId);
+  const interior = findInteriorById(player.insideShopId);
+  const isGarage = isGarageId(player.insideShopId);
   player.insideShopId = null;
+
+  if (isGarage && player.inCarId) {
+    const car = cars.get(player.inCarId);
+    if (car && !car.destroyed && car.driverId === player.id) {
+      player.x = car.x;
+      player.y = car.y;
+      player.dir = car.angle;
+      player.hitCooldown = Math.max(player.hitCooldown || 0, 0.2);
+      emitEvent('exitShop', {
+        playerId: player.id,
+        shopId: interior ? interior.id : null,
+        x: player.x,
+        y: player.y,
+      });
+      return;
+    }
+  }
 
   let spawn = null;
   const hasStoredExit = Number.isFinite(player.shopExitX) && Number.isFinite(player.shopExitY);
 
-  if (shop && hasStoredExit) {
-    const nearShopSq = wrappedDistanceSq(player.shopExitX, player.shopExitY, shop.x, shop.y);
+  if (interior && hasStoredExit) {
+    const nearShopSq = wrappedDistanceSq(player.shopExitX, player.shopExitY, interior.x, interior.y);
     if (nearShopSq <= 260 * 260) {
       spawn = findSafePedSpawnNear(player.shopExitX, player.shopExitY, 64, true);
     }
   }
 
-  if (!spawn && shop) {
+  if (!spawn && interior) {
     const anchors = [
-      { x: shop.x + 24, y: shop.y },
-      { x: shop.x - 24, y: shop.y },
-      { x: shop.x, y: shop.y + 24 },
-      { x: shop.x, y: shop.y - 24 },
-      { x: shop.x + 36, y: shop.y + 12 },
-      { x: shop.x - 36, y: shop.y - 12 },
+      { x: interior.x + 24, y: interior.y },
+      { x: interior.x - 24, y: interior.y },
+      { x: interior.x, y: interior.y + 24 },
+      { x: interior.x, y: interior.y - 24 },
+      { x: interior.x + 36, y: interior.y + 12 },
+      { x: interior.x - 36, y: interior.y - 12 },
     ];
     for (const anchor of anchors) {
       spawn = findSafePedSpawnNear(anchor.x, anchor.y, 96, true);
       if (spawn) break;
     }
     if (!spawn) {
-      spawn = findSafePedSpawnNear(shop.x, shop.y, 200, false);
+      spawn = findSafePedSpawnNear(interior.x, interior.y, 200, false);
     }
   }
 
@@ -2006,7 +4666,7 @@ function exitShop(player) {
 
   emitEvent('exitShop', {
     playerId: player.id,
-    shopId: shop ? shop.id : null,
+    shopId: interior ? interior.id : null,
     x: player.x,
     y: player.y,
   });
@@ -2025,23 +4685,169 @@ function applyWeaponSelection(player) {
   }
 }
 
+function clearPolicePursuitForPlayer(player) {
+  if (!player) return;
+  player.starHeat = 0;
+  player.starCooldown = 0;
+  player.stars = 0;
+  player.copAlertPlayed = false;
+
+  for (const car of cars.values()) {
+    if (car.type !== 'cop') continue;
+    if (car.dismountTargetPlayerId !== player.id) continue;
+    resetCopCarDeployment(car);
+    car.sirenOn = false;
+  }
+
+  for (const cop of cops.values()) {
+    if (cop.targetPlayerId !== player.id) continue;
+    cop.targetPlayerId = null;
+    if (cop.assignedCarId) {
+      cop.mode = 'return';
+      cop.rejoinCarId = cop.assignedCarId;
+    } else {
+      cop.mode = 'patrol';
+      cop.patrolTimer = Math.min(cop.patrolTimer || 0, 0.4);
+    }
+  }
+}
+
+function chooseRandomCarColor(currentColor) {
+  const normalizedCurrent = normalizeHexColor(currentColor, '');
+  const pool = CAR_PALETTE.filter((value) => normalizeHexColor(value, '') !== normalizedCurrent);
+  const source = pool.length > 0 ? pool : CAR_PALETTE;
+  if (source.length === 0) return '#f2f2f2';
+  return source[randInt(0, source.length)];
+}
+
+function isCarQuestTargetForPlayer(carId, playerProfileId) {
+  if (!carId || !playerProfileId) return false;
+  const ownerKey = questTargetCarOwnerByCarId.get(carId);
+  if (!ownerKey) return false;
+  const parsed = parseQuestTargetKey(ownerKey);
+  return !!(parsed && parsed.profileId === playerProfileId);
+}
+
+function trySellGarageCar(player) {
+  if (!player.inCarId) {
+    return { ok: false, message: 'Drive a car into the garage first.' };
+  }
+  const car = cars.get(player.inCarId);
+  if (!car || car.destroyed || car.driverId !== player.id) {
+    return { ok: false, message: 'No valid car to sell.' };
+  }
+
+  const wasTargetCar = isCarQuestTargetForPlayer(car.id, player.profileId);
+  player.money = clamp(Math.round(Number(player.money) || 0) + GARAGE_SELL_PRICE, 0, 0xffffffff);
+  incrementQuestAction(player, 'steal_car_any', 1);
+  if (car.type === 'cop') {
+    incrementQuestAction(player, 'steal_car_cop_sell_garage', 1);
+  } else if (car.type === 'ambulance') {
+    incrementQuestAction(player, 'steal_car_ambulance_sell_garage', 1);
+  } else if (car.type === 'civilian') {
+    incrementQuestAction(player, 'steal_car_civilian_sell_garage', 1);
+  }
+  if (wasTargetCar) {
+    incrementQuestAction(player, 'steal_target_car', 1);
+  }
+
+  handleQuestTargetCarUnavailable(car, player.id);
+
+  car.driverId = null;
+  car.abandonTimer = 0;
+  player.inCarId = null;
+
+  const spawn = randomRoadSpawnFarFrom(car.x, car.y);
+  resetCarForRespawn(car, spawn);
+  car.speed = carCruiseSpeedByType(car.type);
+  car.aiCooldown = randRange(0.25, 1.15);
+
+  emitEvent('purchase', {
+    playerId: player.id,
+    item: 'garage_sell',
+    amount: GARAGE_SELL_PRICE,
+    x: player.x,
+    y: player.y,
+  });
+
+  // Selling a car finishes the garage interaction immediately.
+  exitShop(player);
+  return { ok: true, message: `Car sold for $${GARAGE_SELL_PRICE}. Leaving garage.` };
+}
+
+function tryRepaintGarageCar(player, selectedColor = null) {
+  if (!player.inCarId) {
+    return { ok: false, message: 'Drive a car into the garage first.' };
+  }
+  const car = cars.get(player.inCarId);
+  if (!car || car.destroyed || car.driverId !== player.id) {
+    return { ok: false, message: 'No valid car to repaint.' };
+  }
+
+  const customColor = selectedColor ? sanitizeColor(selectedColor) : null;
+  if (selectedColor && !customColor) {
+    return { ok: false, message: 'Invalid color format.' };
+  }
+  const selectedMode = !!customColor;
+  const price = selectedMode ? GARAGE_REPAINT_SELECTED_PRICE : GARAGE_REPAINT_RANDOM_PRICE;
+  if (player.money < price) {
+    return { ok: false, message: 'Not enough money.' };
+  }
+
+  const nextColor = selectedMode ? customColor : chooseRandomCarColor(car.color);
+  player.money -= price;
+  car.color = nextColor;
+  clearPolicePursuitForPlayer(player);
+
+  emitEvent('purchase', {
+    playerId: player.id,
+    item: selectedMode ? 'garage_repaint_selected' : 'garage_repaint_random',
+    amount: price,
+    x: player.x,
+    y: player.y,
+  });
+
+  if (selectedMode) {
+    return { ok: true, message: `Car repainted for $${price}.` };
+  }
+  return { ok: true, message: `Random repaint for $${price}.` };
+}
+
 function buyItemForPlayer(player, item) {
   if (!player.insideShopId) {
     return { ok: false, message: 'Enter a gun shop first.' };
   }
 
-  const price = SHOP_STOCK[item];
+  const safeItem = typeof item === 'string' ? item : '';
+
+  if (isGarageId(player.insideShopId)) {
+    if (safeItem === 'garage_sell') {
+      return trySellGarageCar(player);
+    }
+    if (safeItem === 'garage_repaint_random') {
+      return tryRepaintGarageCar(player, null);
+    }
+    if (safeItem === GARAGE_REPAINT_SELECTED_KEY) {
+      return tryRepaintGarageCar(player, player.color);
+    }
+    if (safeItem.startsWith(GARAGE_REPAINT_SELECTED_PREFIX)) {
+      return tryRepaintGarageCar(player, safeItem.slice(GARAGE_REPAINT_SELECTED_PREFIX.length));
+    }
+    return { ok: false, message: 'Unknown garage action.' };
+  }
+
+  const price = SHOP_STOCK[safeItem];
   if (!price) {
     return { ok: false, message: 'Unknown item.' };
   }
 
-  if (item === 'shotgun' && player.ownedShotgun) {
+  if (safeItem === 'shotgun' && player.ownedShotgun) {
     return { ok: false, message: 'Shotgun already owned.' };
   }
-  if (item === 'machinegun' && player.ownedMachinegun) {
+  if (safeItem === 'machinegun' && player.ownedMachinegun) {
     return { ok: false, message: 'Machinegun already owned.' };
   }
-  if (item === 'bazooka' && player.ownedBazooka) {
+  if (safeItem === 'bazooka' && player.ownedBazooka) {
     return { ok: false, message: 'Bazooka already owned.' };
   }
   if (player.money < price) {
@@ -2049,36 +4855,48 @@ function buyItemForPlayer(player, item) {
   }
 
   player.money -= price;
-  if (item === 'shotgun') {
+  if (safeItem === 'shotgun') {
     player.ownedShotgun = true;
     player.input.weaponSlot = 2;
-  } else if (item === 'machinegun') {
+  } else if (safeItem === 'machinegun') {
     player.ownedMachinegun = true;
     player.input.weaponSlot = 3;
-  } else if (item === 'bazooka') {
+  } else if (safeItem === 'bazooka') {
     player.ownedBazooka = true;
     player.input.weaponSlot = 4;
   }
-  player.weapon = item;
+  player.weapon = safeItem;
 
   emitEvent('purchase', {
     playerId: player.id,
-    item,
+    item: safeItem,
     amount: price,
     x: player.x,
     y: player.y,
   });
 
-  return { ok: true, message: `Purchased ${item}.` };
+  return { ok: true, message: `Purchased ${safeItem}.` };
 }
 
 function handleEnterOrExit(player) {
   if (player.health <= 0) return;
 
+  if (player.insideShopId) {
+    exitShop(player);
+    return;
+  }
+
   if (player.inCarId) {
     const car = cars.get(player.inCarId);
     if (!car) {
       player.inCarId = null;
+      return;
+    }
+
+    const garage = findNearbyGarageEntrance(player, 88, true);
+    if (garage) {
+      car.speed = 0;
+      enterShop(player, garage);
       return;
     }
 
@@ -2093,13 +4911,12 @@ function handleEnterOrExit(player) {
     return;
   }
 
-  if (player.insideShopId) {
-    exitShop(player);
-    return;
-  }
-
   const shop = findNearbyShop(player, 34);
   if (shop) {
+    if (hasActiveQuestsConfigured() && !player.gunShopUnlocked) {
+      sendNoticeToPlayer(player.id, false, 'Gun shop locked. Complete quests to unlock access.');
+      return;
+    }
     enterShop(player, shop);
     return;
   }
@@ -2107,10 +4924,10 @@ function handleEnterOrExit(player) {
   const candidate = findNearbyCarForPlayer(player, 34);
   if (!candidate) return;
 
-  if (candidate.npcDriver) {
-    candidate.npcDriver = false;
-    candidate.abandonTimer = 0;
-    candidate.stolenFromNpc = true;
+    if (candidate.npcDriver) {
+      candidate.npcDriver = false;
+      candidate.abandonTimer = 0;
+      candidate.stolenFromNpc = true;
     candidate.ownerReturnTimer = 0;
     ejectNpcFromCar(candidate);
     if (candidate.type === 'cop') {
@@ -2122,21 +4939,33 @@ function handleEnterOrExit(player) {
     } else if (candidate.type === 'ambulance') {
       addStars(player, 1.0, 28);
       addCrimeRating(player, CRIME_WEIGHTS.car_theft_ambulance);
-    } else {
-      addStars(player, 0.75, 26);
-      addCrimeRating(player, CRIME_WEIGHTS.car_theft_civilian);
+      } else {
+        addStars(player, 0.75, 26);
+        addCrimeRating(player, CRIME_WEIGHTS.car_theft_civilian);
+      }
+      incrementQuestAction(player, 'steal_car_any', 1);
+      if (candidate.type === 'cop') {
+        incrementQuestAction(player, 'steal_car_cop', 1);
+      } else if (candidate.type === 'ambulance') {
+        incrementQuestAction(player, 'steal_car_ambulance', 1);
+      }
     }
-  }
 
   candidate.driverId = player.id;
   player.inCarId = candidate.id;
   player.x = candidate.x;
   player.y = candidate.y;
   player.dir = candidate.angle;
+  handleQuestTargetCarEntered(candidate, player);
 
   if (candidate.type === 'cop' && !candidate.stolenFromNpc) {
     addStars(player, 0.8, 30);
     addCrimeRating(player, CRIME_WEIGHTS.car_theft_cop_unattended);
+    incrementQuestAction(player, 'steal_car_any', 1);
+    incrementQuestAction(player, 'steal_car_cop', 1);
+  } else if (candidate.type === 'ambulance' && !candidate.stolenFromNpc) {
+    incrementQuestAction(player, 'steal_car_any', 1);
+    incrementQuestAction(player, 'steal_car_ambulance', 1);
   }
 
   emitEvent('enterCar', { playerId: player.id, carId: candidate.id, x: player.x, y: player.y });
@@ -3692,6 +6521,54 @@ function stepNpcs(dt) {
     return true;
   }
 
+  function refreshQuestTargetZoneIfDue(assignment, npc, nowMs) {
+    if (!assignment || !npc) return assignment;
+    const lastUpdatedAt = Math.max(0, Math.round(Number(assignment.updatedAt) || 0));
+    if (nowMs - lastUpdatedAt < QUEST_TARGET_ZONE_REFRESH_MS) return assignment;
+
+    const next = persistQuestTargetAssignment({
+      ...assignment,
+      zoneX: wrapWorldX(npc.x),
+      zoneY: wrapWorldY(npc.y),
+      zoneRadius: Math.max(24, Number(assignment.zoneRadius) || QUEST_TARGET_ZONE_RADIUS),
+      updatedAt: nowMs,
+    });
+    if (!next) return assignment;
+
+    const ownerPlayer = findOnlinePlayerByProfileId(next.profileId);
+    if (ownerPlayer && Array.isArray(ownerPlayer.questEntries)) {
+      const entry = ownerPlayer.questEntries.find((item) => (item.id >>> 0) === (next.questId >>> 0));
+      if (entry) {
+        entry.targetNpcId = next.targetNpcId;
+        entry.targetZoneX = next.zoneX;
+        entry.targetZoneY = next.zoneY;
+        entry.targetZoneRadius = next.zoneRadius;
+      }
+      emitQuestSyncForPlayer(ownerPlayer);
+    }
+    return next;
+  }
+
+  function stepQuestTargetTracking(npc) {
+    const ownerKey = questTargetOwnerByNpcId.get(npc.id);
+    if (!ownerKey) return;
+
+    let assignment = questTargetAssignmentsByKey.get(ownerKey) || null;
+    if (!assignment || assignment.targetNpcId !== npc.id) {
+      const parsedOwner = parseQuestTargetKey(ownerKey);
+      if (!parsedOwner) {
+        questTargetOwnerByNpcId.delete(npc.id);
+        return;
+      }
+      assignment = readQuestTargetAssignment(parsedOwner.profileId, parsedOwner.questId);
+      if (!assignment || assignment.targetNpcId !== npc.id) {
+        questTargetOwnerByNpcId.delete(npc.id);
+        return;
+      }
+    }
+    refreshQuestTargetZoneIfDue(assignment, npc, Date.now());
+  }
+
   function chooseCrossingDirection(npc) {
     const info = roadInfoAt(npc.x, npc.y);
     if (info.inVerticalRoad && !info.inHorizontalRoad) {
@@ -3769,6 +6646,7 @@ function stepNpcs(dt) {
     }
 
     const npcDt = lodStepDt(npc.id, npc.x, npc.y, dt);
+    stepQuestTargetTracking(npc);
     if (npcDt <= 0) {
       continue;
     }
@@ -4527,7 +7405,8 @@ function serializePlayerForSnapshot(player, now) {
   };
 }
 
-function serializeCarForSnapshot(car) {
+function serializeCarForSnapshot(car, highlightedTargetCarId = '') {
+  const isQuestTarget = highlightedTargetCarId && car.id === highlightedTargetCarId;
   return {
     id: car.id,
     type: car.type,
@@ -4541,10 +7420,12 @@ function serializeCarForSnapshot(car) {
     sirenOn: !!car.sirenOn,
     health: Math.round(car.health || 0),
     smoking: (car.health || 0) > 0 && (car.health || 0) <= CAR_SMOKE_HEALTH,
+    questTarget: !!isQuestTarget,
   };
 }
 
-function serializeNpcForSnapshot(npc) {
+function serializeNpcForSnapshot(npc, highlightedTargetNpcId = '') {
+  const isQuestTarget = highlightedTargetNpcId && npc.id === highlightedTargetNpcId;
   return {
     id: npc.id,
     x: quantized(npc.x, 100),
@@ -4552,9 +7433,10 @@ function serializeNpcForSnapshot(npc) {
     dir: quantized(npc.dir, 1000),
     alive: npc.alive,
     corpseState: npc.corpseState,
-    skinColor: npc.skinColor,
-    shirtColor: npc.shirtColor,
-    shirtDark: npc.shirtDark || '#2a3342',
+    skinColor: isQuestTarget ? QUEST_TARGET_SKIN_COLOR : npc.skinColor,
+    shirtColor: isQuestTarget ? QUEST_TARGET_SHIRT_COLOR : npc.shirtColor,
+    shirtDark: isQuestTarget ? QUEST_TARGET_SHIRT_DARK : npc.shirtDark || '#2a3342',
+    questTarget: !!isQuestTarget,
   };
 }
 
@@ -4614,6 +7496,12 @@ function filterEventsForPlayer(player, events) {
   const filtered = [];
   for (const event of events) {
     if (!event) continue;
+    if (event.type === 'questSync') {
+      if (event.playerId === player.id) {
+        filtered.push(event);
+      }
+      continue;
+    }
     if (isEventAlwaysRelevant(event, player)) {
       filtered.push(event);
       continue;
@@ -4709,15 +7597,17 @@ function serializeSnapshotForPlayer(player, now, events, globalStats = null) {
   }
 
   const carsPayload = [];
+  const highlightedTargetCarId = String(player.activeQuestTargetCarId || '');
   for (const car of cars.values()) {
     if (!shouldIncludeCarForPlayer(player, car)) continue;
-    carsPayload.push(serializeCarForSnapshot(car));
+    carsPayload.push(serializeCarForSnapshot(car, highlightedTargetCarId));
   }
 
   const npcsPayload = [];
+  const highlightedTargetNpcId = String(player.activeQuestTargetNpcId || '');
   for (const npc of npcs.values()) {
     if (!shouldIncludeNpcForPlayer(player, npc)) continue;
-    npcsPayload.push(serializeNpcForSnapshot(npc));
+    npcsPayload.push(serializeNpcForSnapshot(npc, highlightedTargetNpcId));
   }
 
   const copsPayload = [];
@@ -4811,6 +7701,7 @@ function toWireCarRecord(record) {
     sirenOn: !!record.sirenOn,
     health: clamp(Math.round(record.health || 0), 0, CAR_MAX_HEALTH),
     smoking: !!record.smoking,
+    questTarget: !!record.questTarget,
   };
 }
 
@@ -4825,6 +7716,7 @@ function toWireNpcRecord(record) {
     skinColor: normalizeHexColor(record.skinColor, '#f0c39a'),
     shirtColor: normalizeHexColor(record.shirtColor, '#808891'),
     shirtDark: normalizeHexColor(record.shirtDark, '#2a3342'),
+    questTarget: !!record.questTarget,
   };
 }
 
@@ -4911,6 +7803,20 @@ function toWireEventRecord(event) {
   }
   if (event.type === 'enterShop' || event.type === 'exitShop') {
     wire.shopIndex = shopIndexById(event.shopId);
+  }
+  if (event.type === 'questSync') {
+    wire.reputation = clamp(Math.round(Number(event.reputation) || 0), 0, 0xffffffff);
+    wire.gunShopUnlocked = !!event.gunShopUnlocked;
+    wire.quests = Array.isArray(event.quests)
+      ? event.quests.map((entry) => ({
+          id: (entry?.id >>> 0) || 0,
+          progress: clamp(Math.round(Number(entry?.progress) || 0), 0, 65535),
+          statusCode: clamp(Math.round(Number(entry?.statusCode) || 0), 0, 255),
+          targetZoneX: Number.isFinite(entry?.targetZoneX) ? wrapWorldX(entry.targetZoneX) : 0,
+          targetZoneY: Number.isFinite(entry?.targetZoneY) ? wrapWorldY(entry.targetZoneY) : 0,
+          targetZoneRadius: clamp(Math.round(Number(entry?.targetZoneRadius) || 0), 0, 65535),
+        }))
+      : [];
   }
 
   return wire;
@@ -5020,6 +7926,9 @@ const transportFeature = createTransportFeature({
   makeId,
   restoreProgressForPlayer,
   attachCrimeReputationToPlayer,
+  attachQuestStateToPlayer,
+  releaseQuestTargetReservationsForProfile,
+  createQuestBootstrapForPlayer,
   progressSignatureFromPlayer,
   createProgressTicketForPlayer,
   protocolIdForEntity,
@@ -5159,6 +8068,7 @@ setInterval(() => {
   tickSpatialContext = buildTickSpatialContext();
   serverFeatures.players.stepPlayers(DT);
   serverFeatures.vehicles.stepCars(DT);
+  stepQuestTargetCarTracking();
   tickSpatialContext = buildTickSpatialContext();
   serverFeatures.vehicles.stepCarHitsByCars(tickSpatialContext);
   serverFeatures.cops.stepCops(DT);
@@ -5209,4 +8119,8 @@ server.listen(PORT, () => {
   console.log(
     `flags AOI=${OPT_AOI ? 1 : 0} ZONE_LOD=${OPT_ZONE_LOD ? 1 : 0} CLIENT_VFX=${OPT_CLIENT_VFX ? 1 : 0}`
   );
+  if (ADMIN_USING_LOCAL_DEFAULTS) {
+    // eslint-disable-next-line no-console
+    console.log('[admin] local defaults active (ADMIN_USER=admin, ADMIN_PASS=change_me)');
+  }
 });

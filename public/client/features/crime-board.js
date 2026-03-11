@@ -10,6 +10,32 @@ export function createCrimeBoardFeature(deps) {
     stepCrime,
   } = deps;
 
+  function getBoardMode() {
+    return state.mode === 'reputation' ? 'reputation' : 'crime';
+  }
+
+  function boardConfig() {
+    const mode = getBoardMode();
+    if (mode === 'reputation') {
+      return {
+        mode,
+        endpoint: '/api/reputation-leaderboard',
+        loading: 'Loading reputation board...',
+        empty: 'No reputation records found.',
+        failed: 'Failed to load reputation board.',
+        metricLabel: 'Rep',
+      };
+    }
+    return {
+      mode,
+      endpoint: '/api/crime-leaderboard',
+      loading: 'Loading crime board...',
+      empty: 'No crime records found.',
+      failed: 'Failed to load crime board.',
+      metricLabel: 'Crime',
+    };
+  }
+
   function setCrimeBoardStatus(text = '') {
     if (elements.status) {
       elements.status.textContent = text;
@@ -55,6 +81,18 @@ export function createCrimeBoardFeature(deps) {
     }
   }
 
+  function refreshTabButtons() {
+    const mode = getBoardMode();
+    if (elements.crimeTabBtn) {
+      elements.crimeTabBtn.classList.toggle('secondary', mode !== 'crime');
+      elements.crimeTabBtn.disabled = state.loading && mode === 'crime';
+    }
+    if (elements.reputationTabBtn) {
+      elements.reputationTabBtn.classList.toggle('secondary', mode !== 'reputation');
+      elements.reputationTabBtn.disabled = state.loading && mode === 'reputation';
+    }
+  }
+
   function refreshCrimeBoardControls() {
     if (elements.page) {
       elements.page.textContent = `Page ${state.currentPage} / ${state.totalPages}`;
@@ -71,15 +109,17 @@ export function createCrimeBoardFeature(deps) {
     if (elements.nextBtn) {
       elements.nextBtn.disabled = state.loading || state.currentPage >= state.totalPages;
     }
+    refreshTabButtons();
   }
 
   function renderCrimeBoardRows() {
     if (!elements.list) return;
+    const config = boardConfig();
     elements.list.innerHTML = '';
     if (state.entries.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'crime-board-row';
-      empty.textContent = state.loading ? 'Loading...' : 'No crime records found.';
+      empty.textContent = state.loading ? 'Loading...' : config.empty;
       elements.list.appendChild(empty);
       refreshCrimeBoardControls();
       return;
@@ -117,7 +157,8 @@ export function createCrimeBoardFeature(deps) {
       score.className = 'crime-board-score';
       const value = document.createElement('div');
       value.className = 'crime-board-score-value';
-      value.textContent = `Crime ${Math.max(0, Number(entry.crimeRating) || 0)}`;
+      const metric = Math.max(0, Number(entry.score ?? entry.crimeRating ?? entry.reputation) || 0);
+      value.textContent = `${config.metricLabel} ${metric}`;
       score.appendChild(value);
 
       const colorLine = document.createElement('div');
@@ -140,11 +181,12 @@ export function createCrimeBoardFeature(deps) {
   }
 
   async function fetchCrimeBoardPage(page, silent = false) {
+    const config = boardConfig();
     const nextPage = Math.max(1, Math.round(Number(page) || 1));
     const requestToken = ++state.fetchToken;
     state.loading = true;
     if (!silent) {
-      setCrimeBoardStatus('Loading crime board...');
+      setCrimeBoardStatus(config.loading);
     }
     refreshCrimeBoardControls();
     if (!silent) {
@@ -159,7 +201,7 @@ export function createCrimeBoardFeature(deps) {
       if (state.searchQuery) {
         params.set('q', state.searchQuery);
       }
-      const response = await fetch(`/api/crime-leaderboard?${params.toString()}`, {
+      const response = await fetch(`${config.endpoint}?${params.toString()}`, {
         cache: 'no-store',
       });
       if (!response.ok) {
@@ -186,9 +228,9 @@ export function createCrimeBoardFeature(deps) {
             : `Tracked profiles: ${state.total}`
         );
       } else if (state.searchQuery) {
-        setCrimeBoardStatus(`No crime records found for "${state.searchQuery}".`);
+        setCrimeBoardStatus(`No records found for "${state.searchQuery}".`);
       } else {
-        setCrimeBoardStatus('No crime records yet.');
+        setCrimeBoardStatus(`No ${config.mode} records yet.`);
       }
     } catch {
       if (requestToken !== state.fetchToken) return;
@@ -197,7 +239,7 @@ export function createCrimeBoardFeature(deps) {
       state.total = 0;
       state.entries = [];
       renderCrimeBoardRows();
-      setCrimeBoardStatus('Failed to load crime board.');
+      setCrimeBoardStatus(config.failed);
     } finally {
       if (requestToken === state.fetchToken) {
         state.loading = false;
@@ -244,6 +286,19 @@ export function createCrimeBoardFeature(deps) {
     }, refreshMs);
   }
 
+  function setLeaderboardMode(mode) {
+    const next = mode === 'reputation' ? 'reputation' : 'crime';
+    if (state.mode !== next) {
+      state.mode = next;
+      state.currentPage = 1;
+      state.totalPages = 1;
+      state.total = 0;
+      state.entries = [];
+    }
+    refreshCrimeBoardControls();
+    fetchCrimeBoardPage(1);
+  }
+
   function openCrimeBoardPanel() {
     state.currentPage = 1;
     state.totalPages = 1;
@@ -252,7 +307,7 @@ export function createCrimeBoardFeature(deps) {
     if (elements.searchInput) {
       elements.searchInput.value = state.searchQuery;
     }
-    setCrimeBoardStatus('Loading crime board...');
+    setCrimeBoardStatus(boardConfig().loading);
     renderCrimeBoardRows();
     fetchCrimeBoardPage(1);
     startCrimeBoardRefresh();
@@ -273,8 +328,8 @@ export function createCrimeBoardFeature(deps) {
     clearCrimeBoardSearch,
     stopCrimeBoardRefresh,
     startCrimeBoardRefresh,
+    setLeaderboardMode,
     openCrimeBoardPanel,
     closeCrimeBoardPanel,
   };
 }
-

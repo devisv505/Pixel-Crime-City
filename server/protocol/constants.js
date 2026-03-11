@@ -14,12 +14,18 @@ const ITEM_TO_CODE = Object.freeze({
   shotgun: 1,
   machinegun: 2,
   bazooka: 3,
+  garage_sell: 4,
+  garage_repaint_random: 5,
+  garage_repaint_selected: 6,
 });
 
 const CODE_TO_ITEM = Object.freeze({
   1: 'shotgun',
   2: 'machinegun',
   3: 'bazooka',
+  4: 'garage_sell',
+  5: 'garage_repaint_random',
+  6: 'garage_repaint_selected',
 });
 
 const WEAPON_TO_CODE = Object.freeze({
@@ -75,9 +81,48 @@ const EVENT_TO_CODE = Object.freeze({
   copHospital: 22,
   npcPickup: 23,
   copPickup: 24,
+  questSync: 25,
 });
 
 const SNAPSHOT_SECTION_ORDER = Object.freeze(['players', 'cars', 'npcs', 'cops', 'drops', 'blood']);
+
+const QUEST_ACTION_TO_CODE = Object.freeze({
+  kill_npc: 1,
+  kill_cop: 2,
+  steal_car_any: 3,
+  steal_car_cop: 4,
+  steal_car_cop_sell_garage: 5,
+  steal_car_ambulance: 6,
+  kill_target_npc: 7,
+  steal_target_car: 8,
+  steal_car_ambulance_sell_garage: 9,
+  steal_car_civilian_sell_garage: 10,
+});
+
+const CODE_TO_QUEST_ACTION = Object.freeze({
+  1: 'kill_npc',
+  2: 'kill_cop',
+  3: 'steal_car_any',
+  4: 'steal_car_cop',
+  5: 'steal_car_cop_sell_garage',
+  6: 'steal_car_ambulance',
+  7: 'kill_target_npc',
+  8: 'steal_target_car',
+  9: 'steal_car_ambulance_sell_garage',
+  10: 'steal_car_civilian_sell_garage',
+});
+
+const QUEST_STATUS_TO_CODE = Object.freeze({
+  locked: 0,
+  active: 1,
+  completed: 2,
+});
+
+const CODE_TO_QUEST_STATUS = Object.freeze({
+  0: 'locked',
+  1: 'active',
+  2: 'completed',
+});
 
 module.exports = {
   OPCODES,
@@ -89,4 +134,8 @@ module.exports = {
   COP_MODE_TO_CODE,
   EVENT_TO_CODE,
   SNAPSHOT_SECTION_ORDER,
+  QUEST_ACTION_TO_CODE,
+  CODE_TO_QUEST_ACTION,
+  QUEST_STATUS_TO_CODE,
+  CODE_TO_QUEST_STATUS,
 };

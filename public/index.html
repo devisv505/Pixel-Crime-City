@@ -52,12 +52,16 @@
           <div id="profileList" class="profile-list"></div>
           <div class="buttons-row">
             <button id="toColorBtn">Continue</button>
-            <button id="openCrimeBoardBtn" class="secondary" type="button">Crime Board</button>
+            <button id="openCrimeBoardBtn" class="secondary" type="button">Leaderboards</button>
           </div>
         </section>
 
         <section id="stepCrime" class="step" aria-label="Crime board">
-          <h2>Crime Board</h2>
+          <h2>Leaderboards</h2>
+          <div class="leaderboard-tabs">
+            <button id="leaderboardCrimeTabBtn" type="button">Crime</button>
+            <button id="leaderboardReputationTabBtn" class="secondary" type="button">Reputation</button>
+          </div>
           <div class="crime-board-search">
             <input
               id="crimeBoardSearchInput"
@@ -115,7 +119,14 @@
       <div class="hud-row hud-world-stats-row">
         <span id="hudWorldStats"></span>
       </div>
-      <div class="hud-help">WASD move | Mouse aim | Click shoot | 1/2/3/4 switch weapon | E enter/exit/shop | Space horn | M map | O settings</div>
+      <div class="hud-help">WASD move | Mouse aim | Click shoot | 1/2/3/4 switch weapon | E enter/exit/shop | Space horn | Q quests | M map | O settings</div>
+    </div>
+
+    <div id="questPanel" class="quest-panel hidden" aria-live="polite">
+      <div id="questPanelTitle" class="quest-panel-title">Quests</div>
+      <div id="questPanelMeta" class="quest-panel-meta"></div>
+      <div id="questPanelList" class="quest-panel-list"></div>
+      <div class="quest-panel-help">Press Q to hide/show</div>
     </div>
 
     <div id="chatBar" class="chat-bar hidden" aria-live="polite">

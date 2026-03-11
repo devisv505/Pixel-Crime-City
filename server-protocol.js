@@ -8,6 +8,10 @@
   COP_MODE_TO_CODE,
   EVENT_TO_CODE,
   SNAPSHOT_SECTION_ORDER,
+  QUEST_ACTION_TO_CODE,
+  CODE_TO_QUEST_ACTION,
+  QUEST_STATUS_TO_CODE,
+  CODE_TO_QUEST_STATUS,
 } = require('./server/protocol/constants');
 const {
   Writer,
@@ -44,6 +48,8 @@ const encodeJoinedFrame = createEncodeJoinedFrame({
   OPCODES,
   clamp,
   packCoord,
+  QUEST_ACTION_TO_CODE,
+  QUEST_STATUS_TO_CODE,
 });
 
 const encodePresenceFrame = createEncodePresenceFrame({
@@ -81,6 +87,10 @@ module.exports = {
   COP_MODE_TO_CODE,
   EVENT_TO_CODE,
   SNAPSHOT_SECTION_ORDER,
+  QUEST_ACTION_TO_CODE,
+  CODE_TO_QUEST_ACTION,
+  QUEST_STATUS_TO_CODE,
+  CODE_TO_QUEST_STATUS,
   packCoord,
   packAngle,
   packSpeed,

@@ -33,6 +33,8 @@ const crimeBoardPrevBtn = document.getElementById('crimeBoardPrevBtn');
 const crimeBoardNextBtn = document.getElementById('crimeBoardNextBtn');
 const crimeBoardPage = document.getElementById('crimeBoardPage');
 const crimeBoardBackBtn = document.getElementById('crimeBoardBackBtn');
+const leaderboardCrimeTabBtn = document.getElementById('leaderboardCrimeTabBtn');
+const leaderboardReputationTabBtn = document.getElementById('leaderboardReputationTabBtn');
 const backBtn = document.getElementById('backBtn');
 const joinBtn = document.getElementById('joinBtn');
 const colorGrid = document.getElementById('colorGrid');
@@ -71,6 +73,11 @@ const mobileBtnE = document.getElementById('mobileBtnE');
 const mobileBtnO = document.getElementById('mobileBtnO');
 const mobileBtnMap = document.getElementById('mobileBtnMap');
 const mobileBtnFullscreen = document.getElementById('mobileBtnFullscreen');
+const questPanel = document.getElementById('questPanel');
+const questPanelTitle = document.getElementById('questPanelTitle');
+const questPanelMeta = document.getElementById('questPanelMeta');
+const questPanelList = document.getElementById('questPanelList');
+const questPanelHelp = questPanel ? questPanel.querySelector('.quest-panel-help') : null;
 
 const PROFILE_STORAGE_KEY = 'pcc_profiles_v1';
 const PROFILE_LAST_NAME_KEY = 'pcc_profiles_last_name_v1';
@@ -130,12 +137,15 @@ const WORLD = {
   laneA: 144,
   laneB: 176,
   worldRev: 0,
+  interiors: [],
   shops: [],
+  garages: [],
   hospital: null,
   hospitals: [],
 };
 const { wrapDelta, wrapCoord, wrapWorldX, wrapWorldY, wrappedLerp } = createWorldMath(WORLD);
 let hospitalPlotKeys = new Set();
+let garagePlotKeys = new Set();
 
 const camera = { x: WORLD.width * 0.5, y: WORLD.height * 0.5 };
 let viewScale = 3;
@@ -183,6 +193,12 @@ let crimeBoardLoading = false;
 let crimeBoardRefreshTimer = null;
 let crimeBoardFetchToken = 0;
 let crimeBoardSearchQuery = '';
+let crimeBoardMode = 'crime';
+let questReputation = 0;
+let questGunShopUnlocked = false;
+let questEntries = [];
+let questPanelVisible = true;
+let interiorUiSuppressed = false;
 
 const hudFeature = createHudFeature({
   setLocalPlayerCache: (cache) => {
@@ -302,15 +318,18 @@ const ARMORY_BUILDING_TEXTURE_SOURCES = [
   '/assets/buildings/armory_04.png',
 ];
 const HOSPITAL_BUILDING_TEXTURE_SOURCE = '/assets/buildings/hospital_01.png';
+const GARAGE_BUILDING_TEXTURE_SOURCE = '/assets/buildings/garage_01.png';
 const BUILDING_TEXTURE_SOURCES = [
   ...BASE_BUILDING_TEXTURE_SOURCES,
   ...ARMORY_BUILDING_TEXTURE_SOURCES,
   HOSPITAL_BUILDING_TEXTURE_SOURCE,
+  GARAGE_BUILDING_TEXTURE_SOURCE,
 ];
 const BLOCK_TEXTURE_SOURCES = ['/assets/buildings/block_01.png'];
 const BASE_BUILDING_VARIANT_COUNT = BASE_BUILDING_TEXTURE_SOURCES.length;
 const ARMORY_VARIANT_START = BASE_BUILDING_VARIANT_COUNT;
 const HOSPITAL_VARIANT_INDEX = ARMORY_VARIANT_START + ARMORY_BUILDING_TEXTURE_SOURCES.length;
+const GARAGE_VARIANT_INDEX = HOSPITAL_VARIANT_INDEX + 1;
 const buildingTextures = BUILDING_TEXTURE_SOURCES.map((src) => ({
   src,
   state: 'idle',
@@ -1409,11 +1428,16 @@ function isSolidForPed(x, y) {
   const blockX = Math.floor(worldX / WORLD.blockPx);
   const blockY = Math.floor(worldY / WORLD.blockPx);
   const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  let bottomLimit = rect.y1;
+  if (isGaragePlot(blockX, blockY, plotIndex)) {
+    // Mirror server pedestrian opening at garage entrance.
+    bottomLimit = Math.min(bottomLimit, rect.y1 - 34);
+  }
   return (
     localX >= rect.x0 &&
     localX < rect.x1 &&
     localY >= rect.y0 + BUILDING_COLLIDER_TOP_OFFSET_PX &&
-    localY < rect.y1
+    localY < bottomLimit
   );
 }
 
@@ -1435,11 +1459,16 @@ function isSolidForCar(x, y) {
   const xInset = CAR_BUILDING_COLLISION_INSET_X_PX;
   const yInset = CAR_BUILDING_COLLISION_INSET_Y_PX;
   const topInset = yInset + BUILDING_COLLIDER_TOP_OFFSET_PX;
+  let bottomLimit = rect.y1 - yInset;
+  if (isGaragePlot(blockX, blockY, plotIndex)) {
+    // Mirror server garage collider opening so client prediction matches authority.
+    bottomLimit = Math.min(bottomLimit, rect.y1 - 34);
+  }
   return (
     localX >= rect.x0 + xInset &&
     localX < rect.x1 - xInset &&
     localY >= rect.y0 + topInset &&
-    localY < rect.y1 - yInset
+    localY < bottomLimit
   );
 }
 
@@ -1586,6 +1615,27 @@ function isHospitalPlot(blockX, blockY, plotIndex) {
   return hospitalPlotKeys.has(specialPlotKey(blockX, blockY, plotIndex));
 }
 
+function rebuildGaragePlotKeys(world) {
+  const next = new Set();
+  const garages = Array.isArray(world?.garages) ? world.garages : [];
+  for (const garage of garages) {
+    if (!Number.isFinite(garage.x) || !Number.isFinite(garage.y)) continue;
+    const blockX = Math.floor(garage.x / WORLD.blockPx);
+    const blockY = Math.floor(garage.y / WORLD.blockPx);
+    const localX = mod(garage.x, WORLD.blockPx);
+    const localY = mod(garage.y, WORLD.blockPx);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex === null) continue;
+    next.add(specialPlotKey(blockX, blockY, plotIndex));
+  }
+  garagePlotKeys = next;
+}
+
+function isGaragePlot(blockX, blockY, plotIndex) {
+  if (plotIndex === null) return false;
+  return garagePlotKeys.has(specialPlotKey(blockX, blockY, plotIndex));
+}
+
 function buildSpecialPlotVariantMap(world) {
   const result = new Map();
   if (!world) return result;
@@ -1602,6 +1652,18 @@ function buildSpecialPlotVariantMap(world) {
     if (plotIndex === null) continue;
     const variant = ARMORY_VARIANT_START + (i % ARMORY_BUILDING_TEXTURE_SOURCES.length);
     result.set(`${blockX},${blockY},${plotIndex}`, variant);
+  }
+
+  const garages = world.garages || [];
+  for (const garage of garages) {
+    if (!garage) continue;
+    const blockX = Math.floor(garage.x / WORLD.blockPx);
+    const blockY = Math.floor(garage.y / WORLD.blockPx);
+    const localX = mod(garage.x, WORLD.blockPx);
+    const localY = mod(garage.y, WORLD.blockPx);
+    const plotIndex = plotIndexForLocalCoord(localX, localY);
+    if (plotIndex === null) continue;
+    result.set(`${blockX},${blockY},${plotIndex}`, GARAGE_VARIANT_INDEX);
   }
 
   const hospitals = hospitalsFromWorld(world);
@@ -1985,7 +2047,13 @@ function applyWorldFromServer(payload) {
     }
   }
   if (Array.isArray(payload.shops)) {
-    WORLD.shops = payload.shops.map((shop) => ({ ...shop }));
+    WORLD.interiors = payload.shops.map((interior) => ({ ...interior }));
+    WORLD.shops = WORLD.interiors.filter((interior) => String(interior?.id || '').startsWith('shop_'));
+    WORLD.garages = WORLD.interiors.filter((interior) => String(interior?.id || '').startsWith('garage_'));
+  } else {
+    WORLD.interiors = [];
+    WORLD.shops = [];
+    WORLD.garages = [];
   }
   if (Array.isArray(payload.hospitals)) {
     WORLD.hospitals = payload.hospitals
@@ -2002,6 +2070,7 @@ function applyWorldFromServer(payload) {
     WORLD.hospital = null;
   }
   rebuildHospitalPlotKeys(WORLD);
+  rebuildGaragePlotKeys(WORLD);
   if (typeof payload.worldRev === 'number' && Number.isFinite(payload.worldRev)) {
     WORLD.worldRev = payload.worldRev;
     worldRev = payload.worldRev;
@@ -2253,6 +2322,12 @@ function resetSessionState() {
   statusNoticeUntil = 0;
   latestState = null;
   mapVisible = false;
+  questReputation = 0;
+  questGunShopUnlocked = false;
+  questEntries = [];
+  questPanelVisible = true;
+  interiorUiSuppressed = false;
+  renderQuestPanel();
   refreshMapToggleUi();
   if (chatBar) {
     chatBar.classList.add('hidden');
@@ -2266,8 +2341,8 @@ function resetSessionState() {
 
 function shopIdFromIndex(index) {
   if (!Number.isInteger(index) || index < 0) return null;
-  const shop = WORLD.shops[index];
-  return shop ? shop.id : null;
+  const interior = WORLD.interiors[index];
+  return interior ? interior.id : null;
 }
 
 function hydratePlayerRecord(record) {
@@ -2713,12 +2788,15 @@ async function connectAndJoin() {
       } else {
         localStorage.setItem(PROFILE_LAST_NAME_KEY, selectedName);
       }
+      questPanelVisible = true;
+      applyQuestBootstrap(data.quest);
       closeCrimeBoardPanel();
       joinOverlay.classList.add('hidden');
       hud.classList.remove('hidden');
       if (chatBar) {
         chatBar.classList.remove('hidden');
       }
+      renderQuestPanel();
       refreshMobileUiState();
       setJoinError('');
       joinBtn.disabled = false;
@@ -2919,8 +2997,25 @@ function processEvents(events) {
         ttl: 0.9,
       });
     } else if (ev.type === 'purchase' && ev.playerId === playerId) {
-      statusNotice = `Bought ${ev.item}`;
-      statusNoticeUntil = performance.now() + 2200;
+      const now = performance.now();
+      if (statusNotice && now < statusNoticeUntil) {
+        // Keep explicit server notices (e.g. garage action results) as the primary text.
+      } else {
+        const item = String(ev.item || '').toLowerCase();
+        const amount = Math.max(0, Math.round(Number(ev.amount) || 0));
+        if (item === 'garage_sell') {
+          statusNotice = `Sold car +$${amount || 50}`;
+        } else if (item === 'garage_repaint_selected' || (item === 'garage_repaint_random' && amount >= 100)) {
+          statusNotice = `Car repainted (selected) -$${amount || 100}`;
+        } else if (item === 'garage_repaint_random') {
+          statusNotice = `Car repainted (random) -$${amount || 10}`;
+        } else if (item) {
+          statusNotice = `Bought ${item}`;
+        } else {
+          statusNotice = 'Purchase complete';
+        }
+        statusNoticeUntil = now + 2200;
+      }
     } else if (ev.type === 'pvpKill') {
       if (ev.killerId === playerId) {
         statusNotice = 'You eliminated a player';
@@ -2932,6 +3027,8 @@ function processEvents(events) {
       if (statusNotice) {
         statusNoticeUntil = performance.now() + 2200;
       }
+    } else if (ev.type === 'questSync') {
+      applyQuestSyncEvent(ev);
     }
   }
 
@@ -3283,11 +3380,15 @@ function drawBuildingsOverlay(state, worldLeft, worldTop) {
 }
 
 function findShopByIdInWorld(world, id) {
-  const shops = world?.shops || [];
-  for (const shop of shops) {
-    if (shop.id === id) return shop;
+  const interiors = world?.interiors || world?.shops || [];
+  for (const interior of interiors) {
+    if (interior.id === id) return interior;
   }
   return null;
+}
+
+function isGarageInteriorId(id) {
+  return typeof id === 'string' && id.startsWith('garage_');
 }
 
 function nearbyShopForPlayer(state, player, maxDistance = 34) {
@@ -3299,6 +3400,24 @@ function nearbyShopForPlayer(state, player, maxDistance = 34) {
     if (dx * dx + dy * dy <= maxSq) {
       return shop;
     }
+  }
+  return null;
+}
+
+function nearbyGarageForPlayer(state, player, maxDistance = 88, requireBottomApproach = false) {
+  const garages = state.world?.garages || [];
+  const maxSq = maxDistance * maxDistance;
+  for (const garage of garages) {
+    const entryX = garage.x;
+    const entryY = garage.y + 58;
+    const dx = player.x - entryX;
+    const dy = player.y - entryY;
+    if (dx * dx + dy * dy > maxSq) continue;
+    if (requireBottomApproach) {
+      if (dy < -24) continue;
+      if (Math.abs(dx) > 84) continue;
+    }
+    return garage;
   }
   return null;
 }
@@ -3369,10 +3488,19 @@ function specialBuildingSignAnchor(worldX, worldY) {
 
 function drawSpecialBuildingSigns(state, worldLeft, worldTop) {
   const shops = state.world?.shops || [];
+  const gunShopLocked = Array.isArray(questEntries) && questEntries.length > 0 && !questGunShopUnlocked;
+  const gunShopLabel = gunShopLocked ? '🔒 GUNS' : 'GUNS';
   for (let i = 0; i < shops.length; i += 1) {
     const shop = shops[i];
     const anchor = specialBuildingSignAnchor(shop.x, shop.y);
-    drawFloatingLabel(anchor.x, anchor.y, worldLeft, worldTop, 'GUNS', '#ffd477', -12, i * 0.9);
+    drawFloatingLabel(anchor.x, anchor.y, worldLeft, worldTop, gunShopLabel, '#ffd477', -12, i * 0.9);
+  }
+
+  const garages = state.world?.garages || [];
+  for (let i = 0; i < garages.length; i += 1) {
+    const garage = garages[i];
+    const anchor = specialBuildingSignAnchor(garage.x, garage.y);
+    drawFloatingLabel(anchor.x, anchor.y, worldLeft, worldTop, 'GARAGE', '#ffb86b', -12, 2.2 + i * 0.8);
   }
 
   const hospitals = hospitalsFromWorld(state.world);
@@ -3502,6 +3630,51 @@ function drawShopInterior(state) {
   ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 154);
   ctx.fillStyle = '#e8e8e8';
   ctx.fillText('Press E to leave shop', panelX + 18, panelY + 172);
+}
+
+function drawGarageInterior(state) {
+  const local = state.localPlayer;
+  const garage = findShopByIdInWorld(state.world, local.insideShopId);
+  const hasCar = !!local.inCarId;
+
+  ctx.fillStyle = '#111317';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < canvas.height; y += 16) {
+    for (let x = 0; x < canvas.width; x += 16) {
+      ctx.fillStyle = (x + y) % 32 === 0 ? '#1d2229' : '#181c22';
+      ctx.fillRect(x, y, 16, 16);
+    }
+  }
+
+  const panelX = Math.max(16, Math.floor(canvas.width * 0.16));
+  const panelY = Math.max(14, Math.floor(canvas.height * 0.14));
+  const panelW = Math.floor(canvas.width * 0.68);
+  const panelH = Math.floor(canvas.height * 0.72);
+
+  ctx.fillStyle = '#0d0f13';
+  ctx.fillRect(panelX, panelY, panelW, panelH);
+  ctx.fillStyle = '#2b3139';
+  ctx.fillRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8);
+
+  ctx.fillStyle = '#f4c889';
+  ctx.font = '10px "Lucida Console", Monaco, monospace';
+  ctx.fillText(garage?.name || 'Garage', panelX + 18, panelY + 24);
+  ctx.font = '8px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = '#d0d8e2';
+  ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
+
+  ctx.fillStyle = hasCar ? '#9dff99' : '#ff8d8d';
+  ctx.fillText(hasCar ? 'Vehicle detected: ready' : 'No vehicle inside', panelX + 18, panelY + 62);
+
+  ctx.fillStyle = '#ffd6a1';
+  ctx.fillText('1) Sell vehicle +$50', panelX + 18, panelY + 84);
+  ctx.fillText('2) Repaint random -$10', panelX + 18, panelY + 102);
+  ctx.fillText('3) Repaint selected -$100', panelX + 18, panelY + 120);
+  ctx.fillStyle = '#c3d3e1';
+  ctx.fillText('Repaint removes active police pursuit', panelX + 18, panelY + 140);
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillText('Press E to leave garage', panelX + 18, panelY + 160);
 }
 
 const CAR_SPRITE_TEMPLATE_FALLBACK = [
@@ -3832,6 +4005,11 @@ function drawCar(car, worldLeft, worldTop) {
   const halfH = Math.floor(sprite.height * 0.5);
 
   ctx.drawImage(sprite, -halfW, -halfH);
+  if (car.questTarget) {
+    ctx.strokeStyle = 'rgba(255, 220, 122, 0.95)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-halfW - 2 + 0.5, -halfH - 2 + 0.5, sprite.width + 4, sprite.height + 4);
+  }
 
   if (car.type === 'cop') {
     const sirenActive = !!car.sirenOn;
@@ -3951,6 +4129,12 @@ const crimeBoardState = {
   set searchQuery(value) {
     crimeBoardSearchQuery = value;
   },
+  get mode() {
+    return crimeBoardMode;
+  },
+  set mode(value) {
+    crimeBoardMode = value === 'reputation' ? 'reputation' : 'crime';
+  },
 };
 
 const crimeBoardFeature = createCrimeBoardFeature({
@@ -3964,6 +4148,8 @@ const crimeBoardFeature = createCrimeBoardFeature({
     prevBtn: crimeBoardPrevBtn,
     nextBtn: crimeBoardNextBtn,
     page: crimeBoardPage,
+    crimeTabBtn: leaderboardCrimeTabBtn,
+    reputationTabBtn: leaderboardReputationTabBtn,
   },
   sprites: SPRITES,
   normalizeHexColor,
@@ -3984,9 +4170,220 @@ const {
   clearCrimeBoardSearch,
   stopCrimeBoardRefresh,
   startCrimeBoardRefresh,
+  setLeaderboardMode,
   openCrimeBoardPanel,
   closeCrimeBoardPanel,
 } = crimeBoardFeature;
+
+function normalizeQuestStatus(status) {
+  if (status === 'completed') return 'completed';
+  if (status === 'active') return 'active';
+  return 'locked';
+}
+
+function isTargetAreaQuestAction(actionType) {
+  return actionType === 'kill_target_npc' || actionType === 'steal_target_car';
+}
+
+function isPlayerInsideInterior(state) {
+  return !!(state && state.localPlayer && state.localPlayer.insideShopId);
+}
+
+function refreshGameplayOverlayVisibility(state) {
+  const insideInterior = isPlayerInsideInterior(state);
+  if (hud) {
+    hud.classList.toggle('hidden', !joined || insideInterior);
+  }
+  if (interiorUiSuppressed !== insideInterior) {
+    interiorUiSuppressed = insideInterior;
+    renderQuestPanel();
+  }
+}
+
+function normalizeQuestEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = Number(entry.id) >>> 0;
+  if (!id) return null;
+  const targetCount = Math.max(1, Math.round(Number(entry.targetCount) || 1));
+  const progress = Math.max(0, Math.min(targetCount, Math.round(Number(entry.progress) || 0)));
+  return {
+    id,
+    actionType: String(entry.actionType || ''),
+    title: String(entry.title || `Quest #${id}`).slice(0, 80),
+    description: String(entry.description || '').slice(0, 400),
+    targetCount,
+    progress,
+    status: normalizeQuestStatus(entry.status),
+    rewardMoney: Math.max(0, Math.round(Number(entry.rewardMoney) || 0)),
+    rewardReputation: Math.max(0, Math.round(Number(entry.rewardReputation) || 0)),
+    rewardUnlockGunShop: !!entry.rewardUnlockGunShop,
+    resetOnDeath: !!entry.resetOnDeath,
+    targetZoneX: Number.isFinite(entry.targetZoneX) ? Number(entry.targetZoneX) : null,
+    targetZoneY: Number.isFinite(entry.targetZoneY) ? Number(entry.targetZoneY) : null,
+    targetZoneRadius: Number.isFinite(entry.targetZoneRadius) ? Math.max(0, Number(entry.targetZoneRadius)) : null,
+  };
+}
+
+function renderQuestPanel() {
+  if (!questPanel) return;
+  const show = joined && questPanelVisible && !interiorUiSuppressed;
+  questPanel.classList.toggle('hidden', !show);
+  if (!show) return;
+  const entries = Array.isArray(questEntries) ? questEntries : [];
+  const totalQuests = entries.length;
+  const doneQuests = entries.filter((entry) => entry.status === 'completed').length;
+
+  if (questPanelTitle) {
+    questPanelTitle.textContent = 'Quests';
+  }
+  if (questPanelMeta) {
+    questPanelMeta.textContent = `Reputation: ${questReputation} | Gun Shop: ${
+      questGunShopUnlocked ? 'Unlocked' : 'Locked'
+    }`;
+  }
+  if (questPanelHelp) {
+    questPanelHelp.textContent = `Press Q to hide/show | Total: ${totalQuests} | Done: ${doneQuests}`;
+  }
+  if (!questPanelList) return;
+
+  questPanelList.innerHTML = '';
+  if (entries.length === 0) {
+    const row = document.createElement('div');
+    row.className = 'quest-row locked';
+    row.textContent = 'No quests configured.';
+    questPanelList.appendChild(row);
+    return;
+  }
+  if (totalQuests > 0 && doneQuests >= totalQuests) {
+    const row = document.createElement('div');
+    row.className = 'quest-row completed';
+    row.textContent = 'All quests completed.';
+    questPanelList.appendChild(row);
+    return;
+  }
+
+  let visibleEntries = entries.slice(0, 2);
+  const activeIndex = entries.findIndex((entry) => entry.status === 'active');
+  if (activeIndex >= 0) {
+    visibleEntries = [entries[activeIndex]];
+    if (activeIndex + 1 < entries.length) {
+      visibleEntries.push(entries[activeIndex + 1]);
+    }
+  }
+
+  for (const entry of visibleEntries) {
+    const row = document.createElement('div');
+    row.className = `quest-row ${entry.status}`;
+
+    const head = document.createElement('div');
+    head.className = 'quest-row-head';
+
+    const title = document.createElement('div');
+    title.className = 'quest-row-title';
+    title.textContent = entry.title;
+    head.appendChild(title);
+
+    const status = document.createElement('div');
+    status.className = 'quest-row-status';
+    status.textContent = entry.status;
+    head.appendChild(status);
+
+    row.appendChild(head);
+
+    if (entry.description) {
+      const desc = document.createElement('div');
+      desc.className = 'quest-row-desc';
+      desc.textContent = entry.description;
+      row.appendChild(desc);
+    }
+
+    const progress = document.createElement('div');
+    progress.className = 'quest-row-progress';
+    progress.textContent = `${Math.min(entry.progress, entry.targetCount)} / ${entry.targetCount}`;
+    row.appendChild(progress);
+
+    const rewards = [];
+    if (entry.rewardMoney > 0) rewards.push(`$${entry.rewardMoney}`);
+    if (entry.rewardReputation > 0) rewards.push(`Rep +${entry.rewardReputation}`);
+    if (entry.rewardUnlockGunShop) rewards.push('Unlock Gun Shop');
+    if (entry.resetOnDeath) rewards.push('Reset on Death');
+    if (rewards.length > 0) {
+      const reward = document.createElement('div');
+      reward.className = 'quest-row-reward';
+      reward.textContent = `Reward: ${rewards.join(' | ')}`;
+      row.appendChild(reward);
+    }
+
+    if (
+      isTargetAreaQuestAction(entry.actionType) &&
+      entry.status === 'active' &&
+      Number.isFinite(entry.targetZoneX) &&
+      Number.isFinite(entry.targetZoneY) &&
+      Number.isFinite(entry.targetZoneRadius) &&
+      entry.targetZoneRadius > 0
+    ) {
+      const hint = document.createElement('div');
+      hint.className = 'quest-row-desc';
+      hint.textContent =
+        entry.actionType === 'steal_target_car'
+          ? 'Target car is inside marked map area (open map with M).'
+          : 'Target is inside marked map area (open map with M).';
+      row.appendChild(hint);
+    }
+
+    questPanelList.appendChild(row);
+  }
+}
+
+function applyQuestBootstrap(quest) {
+  if (!quest || typeof quest !== 'object') {
+    questReputation = 0;
+    questGunShopUnlocked = false;
+    questEntries = [];
+    renderQuestPanel();
+    return;
+  }
+  questReputation = Math.max(0, Math.round(Number(quest.reputation) || 0));
+  questGunShopUnlocked = !!quest.gunShopUnlocked;
+  questEntries = Array.isArray(quest.quests) ? quest.quests.map(normalizeQuestEntry).filter(Boolean) : [];
+  renderQuestPanel();
+}
+
+function applyQuestSyncEvent(event) {
+  if (!event || event.playerId !== playerId) return;
+  questReputation = Math.max(0, Math.round(Number(event.reputation) || 0));
+  questGunShopUnlocked = !!event.gunShopUnlocked;
+  if (Array.isArray(event.quests)) {
+    if (event.quests.length === 0) {
+      questEntries = [];
+      renderQuestPanel();
+      return;
+    }
+    if (!Array.isArray(questEntries) || questEntries.length === 0) {
+      renderQuestPanel();
+      return;
+    }
+    const byId = new Map(event.quests.map((entry) => [Number(entry.id) >>> 0, entry]));
+    questEntries = questEntries
+      .filter((entry) => byId.has(entry.id))
+      .map((entry) => {
+        const update = byId.get(entry.id);
+        const nextProgress = Math.max(
+          0,
+          Math.min(entry.targetCount, Math.round(Number(update.progress) || entry.progress || 0))
+        );
+        return {
+          ...entry,
+          progress: nextProgress,
+          status: normalizeQuestStatus(update.status),
+          targetZoneX: Number.isFinite(update.targetZoneX) ? Number(update.targetZoneX) : null,
+          targetZoneY: Number.isFinite(update.targetZoneY) ? Number(update.targetZoneY) : null,
+          targetZoneRadius: Number.isFinite(update.targetZoneRadius) ? Math.max(0, Number(update.targetZoneRadius)) : null,
+        };
+      });
+  }
+  renderQuestPanel();
+}
 
 function cleanupWalkAnimationCache(now) {
   if (now - lastWalkAnimCleanupAt < 3000) return;
@@ -4251,6 +4648,14 @@ function drawNpc(npc, worldLeft, worldTop) {
     walk.step,
     walk.moving
   );
+  if (npc.questTarget) {
+    ctx.fillStyle = '#3a2400';
+    ctx.fillRect(x - 5, y - 13, 10, 2);
+    ctx.fillStyle = '#ffd86b';
+    ctx.fillRect(x - 3, y - 15, 6, 2);
+    ctx.fillStyle = 'rgba(255, 220, 100, 0.22)';
+    ctx.fillRect(x - 8, y - 10, 16, 16);
+  }
 }
 
 function drawCopIdentityMarker(x, y, alert = false) {
@@ -4517,7 +4922,11 @@ function drawCrosshair(worldLeft, worldTop, state) {
 }
 
 function drawMapOverlay(state) {
-  if (!mapVisible || !state || !state.localPlayer) return;
+  if (!mapVisible || !state || !state.localPlayer || state.localPlayer.insideShopId) return;
+
+  const activeTargetQuest = Array.isArray(questEntries)
+    ? questEntries.find((entry) => entry.status === 'active' && isTargetAreaQuestAction(entry.actionType))
+    : null;
 
   const world = state.world || WORLD;
   const mapSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.4), 130, 220);
@@ -4525,7 +4934,10 @@ function drawMapOverlay(state) {
   const mapH = Math.max(96, Math.round((world.height / Math.max(1, world.width)) * mapSize));
   const panelPadding = 6;
   const headerH = 10;
-  const legendH = 18;
+  const legendTopGap = 10;
+  const legendRowH = 8;
+  const legendRows = activeTargetQuest ? 2 : 1;
+  const legendH = legendTopGap + legendRows * legendRowH + 4;
   const panelW = mapW + panelPadding * 2;
   const panelH = mapH + panelPadding * 2 + headerH + legendH;
   const px = canvas.width - panelW - 8;
@@ -4575,6 +4987,14 @@ function drawMapOverlay(state) {
     ctx.fillRect(x - 2, y - 2, 4, 4);
   }
 
+  const garages = world.garages || [];
+  for (const garage of garages) {
+    const x = Math.round(toMapX(garage.x));
+    const y = Math.round(toMapY(garage.y));
+    ctx.fillStyle = '#ff4f4f';
+    ctx.fillRect(x - 2, y - 2, 4, 4);
+  }
+
   const hospitals = hospitalsFromWorld(world);
   for (const hospital of hospitals) {
     const hx = Math.round(toMapX(hospital.x));
@@ -4585,6 +5005,25 @@ function drawMapOverlay(state) {
     ctx.fillStyle = '#ea6363';
     ctx.fillRect(hx - 1, hy - 2, 2, 4);
     ctx.fillRect(hx - 2, hy - 1, 4, 2);
+  }
+
+  if (
+    activeTargetQuest &&
+    Number.isFinite(activeTargetQuest.targetZoneX) &&
+    Number.isFinite(activeTargetQuest.targetZoneY) &&
+    Number.isFinite(activeTargetQuest.targetZoneRadius) &&
+    activeTargetQuest.targetZoneRadius > 0
+  ) {
+    const zx = toMapX(activeTargetQuest.targetZoneX);
+    const zy = toMapY(activeTargetQuest.targetZoneY);
+    const rx = Math.max(4, activeTargetQuest.targetZoneRadius * sx);
+    const ry = Math.max(4, activeTargetQuest.targetZoneRadius * sy);
+    ctx.fillStyle = 'rgba(255, 208, 92, 0.18)';
+    ctx.beginPath();
+    ctx.ellipse(zx, zy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 220, 122, 0.92)';
+    ctx.stroke();
   }
 
   const markerPlayers = presencePlayers.length > 0 ? presencePlayers : state.players || [];
@@ -4613,7 +5052,7 @@ function drawMapOverlay(state) {
   ctx.strokeStyle = 'rgba(243, 225, 130, 0.92)';
   ctx.strokeRect(viewX, viewY, viewW, viewH);
 
-  const legendY = mapY + mapH + 6;
+  const legendY = mapY + mapH + legendTopGap;
   ctx.font = '5px "Lucida Console", Monaco, monospace';
   ctx.fillStyle = '#58d979';
   ctx.fillRect(px + 8, legendY, 4, 4);
@@ -4626,12 +5065,33 @@ function drawMapOverlay(state) {
   ctx.fillStyle = '#d7edf9';
   ctx.fillText('Hospital', px + 45, legendY + 4);
 
-  ctx.fillStyle = '#7cc8ff';
-  ctx.fillRect(px + 81, legendY, 4, 4);
-  ctx.fillStyle = '#020406';
-  ctx.fillRect(px + 82, legendY + 1, 2, 2);
+  ctx.fillStyle = '#ff4f4f';
+  ctx.fillRect(px + 72, legendY, 4, 4);
   ctx.fillStyle = '#d7edf9';
-  ctx.fillText('Player', px + 87, legendY + 4);
+  ctx.fillText('Garage', px + 79, legendY + 4);
+
+  ctx.fillStyle = '#7cc8ff';
+  ctx.fillRect(px + 110, legendY, 4, 4);
+  ctx.fillStyle = '#020406';
+  ctx.fillRect(px + 111, legendY + 1, 2, 2);
+  ctx.fillStyle = '#d7edf9';
+  ctx.fillText('Player', px + 116, legendY + 4);
+
+  if (activeTargetQuest) {
+    const targetLegendY = legendY + legendRowH;
+    const markerX = px + 10;
+    const markerY = targetLegendY + 2;
+    ctx.strokeStyle = 'rgba(255, 220, 122, 0.92)';
+    ctx.beginPath();
+    ctx.arc(markerX, markerY, 2.5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255, 208, 92, 0.18)';
+    ctx.beginPath();
+    ctx.arc(markerX, markerY, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d7edf9';
+    ctx.fillText('Target', px + 16, targetLegendY + 4);
+  }
 }
 
 function renderState(state, dt) {
@@ -4640,11 +5100,14 @@ function renderState(state, dt) {
   latestState = state;
 
   if (!state || !state.localPlayer) {
+    refreshGameplayOverlayVisibility(null);
     ctx.fillStyle = '#0f1820';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawEffects(camera.x - canvas.width * 0.5, camera.y - canvas.height * 0.5);
     return;
   }
+
+  refreshGameplayOverlayVisibility(state);
 
   const halfW = canvas.width * 0.5;
   const halfH = canvas.height * 0.5;
@@ -4671,8 +5134,11 @@ function renderState(state, dt) {
   const worldTop = camera.y - halfH;
 
   if (state.localPlayer.insideShopId) {
-    drawShopInterior(state);
-    drawMapOverlay(state);
+    if (isGarageInteriorId(state.localPlayer.insideShopId)) {
+      drawGarageInterior(state);
+    } else {
+      drawShopInterior(state);
+    }
     if (statusNotice && performance.now() < statusNoticeUntil) {
       ctx.fillStyle = '#f6e7b9';
       ctx.font = '8px "Lucida Console", Monaco, monospace';
@@ -4731,23 +5197,28 @@ function renderState(state, dt) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
+  let interactionHint = '';
   if (!local.inCarId) {
     const nearbyShop = nearbyShopForPlayer(state, local);
-    if (nearbyShop) {
-      ctx.font = '8px "Lucida Console", Monaco, monospace';
-      const text = 'Press E to enter Gun Shop';
-      const w = ctx.measureText(text).width;
-      const chatVisible = !!(chatBar && !chatBar.classList.contains('hidden'));
-      const bottomOffset = chatVisible ? 32 : 12;
-      const tx = Math.floor(canvas.width * 0.5 - w * 0.5);
-      const ty = canvas.height - bottomOffset;
-      ctx.fillStyle = 'rgba(10, 14, 18, 0.76)';
-      ctx.fillRect(tx - 4, ty - 8, Math.ceil(w) + 8, 11);
-      ctx.fillStyle = '#121820';
-      ctx.fillText(text, tx + 1, ty + 1);
-      ctx.fillStyle = '#fff2ab';
-      ctx.fillText(text, tx, ty);
-    }
+    if (nearbyShop) interactionHint = 'Press E to enter Gun Shop';
+  } else {
+    const nearbyGarage = nearbyGarageForPlayer(state, local, 88, true);
+    if (nearbyGarage) interactionHint = 'Press E to enter Garage';
+  }
+
+  if (interactionHint) {
+    ctx.font = '8px "Lucida Console", Monaco, monospace';
+    const w = ctx.measureText(interactionHint).width;
+    const chatVisible = !!(chatBar && !chatBar.classList.contains('hidden'));
+    const bottomOffset = chatVisible ? 32 : 12;
+    const tx = Math.floor(canvas.width * 0.5 - w * 0.5);
+    const ty = canvas.height - bottomOffset;
+    ctx.fillStyle = 'rgba(10, 14, 18, 0.76)';
+    ctx.fillRect(tx - 4, ty - 8, Math.ceil(w) + 8, 11);
+    ctx.fillStyle = '#121820';
+    ctx.fillText(interactionHint, tx + 1, ty + 1);
+    ctx.fillStyle = '#fff2ab';
+    ctx.fillText(interactionHint, tx, ty);
   }
 
   if (statusNotice && performance.now() < statusNoticeUntil) {
@@ -4842,14 +5313,24 @@ function handleActionKey(event) {
   }
 
   if (local.insideShopId) {
-    if (event.code === 'Digit1') {
-      sendBuy('shotgun');
-    } else if (event.code === 'Digit2') {
-      sendBuy('machinegun');
-    } else if (event.code === 'Digit3') {
-      sendBuy('bazooka');
-    } else if (event.code === 'Digit4') {
-      INPUT.weaponSlot = 1;
+    if (isGarageInteriorId(local.insideShopId)) {
+      if (event.code === 'Digit1') {
+        sendBuy('garage_sell');
+      } else if (event.code === 'Digit2') {
+        sendBuy('garage_repaint_random');
+      } else if (event.code === 'Digit3') {
+        sendBuy('garage_repaint_selected');
+      }
+    } else {
+      if (event.code === 'Digit1') {
+        sendBuy('shotgun');
+      } else if (event.code === 'Digit2') {
+        sendBuy('machinegun');
+      } else if (event.code === 'Digit3') {
+        sendBuy('bazooka');
+      } else if (event.code === 'Digit4') {
+        INPUT.weaponSlot = 1;
+      }
     }
     event.preventDefault();
     return true;
@@ -5052,6 +5533,20 @@ function attachUiEvents() {
     });
   }
 
+  if (leaderboardCrimeTabBtn) {
+    leaderboardCrimeTabBtn.addEventListener('click', () => {
+      if (crimeBoardLoading || crimeBoardMode === 'crime') return;
+      setLeaderboardMode('crime');
+    });
+  }
+
+  if (leaderboardReputationTabBtn) {
+    leaderboardReputationTabBtn.addEventListener('click', () => {
+      if (crimeBoardLoading || crimeBoardMode === 'reputation') return;
+      setLeaderboardMode('reputation');
+    });
+  }
+
   if (crimeBoardSearchBtn) {
     crimeBoardSearchBtn.addEventListener('click', () => {
       applyCrimeBoardSearch();
@@ -5151,6 +5646,15 @@ function attachUiEvents() {
       return;
     }
 
+    if (joined && event.code === 'KeyQ' && !event.repeat) {
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
+      if (isSettingsOpen()) return;
+      questPanelVisible = !questPanelVisible;
+      renderQuestPanel();
+      event.preventDefault();
+      return;
+    }
+
     if (isSettingsOpen() && event.code === 'Escape') {
       closeSettingsPanel();
       event.preventDefault();
@@ -5220,6 +5724,7 @@ export function boot() {
   loadProfilesFromStorage();
   renderCrimeBoardRows();
   setCrimeBoardStatus('');
+  renderQuestPanel();
   setStep('name');
   resizeCanvas();
   attachUiEvents();

@@ -15,12 +15,18 @@ const ITEM_TO_CODE = Object.freeze({
   shotgun: 1,
   machinegun: 2,
   bazooka: 3,
+  garage_sell: 4,
+  garage_repaint_random: 5,
+  garage_repaint_selected: 6,
 });
 
 const CODE_TO_ITEM = Object.freeze({
   1: 'shotgun',
   2: 'machinegun',
   3: 'bazooka',
+  4: 'garage_sell',
+  5: 'garage_repaint_random',
+  6: 'garage_repaint_selected',
 });
 
 const WEAPON_TO_CODE = Object.freeze({
@@ -84,6 +90,26 @@ const CODE_TO_EVENT = Object.freeze({
   22: 'copHospital',
   23: 'npcPickup',
   24: 'copPickup',
+  25: 'questSync',
+});
+
+const CODE_TO_QUEST_ACTION = Object.freeze({
+  1: 'kill_npc',
+  2: 'kill_cop',
+  3: 'steal_car_any',
+  4: 'steal_car_cop',
+  5: 'steal_car_cop_sell_garage',
+  6: 'steal_car_ambulance',
+  7: 'kill_target_npc',
+  8: 'steal_target_car',
+  9: 'steal_car_ambulance_sell_garage',
+  10: 'steal_car_civilian_sell_garage',
+});
+
+const CODE_TO_QUEST_STATUS = Object.freeze({
+  0: 'locked',
+  1: 'active',
+  2: 'completed',
 });
 
 const SECTION_ORDER = Object.freeze(['players', 'cars', 'npcs', 'cops', 'drops', 'blood']);
@@ -347,6 +373,31 @@ function decodeEvent(type, reader) {
       event.victimId = reader.u32() || null;
       event.carId = reader.u32() || null;
       break;
+    case 'questSync': {
+      event.playerId = reader.u32() || null;
+      event.reputation = reader.u32();
+      event.gunShopUnlocked = !!reader.u8();
+      const questCount = reader.u16();
+      event.quests = [];
+      for (let i = 0; i < questCount; i += 1) {
+        const id = reader.u32();
+        const progress = reader.u16();
+        const statusCode = reader.u8();
+        const targetZoneX = unpackCoord(reader.u16());
+        const targetZoneY = unpackCoord(reader.u16());
+        const targetZoneRadius = reader.u16();
+        event.quests.push({
+          id,
+          progress,
+          statusCode,
+          status: CODE_TO_QUEST_STATUS[statusCode] || 'locked',
+          targetZoneX,
+          targetZoneY,
+          targetZoneRadius,
+        });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -427,7 +478,55 @@ function decodeServerFrame(raw) {
     if (!world.hospital && world.hospitals.length > 0) {
       world.hospital = { ...world.hospitals[0] };
     }
-    return { type: 'joined', playerId, tickRate, worldRev, world, progressTicket };
+    let quest = null;
+    if (reader.offset < reader.buffer.byteLength) {
+      const hasQuest = reader.u8() === 1;
+      if (hasQuest) {
+        const reputation = reader.u32();
+        const gunShopUnlocked = !!reader.u8();
+        const questCount = reader.u16();
+        const quests = [];
+        for (let i = 0; i < questCount; i += 1) {
+          const id = reader.u32();
+          const actionCode = reader.u8();
+          const title = reader.string8();
+          const description = reader.string16();
+          const targetCount = reader.u16();
+          const progress = reader.u16();
+          const statusCode = reader.u8();
+          const rewardMoney = reader.u32();
+          const rewardReputation = reader.u32();
+          const rewardUnlockGunShop = !!reader.u8();
+          const resetOnDeath = !!reader.u8();
+          const targetZoneX = unpackCoord(reader.u16());
+          const targetZoneY = unpackCoord(reader.u16());
+          const targetZoneRadius = reader.u16();
+          quests.push({
+            id,
+            actionType: CODE_TO_QUEST_ACTION[actionCode] || '',
+            title,
+            description,
+            targetCount,
+            progress,
+            statusCode,
+            status: CODE_TO_QUEST_STATUS[statusCode] || 'locked',
+            rewardMoney,
+            rewardReputation,
+            rewardUnlockGunShop,
+            resetOnDeath,
+            targetZoneX,
+            targetZoneY,
+            targetZoneRadius,
+          });
+        }
+        quest = {
+          reputation,
+          gunShopUnlocked,
+          quests,
+        };
+      }
+    }
+    return { type: 'joined', playerId, tickRate, worldRev, world, progressTicket, quest };
   }
 
   if (opcode === OPCODES.S2C_PRESENCE) {
@@ -535,6 +634,7 @@ function decodeServerFrame(raw) {
             npcDriver: !!(flagsCar & 1),
             sirenOn: !!(flagsCar & 2),
             smoking: !!(flagsCar & 4),
+            questTarget: !!(flagsCar & 8),
           };
         }
         if (name === 'npcs') {
@@ -548,6 +648,7 @@ function decodeServerFrame(raw) {
             skinColor: reader.color24(),
             shirtColor: reader.color24(),
             shirtDark: reader.color24(),
+            questTarget: !!(reader.u8() & 1),
           };
         }
         if (name === 'cops') {
