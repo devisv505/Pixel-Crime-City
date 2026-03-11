@@ -270,9 +270,18 @@ const QUEST_JSON_MAX_BYTES = 8 * 1024;
 const QUEST_KEY_MAX_LENGTH = 80;
 const QUEST_SCHEMA_MIGRATION_LATEST = 5;
 const SERVER_BOOT_TIME_MS = Date.now();
+const NODE_ENV = String(process.env.NODE_ENV || '').trim().toLowerCase();
+const ADMIN_LOCAL_DEFAULTS = NODE_ENV !== 'production' && envFlag('ADMIN_LOCAL_DEFAULTS', true);
 const ADMIN_USER = String(process.env.ADMIN_USER || '').trim();
 const ADMIN_PASS = String(process.env.ADMIN_PASS || '').trim();
-const ADMIN_AUTH_ENABLED = ADMIN_USER.length > 0 && ADMIN_PASS.length > 0;
+const ADMIN_AUTH_USER = ADMIN_USER || (ADMIN_LOCAL_DEFAULTS ? 'admin' : '');
+const ADMIN_AUTH_PASS = ADMIN_PASS || (ADMIN_LOCAL_DEFAULTS ? 'change_me' : '');
+const ADMIN_AUTH_ENABLED = ADMIN_AUTH_USER.length > 0 && ADMIN_AUTH_PASS.length > 0;
+const ADMIN_USING_LOCAL_DEFAULTS =
+  ADMIN_LOCAL_DEFAULTS &&
+  (!ADMIN_USER || !ADMIN_PASS) &&
+  ADMIN_AUTH_USER === 'admin' &&
+  ADMIN_AUTH_PASS === 'change_me';
 const ADMIN_SESSION_COOKIE = 'pcc_admin_session';
 const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const CRIME_WEIGHTS = Object.freeze({
@@ -3025,8 +3034,8 @@ function clearAdminSessionCookie(res) {
 
 function validateAdminCredentials(user, pass) {
   if (!ADMIN_AUTH_ENABLED) return false;
-  const userOk = timingSafeEqualText(user, ADMIN_USER);
-  const passOk = timingSafeEqualText(pass, ADMIN_PASS);
+  const userOk = timingSafeEqualText(user, ADMIN_AUTH_USER);
+  const passOk = timingSafeEqualText(pass, ADMIN_AUTH_PASS);
   return userOk && passOk;
 }
 
@@ -8110,4 +8119,8 @@ server.listen(PORT, () => {
   console.log(
     `flags AOI=${OPT_AOI ? 1 : 0} ZONE_LOD=${OPT_ZONE_LOD ? 1 : 0} CLIENT_VFX=${OPT_CLIENT_VFX ? 1 : 0}`
   );
+  if (ADMIN_USING_LOCAL_DEFAULTS) {
+    // eslint-disable-next-line no-console
+    console.log('[admin] local defaults active (ADMIN_USER=admin, ADMIN_PASS=change_me)');
+  }
 });
