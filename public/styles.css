@@ -705,12 +705,36 @@ button.secondary {
   touch-action: manipulation;
 }
 
+.mobile-drive-stack {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(68px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.mobile-drive-stack button {
+  min-width: 42px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 2px solid rgba(209, 232, 246, 0.62);
+  background: rgba(16, 35, 47, 0.72);
+  color: #f2f7ff;
+  touch-action: manipulation;
+}
+
 .mobile-controls.interior-mode .mobile-btn-context {
   display: none;
 }
 
 .mobile-controls.interior-mode .mobile-variant-stack {
   bottom: calc(68px + env(safe-area-inset-bottom));
+}
+
+.mobile-controls.car-mode .mobile-btn-context {
+  display: none;
 }
 
 body.mobile-ui #joinOverlay {

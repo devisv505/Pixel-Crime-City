@@ -72,6 +72,9 @@ const mobileControls = document.getElementById('mobileControls');
 const mobileStickBase = document.getElementById('mobileStickBase');
 const mobileStickKnob = document.getElementById('mobileStickKnob');
 const mobileVariantStack = document.getElementById('mobileVariantStack');
+const mobileDriveStack = document.getElementById('mobileDriveStack');
+const mobileBtnForward = document.getElementById('mobileBtnForward');
+const mobileBtnBack = document.getElementById('mobileBtnBack');
 const mobileBtn1 = document.getElementById('mobileBtn1');
 const mobileBtn2 = document.getElementById('mobileBtn2');
 const mobileBtn3 = document.getElementById('mobileBtn3');
@@ -306,6 +309,9 @@ const mobileShoot = {
   touchId: null,
   active: false,
 };
+let mobileDriveForwardHeld = false;
+let mobileDriveBackHeld = false;
+let lastMobileUiInCar = false;
 
 const seenEventIds = new Set();
 const seenEventQueue = [];
@@ -1178,7 +1184,23 @@ function updateMobileStickKnob() {
 }
 
 function applyMobileStickToMovement() {
-  if (!mobileStick.active || !canAcceptGameplayInput()) {
+  if (!canAcceptGameplayInput()) {
+    INPUT.up = false;
+    INPUT.down = false;
+    INPUT.left = false;
+    INPUT.right = false;
+    return;
+  }
+  const local = latestState?.localPlayer || null;
+  if (local && local.inCarId) {
+    const mx = mobileStick.active && Number.isFinite(mobileStick.x) ? mobileStick.x : 0;
+    INPUT.up = mobileDriveForwardHeld;
+    INPUT.down = mobileDriveBackHeld;
+    INPUT.left = mx < -MOBILE_STICK_DEADZONE;
+    INPUT.right = mx > MOBILE_STICK_DEADZONE;
+    return;
+  }
+  if (!mobileStick.active) {
     INPUT.up = false;
     INPUT.down = false;
     INPUT.left = false;
@@ -1193,24 +1215,6 @@ function applyMobileStickToMovement() {
     INPUT.down = false;
     INPUT.left = false;
     INPUT.right = false;
-    return;
-  }
-
-  const local = latestState?.localPlayer || null;
-  if (local && local.inCarId) {
-    const car = latestState?.carsById?.get(local.inCarId) || null;
-    const carAngle = Number.isFinite(car?.angle) ? Number(car.angle) : 0;
-    const desiredAngle = Math.atan2(my, mx);
-    const forwardDiff = normalizeAngle(desiredAngle - carAngle);
-    const reverse = Math.abs(forwardDiff) > Math.PI * 0.68;
-    const steerRef = reverse ? carAngle + Math.PI : carAngle;
-    const steerDiff = normalizeAngle(desiredAngle - steerRef);
-    const steerDeadzone = 0.16;
-
-    INPUT.up = !reverse;
-    INPUT.down = reverse;
-    INPUT.left = steerDiff < -steerDeadzone;
-    INPUT.right = steerDiff > steerDeadzone;
     return;
   }
 
@@ -1388,6 +1392,46 @@ function triggerDigit4Action() {
   triggerDigitAction('Digit4');
 }
 
+function setMobileDriveHold(isForward, isDown) {
+  if (!isMobileUi) return;
+  if (!isDown) {
+    if (isForward) {
+      mobileDriveForwardHeld = false;
+    } else {
+      mobileDriveBackHeld = false;
+    }
+    applyMobileStickToMovement();
+    return;
+  }
+  if (!joined || !canAcceptGameplayInput()) return;
+  const local = latestState?.localPlayer || null;
+  if (!local || !local.inCarId || local.insideShopId) return;
+  if (isForward) {
+    mobileDriveForwardHeld = true;
+    mobileDriveBackHeld = false;
+  } else {
+    mobileDriveBackHeld = true;
+    mobileDriveForwardHeld = false;
+  }
+  applyMobileStickToMovement();
+}
+
+function holdDriveForwardStart() {
+  setMobileDriveHold(true, true);
+}
+
+function holdDriveForwardEnd() {
+  setMobileDriveHold(true, false);
+}
+
+function holdDriveBackStart() {
+  setMobileDriveHold(false, true);
+}
+
+function holdDriveBackEnd() {
+  setMobileDriveHold(false, false);
+}
+
 function refreshMobileUiState() {
   isMobileUi = detectMobileUiDevice();
   isMobileLandscape = window.innerWidth >= window.innerHeight;
@@ -1402,17 +1446,28 @@ function refreshMobileUiState() {
 
   const showControls = isMobileUi && joined && !blocked;
   const local = latestState && latestState.localPlayer ? latestState.localPlayer : null;
+  const inCar = !!(local && local.inCarId);
   const insideInterior = !!(local && local.insideShopId);
   const showInteriorControls = showControls && insideInterior;
+  const showCarControls = showControls && inCar && !insideInterior;
   if (mobileControls) {
     mobileControls.classList.toggle('hidden', !showControls);
     mobileControls.classList.toggle('interior-mode', showInteriorControls);
+    mobileControls.classList.toggle('car-mode', showCarControls);
     mobileControls.setAttribute('aria-hidden', showControls ? 'false' : 'true');
   }
   const showVariants = showInteriorControls;
   if (mobileVariantStack) {
     mobileVariantStack.classList.toggle('hidden', !showVariants);
     mobileVariantStack.setAttribute('aria-hidden', showVariants ? 'false' : 'true');
+  }
+  if (mobileDriveStack) {
+    mobileDriveStack.classList.toggle('hidden', !showCarControls);
+    mobileDriveStack.setAttribute('aria-hidden', showCarControls ? 'false' : 'true');
+  }
+  if (!showCarControls) {
+    mobileDriveForwardHeld = false;
+    mobileDriveBackHeld = false;
   }
 
   if (blocked) {
@@ -1421,6 +1476,7 @@ function refreshMobileUiState() {
     releaseMobileStick();
     releaseMobileShoot();
   }
+  applyMobileStickToMovement();
 }
 
 function angleApproach(current, target, maxStep) {
@@ -2228,6 +2284,44 @@ function bindMobileActionButton(button, onAction) {
   });
 }
 
+function bindMobileHoldButton(button, onStart, onEnd) {
+  if (!button) return;
+  button.addEventListener(
+    'touchstart',
+    (event) => {
+      if (!isMobileUi) return;
+      event.preventDefault();
+      event.stopPropagation();
+      mobileSuppressMouseUntil = performance.now() + MOBILE_MOUSE_SUPPRESS_MS;
+      onStart();
+    },
+    { passive: false }
+  );
+  const endTouch = (event) => {
+    if (!isMobileUi) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onEnd();
+  };
+  button.addEventListener('touchend', endTouch, { passive: false });
+  button.addEventListener('touchcancel', endTouch, { passive: false });
+
+  button.addEventListener('mousedown', (event) => {
+    if (!isMobileUi) return;
+    event.preventDefault();
+    onStart();
+  });
+  button.addEventListener('mouseup', (event) => {
+    if (!isMobileUi) return;
+    event.preventDefault();
+    onEnd();
+  });
+  button.addEventListener('mouseleave', () => {
+    if (!isMobileUi) return;
+    onEnd();
+  });
+}
+
 function onMobileGlobalTouchMove(event) {
   if (!isMobileUi) return;
   let consumed = false;
@@ -2399,6 +2493,9 @@ function resetSessionState() {
   INPUT.requestStats = false;
   releaseMobileStick();
   releaseMobileShoot();
+  mobileDriveForwardHeld = false;
+  mobileDriveBackHeld = false;
+  lastMobileUiInCar = false;
   statusNotice = '';
   statusNoticeUntil = 0;
   latestState = null;
@@ -4630,6 +4727,7 @@ function renderHudHelp() {
 
 function refreshGameplayOverlayVisibility(state) {
   const insideInterior = isPlayerInsideInterior(state);
+  const inCar = !!(state && state.localPlayer && state.localPlayer.inCarId);
   if (hud) {
     hud.classList.toggle('hidden', !joined || insideInterior);
   }
@@ -4643,6 +4741,10 @@ function refreshGameplayOverlayVisibility(state) {
   if (interiorUiSuppressed !== insideInterior) {
     interiorUiSuppressed = insideInterior;
     renderQuestPanel();
+    refreshMobileUiState();
+    lastMobileUiInCar = inCar;
+  } else if (lastMobileUiInCar !== inCar) {
+    lastMobileUiInCar = inCar;
     refreshMobileUiState();
   }
 }
@@ -4712,13 +4814,15 @@ function renderQuestPanel() {
 
   let visibleEntries = [];
   if (isMobileUi) {
-    const currentEntry =
-      entries.find((entry) => entry.status === 'active') ||
-      entries.find((entry) => entry.status !== 'completed') ||
-      entries[0];
-    if (currentEntry) {
-      visibleEntries = [currentEntry];
+    const activeEntry = entries.find((entry) => entry.status === 'active');
+    if (!activeEntry) {
+      const row = document.createElement('div');
+      row.className = 'quest-row locked';
+      row.textContent = 'No active quest.';
+      questPanelList.appendChild(row);
+      return;
     }
+    visibleEntries = [activeEntry];
   } else {
     visibleEntries = entries.slice(0, 2);
     const activeIndex = entries.findIndex((entry) => entry.status === 'active');
@@ -6009,6 +6113,8 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
+  bindMobileHoldButton(mobileBtnForward, holdDriveForwardStart, holdDriveForwardEnd);
+  bindMobileHoldButton(mobileBtnBack, holdDriveBackStart, holdDriveBackEnd);
   bindMobileActionButton(mobileBtn1, triggerDigit1Action);
   bindMobileActionButton(mobileBtn2, triggerDigit2Action);
   bindMobileActionButton(mobileBtn3, triggerDigit3Action);
