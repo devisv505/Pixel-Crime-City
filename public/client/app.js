@@ -71,10 +71,15 @@ const mobileRotateOverlay = document.getElementById('mobileRotateOverlay');
 const mobileControls = document.getElementById('mobileControls');
 const mobileStickBase = document.getElementById('mobileStickBase');
 const mobileStickKnob = document.getElementById('mobileStickKnob');
+const mobileVariantStack = document.getElementById('mobileVariantStack');
+const mobileBtn1 = document.getElementById('mobileBtn1');
+const mobileBtn2 = document.getElementById('mobileBtn2');
+const mobileBtn3 = document.getElementById('mobileBtn3');
+const mobileBtn4 = document.getElementById('mobileBtn4');
 const mobileBtnE = document.getElementById('mobileBtnE');
 const mobileBtnO = document.getElementById('mobileBtnO');
 const mobileBtnMap = document.getElementById('mobileBtnMap');
-const mobileBtnFullscreen = document.getElementById('mobileBtnFullscreen');
+const mobileBtnQuest = document.getElementById('mobileBtnQuest');
 const questPanel = document.getElementById('questPanel');
 const questPanelTitle = document.getElementById('questPanelTitle');
 const questPanelMeta = document.getElementById('questPanelMeta');
@@ -1296,9 +1301,36 @@ function toggleMapAction() {
   toggleMapOverlay();
 }
 
-function enterFullscreenAction() {
-  if (!isMobileUi || !joined) return;
-  tryEnterMobileFullscreen('gesture');
+function toggleQuestPanelAction() {
+  if (!joined) return;
+  if (isSettingsOpen()) return;
+  questPanelVisible = !questPanelVisible;
+  renderQuestPanel();
+}
+
+function triggerDigitAction(code) {
+  if (!joined || !canAcceptGameplayInput()) return;
+  if (isSettingsOpen()) return;
+  handleActionKey({
+    code,
+    preventDefault() {},
+  });
+}
+
+function triggerDigit1Action() {
+  triggerDigitAction('Digit1');
+}
+
+function triggerDigit2Action() {
+  triggerDigitAction('Digit2');
+}
+
+function triggerDigit3Action() {
+  triggerDigitAction('Digit3');
+}
+
+function triggerDigit4Action() {
+  triggerDigitAction('Digit4');
 }
 
 function refreshMobileUiState() {
@@ -1307,16 +1339,25 @@ function refreshMobileUiState() {
 
   document.body.classList.toggle('mobile-ui', isMobileUi);
 
-  const blocked = joined && isMobilePortraitBlocked();
+  const blocked = isMobilePortraitBlocked();
   if (mobileRotateOverlay) {
     mobileRotateOverlay.classList.toggle('hidden', !blocked);
     mobileRotateOverlay.setAttribute('aria-hidden', blocked ? 'false' : 'true');
   }
 
   const showControls = isMobileUi && joined && !blocked;
+  const local = latestState && latestState.localPlayer ? latestState.localPlayer : null;
+  const insideInterior = !!(local && local.insideShopId);
+  const showInteriorControls = showControls && insideInterior;
   if (mobileControls) {
     mobileControls.classList.toggle('hidden', !showControls);
+    mobileControls.classList.toggle('interior-mode', showInteriorControls);
     mobileControls.setAttribute('aria-hidden', showControls ? 'false' : 'true');
+  }
+  const showVariants = showInteriorControls;
+  if (mobileVariantStack) {
+    mobileVariantStack.classList.toggle('hidden', !showVariants);
+    mobileVariantStack.setAttribute('aria-hidden', showVariants ? 'false' : 'true');
   }
 
   if (blocked) {
@@ -3692,6 +3733,9 @@ function drawShopInterior(state) {
   const shotgunPrice = shop?.stock?.shotgun ?? 500;
   const machinegunPrice = shop?.stock?.machinegun ?? 1000;
   const bazookaPrice = shop?.stock?.bazooka ?? 5000;
+  const titleFont = isMobileUi ? 8 : 10;
+  const bodyFont = isMobileUi ? 7 : 8;
+  const lineStep = isMobileUi ? 15 : 18;
 
   ctx.fillStyle = '#18120f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -3707,37 +3751,62 @@ function drawShopInterior(state) {
   const panelY = Math.max(14, Math.floor(canvas.height * 0.14));
   const panelW = Math.floor(canvas.width * 0.68);
   const panelH = Math.floor(canvas.height * 0.72);
+  const panelTextX = panelX + 18;
+  const textStartY = panelY + 24;
 
   ctx.fillStyle = '#0f0c0a';
   ctx.fillRect(panelX, panelY, panelW, panelH);
   ctx.fillStyle = '#3e2c20';
   ctx.fillRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8);
   ctx.fillStyle = '#d8c7a2';
-  ctx.font = '10px "Lucida Console", Monaco, monospace';
-  ctx.fillText(shop?.name || 'Gun Shop', panelX + 18, panelY + 24);
-  ctx.font = '8px "Lucida Console", Monaco, monospace';
-  ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
+  ctx.font = `${titleFont}px "Lucida Console", Monaco, monospace`;
+  ctx.fillText(shop?.name || 'Gun Shop', panelTextX, textStartY);
+  ctx.font = `${bodyFont}px "Lucida Console", Monaco, monospace`;
+  ctx.fillText(`Money: $${local.money || 0}`, panelTextX, textStartY + lineStep);
 
   const shotgunOwned = !!local.ownedShotgun;
   const machinegunOwned = !!local.ownedMachinegun;
   const bazookaOwned = !!local.ownedBazooka;
   const weaponLabel = local.weapon || 'fist';
 
-  ctx.fillStyle = '#d8d8d8';
-  ctx.fillText('You start with a Gun (slot 1)', panelX + 18, panelY + 62);
-  ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`1) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 82);
-  ctx.fillStyle = machinegunOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`2) Buy Machinegun $${machinegunPrice} ${machinegunOwned ? '(owned)' : ''}`, panelX + 18, panelY + 100);
-  ctx.fillStyle = bazookaOwned ? '#8dff7c' : '#ffd3a2';
-  ctx.fillText(`3) Buy Bazooka $${bazookaPrice} ${bazookaOwned ? '(owned)' : ''}`, panelX + 18, panelY + 118);
-  ctx.fillStyle = '#cbd3db';
-  ctx.fillText('4) Equip Gun', panelX + 18, panelY + 136);
+  if (isMobileUi) {
+    const col2X = panelTextX + Math.max(100, Math.floor(panelW * 0.42));
+    const optionsY = textStartY + lineStep * 3;
+    ctx.fillStyle = '#d8d8d8';
+    ctx.fillText('You start with a Gun (slot 1)', panelTextX, textStartY + lineStep * 2);
+    ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
+    ctx.fillText(`1) Shotgun $${shotgunPrice}${shotgunOwned ? ' (own)' : ''}`, panelTextX, optionsY);
+    ctx.fillStyle = machinegunOwned ? '#8dff7c' : '#ffd3a2';
+    ctx.fillText(`2) MG $${machinegunPrice}${machinegunOwned ? ' (own)' : ''}`, col2X, optionsY);
+    ctx.fillStyle = bazookaOwned ? '#8dff7c' : '#ffd3a2';
+    ctx.fillText(`3) Bazooka $${bazookaPrice}${bazookaOwned ? ' (own)' : ''}`, panelTextX, optionsY + lineStep);
+    ctx.fillStyle = '#cbd3db';
+    ctx.fillText('4) Equip Gun', col2X, optionsY + lineStep);
+    ctx.fillStyle = '#bfc8d6';
+    ctx.fillText(`Current: ${weaponLabel}`, panelTextX, optionsY + lineStep * 2);
+    ctx.fillStyle = '#e8e8e8';
+    ctx.fillText('Press E to leave shop', panelTextX, optionsY + lineStep * 3);
+    return;
+  }
 
+  ctx.fillStyle = '#d8d8d8';
+  ctx.fillText('You start with a Gun (slot 1)', panelTextX, textStartY + lineStep * 2);
+  ctx.fillStyle = shotgunOwned ? '#8dff7c' : '#ffd3a2';
+  ctx.fillText(`1) Buy Shotgun $${shotgunPrice} ${shotgunOwned ? '(owned)' : ''}`, panelTextX, textStartY + lineStep * 3);
+  ctx.fillStyle = machinegunOwned ? '#8dff7c' : '#ffd3a2';
+  ctx.fillText(
+    `2) Buy Machinegun $${machinegunPrice} ${machinegunOwned ? '(owned)' : ''}`,
+    panelTextX,
+    textStartY + lineStep * 4
+  );
+  ctx.fillStyle = bazookaOwned ? '#8dff7c' : '#ffd3a2';
+  ctx.fillText(`3) Buy Bazooka $${bazookaPrice} ${bazookaOwned ? '(owned)' : ''}`, panelTextX, textStartY + lineStep * 5);
+  ctx.fillStyle = '#cbd3db';
+  ctx.fillText('4) Equip Gun', panelTextX, textStartY + lineStep * 6);
   ctx.fillStyle = '#bfc8d6';
-  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelX + 18, panelY + 154);
+  ctx.fillText(`Current Weapon: ${weaponLabel}`, panelTextX, textStartY + lineStep * 7);
   ctx.fillStyle = '#e8e8e8';
-  ctx.fillText('Press E to leave shop', panelX + 18, panelY + 172);
+  ctx.fillText('Press E to leave shop', panelTextX, textStartY + lineStep * 8);
 }
 
 function drawGarageRepaintPreviewCar(x, y, bodyColor, stripeColor, scale = 2) {
@@ -3768,6 +3837,66 @@ function drawGarageRepaintPreviewCar(x, y, bodyColor, stripeColor, scale = 2) {
 }
 
 function drawGarageRepaintPicker(panelX, panelY, panelW, panelH, hasCar) {
+  if (isMobileUi) {
+    const overlayX = panelX + 8;
+    const overlayY = panelY + 36;
+    const overlayW = panelW - 16;
+    const overlayH = panelH - 44;
+    const pad = 6;
+    const gap = 4;
+    const headerY = overlayY + 12;
+    const statusY = overlayY + 22;
+    const gridTop = overlayY + 30;
+    const footerY = overlayY + overlayH - 5;
+    const gridBottom = footerY - 10;
+    const gridH = Math.max(48, gridBottom - gridTop);
+    const colW = Math.floor((overlayW - pad * 2 - gap) * 0.5);
+    const rowH = Math.floor((gridH - gap) * 0.5);
+
+    ctx.fillStyle = '#0b1118';
+    ctx.fillRect(overlayX, overlayY, overlayW, overlayH);
+    ctx.fillStyle = '#2a3a49';
+    ctx.fillRect(overlayX + 2, overlayY + 2, overlayW - 4, overlayH - 4);
+
+    ctx.font = '6px "Lucida Console", Monaco, monospace';
+    ctx.fillStyle = '#ffe3b0';
+    ctx.fillText('Select color - $100', overlayX + pad, headerY);
+    ctx.fillStyle = hasCar ? '#a6ffaf' : '#ff9d9d';
+    ctx.fillText(hasCar ? 'Vehicle ready' : 'No vehicle inside', overlayX + pad, statusY);
+
+    for (let i = 0; i < GARAGE_REPAINT_PRESETS.length; i += 1) {
+      const preset = GARAGE_REPAINT_PRESETS[i];
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cardX = overlayX + pad + col * (colW + gap);
+      const cardY = gridTop + row * (rowH + gap);
+      const labelRaw = String(preset.label || '');
+      const labelShort = labelRaw.length > 11 ? `${labelRaw.slice(0, 11).trimEnd()}.` : labelRaw;
+      const swatchX = cardX + 6;
+      const swatchY = cardY + Math.max(12, rowH - 11);
+      const swatchW = Math.max(16, Math.min(colW - 12, 30));
+
+      ctx.fillStyle = '#13202b';
+      ctx.fillRect(cardX, cardY, colW, rowH);
+      ctx.fillStyle = '#2c4357';
+      ctx.fillRect(cardX + 1, cardY + 1, colW - 2, rowH - 2);
+
+      ctx.fillStyle = '#d8e4ef';
+      ctx.fillText(`${i + 1}) ${labelShort}`, cardX + 6, cardY + 9);
+
+      ctx.fillStyle = '#10141a';
+      ctx.fillRect(swatchX - 1, swatchY - 1, swatchW + 2, 8);
+      ctx.fillStyle = preset.color;
+      ctx.fillRect(swatchX, swatchY, swatchW, 6);
+      ctx.fillStyle = preset.stripe;
+      ctx.fillRect(swatchX + 2, swatchY + 2, Math.max(6, swatchW - 4), 1);
+    }
+
+    ctx.fillStyle = '#d0dae5';
+    ctx.fillText('1-4 apply | E back', overlayX + pad, footerY);
+    return;
+  }
+
   const overlayX = panelX + 14;
   const overlayY = panelY + 48;
   const overlayW = panelW - 28;
@@ -3829,6 +3958,9 @@ function drawGarageInterior(state) {
   const garageCar = localGarageCar(state);
   const hasCar = !!garageCar;
   const canRepaint = !!garageCar && garageCar.type === 'civilian';
+  const titleFont = isMobileUi ? 8 : 10;
+  const bodyFont = isMobileUi ? 7 : 8;
+  const lineStep = isMobileUi ? 15 : 18;
 
   ctx.fillStyle = '#111317';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -3844,6 +3976,8 @@ function drawGarageInterior(state) {
   const panelY = Math.max(14, Math.floor(canvas.height * 0.14));
   const panelW = Math.floor(canvas.width * 0.68);
   const panelH = Math.floor(canvas.height * 0.72);
+  const panelTextX = panelX + 18;
+  const textStartY = panelY + 24;
 
   ctx.fillStyle = '#0d0f13';
   ctx.fillRect(panelX, panelY, panelW, panelH);
@@ -3851,33 +3985,51 @@ function drawGarageInterior(state) {
   ctx.fillRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8);
 
   ctx.fillStyle = '#f4c889';
-  ctx.font = '10px "Lucida Console", Monaco, monospace';
-  ctx.fillText(garage?.name || 'Garage', panelX + 18, panelY + 24);
-  ctx.font = '8px "Lucida Console", Monaco, monospace';
+  ctx.font = `${titleFont}px "Lucida Console", Monaco, monospace`;
+  ctx.fillText(garage?.name || 'Garage', panelTextX, textStartY);
+  ctx.font = `${bodyFont}px "Lucida Console", Monaco, monospace`;
   ctx.fillStyle = '#d0d8e2';
-  ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
+  ctx.fillText(`Money: $${local.money || 0}`, panelTextX, textStartY + lineStep);
 
   if (!hasCar) {
     ctx.fillStyle = '#ff8d8d';
-    ctx.fillText('No vehicle inside', panelX + 18, panelY + 62);
+    ctx.fillText('No vehicle inside', panelTextX, textStartY + lineStep * 2);
   } else {
     ctx.fillStyle = canRepaint ? '#9dff99' : '#ffd38f';
-    ctx.fillText(`Vehicle: ${garageCarTypeLabel(garageCar.type)}`, panelX + 18, panelY + 62);
+    ctx.fillText(`Vehicle: ${garageCarTypeLabel(garageCar.type)}`, panelTextX, textStartY + lineStep * 2);
   }
 
-  ctx.fillStyle = '#ffd6a1';
-  ctx.fillText('1) Sell vehicle +$50', panelX + 18, panelY + 84);
-  ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
-  ctx.fillText('2) Repaint random -$10', panelX + 18, panelY + 102);
-  ctx.fillText('3) Repaint selected -$100 (palette)', panelX + 18, panelY + 120);
-  ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
-  ctx.fillText(
-    canRepaint ? 'Repaint removes active police pursuit' : 'Repaint available only for civilian cars',
-    panelX + 18,
-    panelY + 140
-  );
-  ctx.fillStyle = '#e8e8e8';
-  ctx.fillText('Press E to leave garage', panelX + 18, panelY + 160);
+  if (isMobileUi) {
+    const col2X = panelTextX + Math.max(100, Math.floor(panelW * 0.42));
+    const optionsY = textStartY + lineStep * 3;
+    ctx.fillStyle = '#ffd6a1';
+    ctx.fillText('1) Sell +$50', panelTextX, optionsY);
+    ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
+    ctx.fillText('2) Repaint rnd -$10', col2X, optionsY);
+    ctx.fillText('3) Palette -$100', panelTextX, optionsY + lineStep);
+    ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
+    ctx.fillText(
+      canRepaint ? 'Repaint clears active police pursuit' : 'Only civilian cars can be repainted',
+      panelTextX,
+      optionsY + lineStep * 2
+    );
+    ctx.fillStyle = '#e8e8e8';
+    ctx.fillText('Press E to leave garage', panelTextX, optionsY + lineStep * 3);
+  } else {
+    ctx.fillStyle = '#ffd6a1';
+    ctx.fillText('1) Sell vehicle +$50', panelTextX, textStartY + lineStep * 3);
+    ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
+    ctx.fillText('2) Repaint random -$10', panelTextX, textStartY + lineStep * 4);
+    ctx.fillText('3) Repaint selected -$100 (palette)', panelTextX, textStartY + lineStep * 5);
+    ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
+    ctx.fillText(
+      canRepaint ? 'Repaint removes active police pursuit' : 'Repaint available only for civilian cars',
+      panelTextX,
+      textStartY + lineStep * 6
+    );
+    ctx.fillStyle = '#e8e8e8';
+    ctx.fillText('Press E to leave garage', panelTextX, textStartY + lineStep * 7);
+  }
 
   if (garageRepaintPickerOpen && canRepaint) {
     drawGarageRepaintPicker(panelX, panelY, panelW, panelH, hasCar);
@@ -4436,6 +4588,7 @@ function refreshGameplayOverlayVisibility(state) {
   if (interiorUiSuppressed !== insideInterior) {
     interiorUiSuppressed = insideInterior;
     renderQuestPanel();
+    refreshMobileUiState();
   }
 }
 
@@ -4476,12 +4629,13 @@ function renderQuestPanel() {
     questPanelTitle.textContent = 'Quests';
   }
   if (questPanelMeta) {
-    questPanelMeta.textContent = `Reputation: ${questReputation} | Gun Shop: ${
-      questGunShopUnlocked ? 'Unlocked' : 'Locked'
-    }`;
+    questPanelMeta.textContent = isMobileUi
+      ? `Rep: ${questReputation} | Shop: ${questGunShopUnlocked ? 'On' : 'Off'}`
+      : `Reputation: ${questReputation} | Gun Shop: ${questGunShopUnlocked ? 'Unlocked' : 'Locked'}`;
   }
   if (questPanelHelp) {
-    questPanelHelp.textContent = `Press Q to hide/show | Total: ${totalQuests} | Done: ${doneQuests}`;
+    const toggleHint = isMobileUi ? 'Tap Q to hide/show' : 'Press Q to hide/show';
+    questPanelHelp.textContent = `${toggleHint} | Total: ${totalQuests} | Done: ${doneQuests}`;
   }
   if (!questPanelList) return;
 
@@ -4501,12 +4655,23 @@ function renderQuestPanel() {
     return;
   }
 
-  let visibleEntries = entries.slice(0, 2);
-  const activeIndex = entries.findIndex((entry) => entry.status === 'active');
-  if (activeIndex >= 0) {
-    visibleEntries = [entries[activeIndex]];
-    if (activeIndex + 1 < entries.length) {
-      visibleEntries.push(entries[activeIndex + 1]);
+  let visibleEntries = [];
+  if (isMobileUi) {
+    const currentEntry =
+      entries.find((entry) => entry.status === 'active') ||
+      entries.find((entry) => entry.status !== 'completed') ||
+      entries[0];
+    if (currentEntry) {
+      visibleEntries = [currentEntry];
+    }
+  } else {
+    visibleEntries = entries.slice(0, 2);
+    const activeIndex = entries.findIndex((entry) => entry.status === 'active');
+    if (activeIndex >= 0) {
+      visibleEntries = [entries[activeIndex]];
+      if (activeIndex + 1 < entries.length) {
+        visibleEntries.push(entries[activeIndex + 1]);
+      }
     }
   }
 
@@ -5170,7 +5335,10 @@ function drawMapOverlay(state) {
   const world = state.world || WORLD;
   const navDebugNodes = Array.isArray(world.npcNavNodes) ? world.npcNavNodes : [];
   const showNavDebugNodes = navDebugNodes.length > 0;
-  const mapSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.4), 130, 220);
+  const mobileMapOverlay = isMobileUi;
+  const mapSize = mobileMapOverlay
+    ? clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.54), 150, 250)
+    : clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.4), 130, 220);
   const mapW = mapSize;
   const mapH = Math.max(96, Math.round((world.height / Math.max(1, world.width)) * mapSize));
   const panelPadding = 6;
@@ -5179,37 +5347,54 @@ function drawMapOverlay(state) {
   const legendRowH = 10;
   const legendRows = activeTargetQuest || showNavDebugNodes ? 3 : 2;
   const legendH = legendTopGap + legendRows * legendRowH + 4;
-  const panelW = mapW + panelPadding * 2;
-  const panelH = mapH + panelPadding * 2 + headerH + legendH;
-  const px = canvas.width - panelW - 8;
-  const py = 8;
-  const mapX = px + panelPadding;
-  const mapY = py + panelPadding + headerH;
+  const detachedLegend = mobileMapOverlay;
+  let panelW = mapW + panelPadding * 2;
+  let panelH = mapH + panelPadding * 2 + headerH + (detachedLegend ? 0 : legendH);
+  let px = detachedLegend ? Math.floor((canvas.width - panelW) * 0.5) : canvas.width - panelW - 8;
+  let py = detachedLegend ? Math.floor((canvas.height - panelH) * 0.5) : 8;
+  let mapX = px + panelPadding;
+  let mapY = py + panelPadding + headerH;
+  if (mobileMapOverlay) {
+    const mobileMapOffsetY = 14;
+    panelW = mapW;
+    panelH = mapH;
+    px = Math.floor((canvas.width - panelW) * 0.5);
+    py = Math.max(4, Math.floor((canvas.height - panelH) * 0.5) - mobileMapOffsetY);
+    mapX = px;
+    mapY = py;
+  }
 
   const sx = mapW / Math.max(1, world.width);
   const sy = mapH / Math.max(1, world.height);
   const toMapX = (x) => mapX + clamp(x, 0, world.width) * sx;
   const toMapY = (y) => mapY + clamp(y, 0, world.height) * sy;
 
-  ctx.fillStyle = 'rgba(7, 12, 17, 0.84)';
-  ctx.fillRect(px, py, panelW, panelH);
-  ctx.strokeStyle = 'rgba(178, 216, 236, 0.8)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(px + 0.5, py + 0.5, panelW - 1, panelH - 1);
+  if (!mobileMapOverlay) {
+    ctx.fillStyle = 'rgba(7, 12, 17, 0.84)';
+    ctx.fillRect(px, py, panelW, panelH);
+    ctx.strokeStyle = 'rgba(178, 216, 236, 0.8)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px + 0.5, py + 0.5, panelW - 1, panelH - 1);
 
-  ctx.fillStyle = '#90c9e8';
-  ctx.font = '6px "Lucida Console", Monaco, monospace';
-  ctx.fillText('CITY MAP (M)', px + 6, py + 8);
-  const onlineCount = presenceOnlineCount > 0 ? presenceOnlineCount : (state.players || []).length;
-  const onlineText = `Online:${onlineCount}`;
-  const onlineWidth = ctx.measureText(onlineText).width;
-  ctx.fillStyle = '#d9f2ff';
-  ctx.fillText(onlineText, px + panelW - 6 - onlineWidth, py + 8);
+    ctx.fillStyle = '#90c9e8';
+    ctx.font = '6px "Lucida Console", Monaco, monospace';
+    ctx.fillText('CITY MAP (M)', px + 6, py + 8);
+    const onlineCount = presenceOnlineCount > 0 ? presenceOnlineCount : (state.players || []).length;
+    const onlineText = `Online:${onlineCount}`;
+    const onlineWidth = ctx.measureText(onlineText).width;
+    ctx.fillStyle = '#d9f2ff';
+    ctx.fillText(onlineText, px + panelW - 6 - onlineWidth, py + 8);
+  }
 
-  ctx.fillStyle = '#1e2f3c';
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(mapX, mapY, mapW, mapH);
+  ctx.clip();
+
+  ctx.fillStyle = mobileMapOverlay ? 'rgba(30, 47, 60, 0.44)' : '#1e2f3c';
   ctx.fillRect(mapX, mapY, mapW, mapH);
 
-  ctx.fillStyle = '#33444f';
+  ctx.fillStyle = mobileMapOverlay ? 'rgba(51, 68, 79, 0.62)' : '#33444f';
   const roadW = Math.max(1, Math.round((world.roadEnd - world.roadStart) * sx));
   for (let bx = 0; bx <= world.width; bx += world.blockPx) {
     const rx = Math.round(mapX + (bx + world.roadStart) * sx);
@@ -5303,21 +5488,45 @@ function drawMapOverlay(state) {
   ctx.strokeStyle = 'rgba(243, 225, 130, 0.92)';
   ctx.strokeRect(viewX, viewY, viewW, viewH);
 
-  const legendY = mapY + mapH + legendTopGap;
-  const legendPad = 4;
-  const legendBoxX = px + 6;
-  const legendBoxY = legendY - 2;
-  const legendBoxW = panelW - 12;
-  const legendBoxH = legendRows * legendRowH + 2;
-  const markerSize = 4;
-  const row1Y = legendY + legendRowH * 0.5;
-  const row2Y = row1Y + legendRowH;
-  const col1X = legendBoxX + legendPad + 2;
-  const col2X = legendBoxX + Math.floor(legendBoxW * 0.5) + 2;
+  ctx.restore();
+  ctx.strokeStyle = mobileMapOverlay ? 'rgba(178, 216, 236, 0.42)' : 'rgba(178, 216, 236, 0.56)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(mapX + 0.5, mapY + 0.5, mapW - 1, mapH - 1);
 
-  ctx.fillStyle = 'rgba(8, 14, 22, 0.92)';
+  const legendPad = 4;
+  const markerSize = 4;
+  let legendBoxX = 0;
+  let legendBoxY = 0;
+  let legendBoxW = 0;
+  let legendBoxH = legendRows * legendRowH + 2;
+  let row1Y = 0;
+  let row2Y = 0;
+  let col1X = 0;
+  let col2X = 0;
+
+  if (detachedLegend) {
+    legendBoxW = Math.max(84, Math.min(120, Math.floor(canvas.width * 0.3)));
+    legendBoxH = legendRows * legendRowH + 6;
+    legendBoxX = canvas.width - legendBoxW - 8;
+    legendBoxY = 8;
+    row1Y = legendBoxY + 5 + legendRowH * 0.5;
+    row2Y = row1Y + legendRowH;
+    col1X = legendBoxX + legendPad + 2;
+    col2X = col1X;
+  } else {
+    const legendY = mapY + mapH + legendTopGap;
+    legendBoxX = px + 6;
+    legendBoxY = legendY - 2;
+    legendBoxW = panelW - 12;
+    row1Y = legendY + legendRowH * 0.5;
+    row2Y = row1Y + legendRowH;
+    col1X = legendBoxX + legendPad + 2;
+    col2X = legendBoxX + Math.floor(legendBoxW * 0.5) + 2;
+  }
+
+  ctx.fillStyle = detachedLegend ? 'rgba(8, 14, 22, 0.68)' : 'rgba(8, 14, 22, 0.92)';
   ctx.fillRect(legendBoxX, legendBoxY, legendBoxW, legendBoxH);
-  ctx.strokeStyle = 'rgba(124, 170, 196, 0.65)';
+  ctx.strokeStyle = detachedLegend ? 'rgba(124, 170, 196, 0.48)' : 'rgba(124, 170, 196, 0.65)';
   ctx.strokeRect(legendBoxX + 0.5, legendBoxY + 0.5, legendBoxW - 1, legendBoxH - 1);
 
   ctx.font = '6px "Lucida Console", Monaco, monospace';
@@ -5362,7 +5571,7 @@ function drawMapOverlay(state) {
       ctx.fillText('Target Area', col1X + 8, row3Y);
     }
     if (showNavDebugNodes) {
-      const navColX = activeTargetQuest ? col2X : col1X;
+      const navColX = detachedLegend ? col1X : activeTargetQuest ? col2X : col1X;
       const navMarkerX = navColX + 2;
       ctx.fillStyle = 'rgba(255, 196, 110, 0.85)';
       ctx.beginPath();
@@ -5745,10 +5954,14 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
+  bindMobileActionButton(mobileBtn1, triggerDigit1Action);
+  bindMobileActionButton(mobileBtn2, triggerDigit2Action);
+  bindMobileActionButton(mobileBtn3, triggerDigit3Action);
+  bindMobileActionButton(mobileBtn4, triggerDigit4Action);
   bindMobileActionButton(mobileBtnE, pulseEnterAction);
   bindMobileActionButton(mobileBtnO, toggleSettingsAction);
   bindMobileActionButton(mobileBtnMap, toggleMapAction);
-  bindMobileActionButton(mobileBtnFullscreen, enterFullscreenAction);
+  bindMobileActionButton(mobileBtnQuest, toggleQuestPanelAction);
 
   if (mobileStickBase) {
     mobileStickBase.addEventListener('touchstart', onMobileStickTouchStart, { passive: false });
@@ -6000,9 +6213,7 @@ function attachUiEvents() {
 
     if (joined && event.code === 'KeyQ' && !event.repeat) {
       if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
-      if (isSettingsOpen()) return;
-      questPanelVisible = !questPanelVisible;
-      renderQuestPanel();
+      toggleQuestPanelAction();
       event.preventDefault();
       return;
     }

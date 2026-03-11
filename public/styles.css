@@ -669,7 +669,9 @@ button.secondary {
   bottom: calc(12px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   gap: 8px;
+  min-height: 176px;
   pointer-events: auto;
 }
 
@@ -683,6 +685,191 @@ button.secondary {
   touch-action: manipulation;
 }
 
+.mobile-variant-stack {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(186px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.mobile-variant-stack button {
+  min-width: 38px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 2px solid rgba(209, 232, 246, 0.62);
+  background: rgba(16, 35, 47, 0.72);
+  color: #f2f7ff;
+  touch-action: manipulation;
+}
+
+.mobile-controls.interior-mode .mobile-btn-context {
+  display: none;
+}
+
+.mobile-controls.interior-mode .mobile-variant-stack {
+  bottom: calc(68px + env(safe-area-inset-bottom));
+}
+
+body.mobile-ui #joinOverlay {
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(6px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right))
+    calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+body.mobile-ui #joinOverlay::before {
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  transform: none;
+  background-size: cover;
+  background-position: center center;
+}
+
+body.mobile-ui #joinOverlay::after {
+  background: linear-gradient(180deg, rgba(7, 12, 16, 0.38), rgba(7, 12, 16, 0.56));
+}
+
+body.mobile-ui #joinPanel {
+  width: min(96vw, 520px);
+  max-height: calc(100vh - 14px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  transform: translateY(0);
+  padding: 12px;
+  overflow-y: auto;
+}
+
+body.mobile-ui .step {
+  margin-top: 8px;
+  padding-top: 6px;
+}
+
+body.mobile-ui h2 {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+body.mobile-ui label {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+body.mobile-ui input[type="text"],
+body.mobile-ui input:not([type]) {
+  padding: 8px;
+  font-size: 16px;
+}
+
+body.mobile-ui button {
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+body.mobile-ui .buttons-row {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+body.mobile-ui #stepCrime .buttons-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.mobile-ui .profile-hint {
+  margin-top: 6px;
+  min-height: 14px;
+  font-size: 11px;
+}
+
+body.mobile-ui .profile-list {
+  margin-top: 4px;
+  gap: 4px;
+  max-height: 92px;
+}
+
+body.mobile-ui .profile-row {
+  grid-template-columns: 1fr auto auto;
+  gap: 4px;
+  padding: 3px 5px;
+}
+
+body.mobile-ui .profile-row-name {
+  font-size: 11px;
+}
+
+body.mobile-ui .profile-row button {
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 10px;
+}
+
+body.mobile-ui .crime-board-search {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+body.mobile-ui .crime-board-search input {
+  grid-column: 1 / -1;
+}
+
+body.mobile-ui .crime-board-list {
+  gap: 4px;
+  margin-top: 4px;
+  min-height: 176px;
+}
+
+body.mobile-ui .crime-board-row {
+  grid-template-columns: 28px 24px 1fr auto;
+  gap: 6px;
+  padding: 3px 5px;
+}
+
+body.mobile-ui .crime-board-rank,
+body.mobile-ui .crime-board-name,
+body.mobile-ui .crime-board-score-value {
+  font-size: 11px;
+}
+
+body.mobile-ui .crime-board-sub,
+body.mobile-ui .crime-board-color {
+  font-size: 9px;
+}
+
+body.mobile-ui .crime-board-pagination {
+  margin-top: 6px;
+  gap: 6px;
+}
+
+body.mobile-ui #crimeBoardPage {
+  font-size: 10px;
+}
+
+body.mobile-ui .color-grid {
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+
+body.mobile-ui .color-swatch {
+  height: 24px;
+}
+
+body.mobile-ui .site-links {
+  margin-top: 8px;
+  gap: 6px;
+}
+
+body.mobile-ui .site-links a {
+  font-size: 10px;
+  padding: 3px 6px;
+}
+
 body.mobile-ui .hud {
   top: calc(6px + env(safe-area-inset-top));
   left: calc(6px + env(safe-area-inset-left));
@@ -691,12 +878,49 @@ body.mobile-ui .hud {
 }
 
 body.mobile-ui .quest-panel {
-  top: calc(86px + env(safe-area-inset-top));
+  top: calc(84px + env(safe-area-inset-top));
   left: calc(6px + env(safe-area-inset-left));
-  min-width: 160px;
-  max-width: min(58vw, 280px);
-  max-height: min(44vh, 340px);
-  padding: 6px 8px;
+  min-width: 132px;
+  max-width: min(44vw, 208px);
+  max-height: min(32vh, 228px);
+  padding: 5px 6px;
+}
+
+body.mobile-ui .quest-panel-title {
+  font-size: 11px;
+}
+
+body.mobile-ui .quest-panel-meta {
+  margin-top: 1px;
+  font-size: 9px;
+}
+
+body.mobile-ui .quest-panel-list {
+  margin-top: 5px;
+  gap: 4px;
+}
+
+body.mobile-ui .quest-row {
+  padding: 4px 5px;
+}
+
+body.mobile-ui .quest-row-title {
+  font-size: 10px;
+}
+
+body.mobile-ui .quest-row-status {
+  font-size: 9px;
+}
+
+body.mobile-ui .quest-row-desc,
+body.mobile-ui .quest-row-progress,
+body.mobile-ui .quest-row-reward {
+  font-size: 9px;
+}
+
+body.mobile-ui .quest-panel-help {
+  margin-top: 5px;
+  font-size: 9px;
 }
 
 body.mobile-ui .hud-row {
