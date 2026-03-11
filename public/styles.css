@@ -635,6 +635,131 @@ button.secondary {
   inset: 0;
   z-index: 7;
   pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.mobile-controls * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#mobileControls button {
+  position: relative;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+  text-shadow: none;
+}
+
+#mobileControls button::before,
+#mobileControls button::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+#mobileBtnE::before {
+  width: 11px;
+  height: 14px;
+  border: 2px solid #eaf6ff;
+  border-radius: 2px;
+}
+
+#mobileBtnE::after {
+  width: 2px;
+  height: 2px;
+  background: #eaf6ff;
+  border-radius: 50%;
+  transform: translate(1px, -50%);
+}
+
+#mobileBtnO::before {
+  width: 14px;
+  height: 2px;
+  background: #eaf6ff;
+  box-shadow:
+    0 -4px 0 #eaf6ff,
+    0 4px 0 #eaf6ff;
+}
+
+#mobileBtnO::after {
+  width: 4px;
+  height: 4px;
+  background: #eaf6ff;
+  border-radius: 50%;
+  transform: translate(-6px, -50%);
+  box-shadow:
+    8px -4px 0 #eaf6ff,
+    -2px 4px 0 #eaf6ff;
+}
+
+#mobileBtnMap::before {
+  width: 16px;
+  height: 13px;
+  border: 2px solid #eaf6ff;
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, transparent 5px, #eaf6ff 5px, #eaf6ff 6px, transparent 6px),
+    linear-gradient(90deg, transparent 10px, #eaf6ff 10px, #eaf6ff 11px, transparent 11px),
+    linear-gradient(transparent 6px, #eaf6ff 6px, #eaf6ff 7px, transparent 7px);
+}
+
+#mobileBtnQuest::before {
+  width: 12px;
+  height: 14px;
+  border: 2px solid #eaf6ff;
+  border-radius: 2px;
+}
+
+#mobileBtnQuest::after {
+  width: 7px;
+  height: 2px;
+  background: #eaf6ff;
+  box-shadow:
+    0 -4px 0 #eaf6ff,
+    0 4px 0 #eaf6ff;
+}
+
+#mobileBtn1::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #eaf6ff;
+}
+
+#mobileBtn2::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #eaf6ff;
+  box-shadow: 8px 0 0 #eaf6ff;
+}
+
+#mobileBtn3::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #eaf6ff;
+  box-shadow:
+    8px 0 0 #eaf6ff,
+    4px -7px 0 #eaf6ff;
+}
+
+#mobileBtn4::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #eaf6ff;
+  box-shadow:
+    8px 0 0 #eaf6ff,
+    0 -8px 0 #eaf6ff,
+    8px -8px 0 #eaf6ff;
 }
 
 .mobile-stick-base {
@@ -651,6 +776,32 @@ button.secondary {
 }
 
 .mobile-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid rgba(221, 239, 255, 0.65);
+  background: rgba(101, 195, 232, 0.45);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mobile-car-stick-base {
+  position: absolute;
+  right: calc(64px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid rgba(230, 244, 255, 0.46);
+  background: rgba(14, 26, 35, 0.6);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.mobile-car-stick-knob {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -697,26 +848,6 @@ button.secondary {
 
 .mobile-variant-stack button {
   min-width: 38px;
-  min-height: 34px;
-  padding: 4px 8px;
-  border: 2px solid rgba(209, 232, 246, 0.62);
-  background: rgba(16, 35, 47, 0.72);
-  color: #f2f7ff;
-  touch-action: manipulation;
-}
-
-.mobile-drive-stack {
-  position: absolute;
-  right: calc(12px + env(safe-area-inset-right));
-  bottom: calc(68px + env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  pointer-events: auto;
-}
-
-.mobile-drive-stack button {
-  min-width: 42px;
   min-height: 34px;
   padding: 4px 8px;
   border: 2px solid rgba(209, 232, 246, 0.62);

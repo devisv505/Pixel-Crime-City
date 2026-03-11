@@ -71,10 +71,9 @@ const mobileRotateOverlay = document.getElementById('mobileRotateOverlay');
 const mobileControls = document.getElementById('mobileControls');
 const mobileStickBase = document.getElementById('mobileStickBase');
 const mobileStickKnob = document.getElementById('mobileStickKnob');
+const mobileCarStickBase = document.getElementById('mobileCarStickBase');
+const mobileCarStickKnob = document.getElementById('mobileCarStickKnob');
 const mobileVariantStack = document.getElementById('mobileVariantStack');
-const mobileDriveStack = document.getElementById('mobileDriveStack');
-const mobileBtnForward = document.getElementById('mobileBtnForward');
-const mobileBtnBack = document.getElementById('mobileBtnBack');
 const mobileBtn1 = document.getElementById('mobileBtn1');
 const mobileBtn2 = document.getElementById('mobileBtn2');
 const mobileBtn3 = document.getElementById('mobileBtn3');
@@ -305,12 +304,16 @@ const mobileStick = {
   x: 0,
   y: 0,
 };
+const mobileCarStick = {
+  touchId: null,
+  active: false,
+  x: 0,
+  y: 0,
+};
 const mobileShoot = {
   touchId: null,
   active: false,
 };
-let mobileDriveForwardHeld = false;
-let mobileDriveBackHeld = false;
 let lastMobileUiInCar = false;
 
 const seenEventIds = new Set();
@@ -1183,6 +1186,13 @@ function updateMobileStickKnob() {
   mobileStickKnob.style.transform = `translate(calc(-50% + ${knobX}px), calc(-50% + ${knobY}px))`;
 }
 
+function updateMobileCarStickKnob() {
+  if (!mobileCarStickKnob) return;
+  const knobX = Math.round(mobileCarStick.x * 30);
+  const knobY = Math.round(mobileCarStick.y * 30);
+  mobileCarStickKnob.style.transform = `translate(calc(-50% + ${knobX}px), calc(-50% + ${knobY}px))`;
+}
+
 function applyMobileStickToMovement() {
   if (!canAcceptGameplayInput()) {
     INPUT.up = false;
@@ -1193,11 +1203,12 @@ function applyMobileStickToMovement() {
   }
   const local = latestState?.localPlayer || null;
   if (local && local.inCarId) {
-    const mx = mobileStick.active && Number.isFinite(mobileStick.x) ? mobileStick.x : 0;
-    INPUT.up = mobileDriveForwardHeld;
-    INPUT.down = mobileDriveBackHeld;
-    INPUT.left = mx < -MOBILE_STICK_DEADZONE;
-    INPUT.right = mx > MOBILE_STICK_DEADZONE;
+    const steerX = mobileStick.active && Number.isFinite(mobileStick.x) ? mobileStick.x : 0;
+    const throttleY = mobileCarStick.active && Number.isFinite(mobileCarStick.y) ? mobileCarStick.y : 0;
+    INPUT.left = steerX < -MOBILE_STICK_DEADZONE;
+    INPUT.right = steerX > MOBILE_STICK_DEADZONE;
+    INPUT.up = throttleY < -MOBILE_STICK_DEADZONE;
+    INPUT.down = throttleY > MOBILE_STICK_DEADZONE;
     return;
   }
   if (!mobileStick.active) {
@@ -1259,6 +1270,15 @@ function releaseMobileStick() {
   applyMobileStickToMovement();
 }
 
+function releaseMobileCarStick() {
+  mobileCarStick.touchId = null;
+  mobileCarStick.active = false;
+  mobileCarStick.x = 0;
+  mobileCarStick.y = 0;
+  updateMobileCarStickKnob();
+  applyMobileStickToMovement();
+}
+
 function releaseMobileShoot() {
   mobileShoot.touchId = null;
   mobileShoot.active = false;
@@ -1286,6 +1306,27 @@ function isPointInStickZone(clientX, clientY) {
   return dx * dx + dy * dy <= g.zoneRadius * g.zoneRadius;
 }
 
+function getMobileCarStickGeometry() {
+  if (!mobileCarStickBase) return null;
+  const rect = mobileCarStickBase.getBoundingClientRect();
+  const size = Math.min(rect.width, rect.height);
+  if (!Number.isFinite(size) || size <= 0) return null;
+  return {
+    cx: rect.left + rect.width * 0.5,
+    cy: rect.top + rect.height * 0.5,
+    radius: size * MOBILE_STICK_KNOB_SCALE,
+    zoneRadius: size * MOBILE_STICK_ZONE_SCALE,
+  };
+}
+
+function isPointInCarStickZone(clientX, clientY) {
+  const g = getMobileCarStickGeometry();
+  if (!g) return false;
+  const dx = clientX - g.cx;
+  const dy = clientY - g.cy;
+  return dx * dx + dy * dy <= g.zoneRadius * g.zoneRadius;
+}
+
 function updateMobileStickFromClient(clientX, clientY) {
   const g = getMobileStickGeometry();
   if (!g) return;
@@ -1300,10 +1341,30 @@ function updateMobileStickFromClient(clientX, clientY) {
   applyMobileStickToMovement();
 }
 
+function updateMobileCarStickFromClient(clientX, clientY) {
+  const g = getMobileCarStickGeometry();
+  if (!g) return;
+  const dx = clientX - g.cx;
+  const dy = clientY - g.cy;
+  const dist = Math.hypot(dx, dy);
+  const safeDist = Math.max(1, dist);
+  const clamped = Math.min(safeDist, g.radius);
+  mobileCarStick.x = (dx / safeDist) * (clamped / g.radius);
+  mobileCarStick.y = (dy / safeDist) * (clamped / g.radius);
+  updateMobileCarStickKnob();
+  applyMobileStickToMovement();
+}
+
 function startMobileStick(touch) {
   mobileStick.touchId = touch.identifier;
   mobileStick.active = true;
   updateMobileStickFromClient(touch.clientX, touch.clientY);
+}
+
+function startMobileCarStick(touch) {
+  mobileCarStick.touchId = touch.identifier;
+  mobileCarStick.active = true;
+  updateMobileCarStickFromClient(touch.clientX, touch.clientY);
 }
 
 function startMobileShoot(touch) {
@@ -1392,46 +1453,6 @@ function triggerDigit4Action() {
   triggerDigitAction('Digit4');
 }
 
-function setMobileDriveHold(isForward, isDown) {
-  if (!isMobileUi) return;
-  if (!isDown) {
-    if (isForward) {
-      mobileDriveForwardHeld = false;
-    } else {
-      mobileDriveBackHeld = false;
-    }
-    applyMobileStickToMovement();
-    return;
-  }
-  if (!joined || !canAcceptGameplayInput()) return;
-  const local = latestState?.localPlayer || null;
-  if (!local || !local.inCarId || local.insideShopId) return;
-  if (isForward) {
-    mobileDriveForwardHeld = true;
-    mobileDriveBackHeld = false;
-  } else {
-    mobileDriveBackHeld = true;
-    mobileDriveForwardHeld = false;
-  }
-  applyMobileStickToMovement();
-}
-
-function holdDriveForwardStart() {
-  setMobileDriveHold(true, true);
-}
-
-function holdDriveForwardEnd() {
-  setMobileDriveHold(true, false);
-}
-
-function holdDriveBackStart() {
-  setMobileDriveHold(false, true);
-}
-
-function holdDriveBackEnd() {
-  setMobileDriveHold(false, false);
-}
-
 function refreshMobileUiState() {
   isMobileUi = detectMobileUiDevice();
   isMobileLandscape = window.innerWidth >= window.innerHeight;
@@ -1461,19 +1482,19 @@ function refreshMobileUiState() {
     mobileVariantStack.classList.toggle('hidden', !showVariants);
     mobileVariantStack.setAttribute('aria-hidden', showVariants ? 'false' : 'true');
   }
-  if (mobileDriveStack) {
-    mobileDriveStack.classList.toggle('hidden', !showCarControls);
-    mobileDriveStack.setAttribute('aria-hidden', showCarControls ? 'false' : 'true');
+  if (mobileCarStickBase) {
+    mobileCarStickBase.classList.toggle('hidden', !showCarControls);
+    mobileCarStickBase.setAttribute('aria-hidden', showCarControls ? 'false' : 'true');
   }
   if (!showCarControls) {
-    mobileDriveForwardHeld = false;
-    mobileDriveBackHeld = false;
+    releaseMobileCarStick();
   }
 
   if (blocked) {
     INPUT.enter = false;
     INPUT.horn = false;
     releaseMobileStick();
+    releaseMobileCarStick();
     releaseMobileShoot();
   }
   applyMobileStickToMovement();
@@ -2284,50 +2305,16 @@ function bindMobileActionButton(button, onAction) {
   });
 }
 
-function bindMobileHoldButton(button, onStart, onEnd) {
-  if (!button) return;
-  button.addEventListener(
-    'touchstart',
-    (event) => {
-      if (!isMobileUi) return;
-      event.preventDefault();
-      event.stopPropagation();
-      mobileSuppressMouseUntil = performance.now() + MOBILE_MOUSE_SUPPRESS_MS;
-      onStart();
-    },
-    { passive: false }
-  );
-  const endTouch = (event) => {
-    if (!isMobileUi) return;
-    event.preventDefault();
-    event.stopPropagation();
-    onEnd();
-  };
-  button.addEventListener('touchend', endTouch, { passive: false });
-  button.addEventListener('touchcancel', endTouch, { passive: false });
-
-  button.addEventListener('mousedown', (event) => {
-    if (!isMobileUi) return;
-    event.preventDefault();
-    onStart();
-  });
-  button.addEventListener('mouseup', (event) => {
-    if (!isMobileUi) return;
-    event.preventDefault();
-    onEnd();
-  });
-  button.addEventListener('mouseleave', () => {
-    if (!isMobileUi) return;
-    onEnd();
-  });
-}
-
 function onMobileGlobalTouchMove(event) {
   if (!isMobileUi) return;
   let consumed = false;
   for (const touch of event.changedTouches) {
     if (mobileStick.active && touch.identifier === mobileStick.touchId) {
       updateMobileStickFromClient(touch.clientX, touch.clientY);
+      consumed = true;
+    }
+    if (mobileCarStick.active && touch.identifier === mobileCarStick.touchId) {
+      updateMobileCarStickFromClient(touch.clientX, touch.clientY);
       consumed = true;
     }
     if (mobileShoot.active && touch.identifier === mobileShoot.touchId) {
@@ -2346,6 +2333,10 @@ function onMobileGlobalTouchEnd(event) {
   for (const touch of event.changedTouches) {
     if (mobileStick.active && touch.identifier === mobileStick.touchId) {
       releaseMobileStick();
+      consumed = true;
+    }
+    if (mobileCarStick.active && touch.identifier === mobileCarStick.touchId) {
+      releaseMobileCarStick();
       consumed = true;
     }
     if (mobileShoot.active && touch.identifier === mobileShoot.touchId) {
@@ -2370,6 +2361,26 @@ function onMobileStickTouchStart(event) {
   if (!touch) return;
   if (!isPointInStickZone(touch.clientX, touch.clientY)) return;
   startMobileStick(touch);
+  mobileSuppressMouseUntil = performance.now() + MOBILE_MOUSE_SUPPRESS_MS;
+}
+
+function onMobileCarStickTouchStart(event) {
+  if (!isMobileUi || !joined) return;
+  event.preventDefault();
+  if (!canAcceptGameplayInput()) {
+    releaseMobileCarStick();
+    return;
+  }
+  const local = latestState?.localPlayer || null;
+  if (!local || !local.inCarId || local.insideShopId) {
+    releaseMobileCarStick();
+    return;
+  }
+  if (mobileCarStick.active) return;
+  const touch = event.changedTouches[0];
+  if (!touch) return;
+  if (!isPointInCarStickZone(touch.clientX, touch.clientY)) return;
+  startMobileCarStick(touch);
   mobileSuppressMouseUntil = performance.now() + MOBILE_MOUSE_SUPPRESS_MS;
 }
 
@@ -2492,9 +2503,8 @@ function resetSessionState() {
   INPUT.clickAimY = WORLD.height * 0.5;
   INPUT.requestStats = false;
   releaseMobileStick();
+  releaseMobileCarStick();
   releaseMobileShoot();
-  mobileDriveForwardHeld = false;
-  mobileDriveBackHeld = false;
   lastMobileUiInCar = false;
   statusNotice = '';
   statusNoticeUntil = 0;
@@ -6113,8 +6123,6 @@ function startRenderLoop() {
 }
 
 function attachUiEvents() {
-  bindMobileHoldButton(mobileBtnForward, holdDriveForwardStart, holdDriveForwardEnd);
-  bindMobileHoldButton(mobileBtnBack, holdDriveBackStart, holdDriveBackEnd);
   bindMobileActionButton(mobileBtn1, triggerDigit1Action);
   bindMobileActionButton(mobileBtn2, triggerDigit2Action);
   bindMobileActionButton(mobileBtn3, triggerDigit3Action);
@@ -6126,6 +6134,9 @@ function attachUiEvents() {
 
   if (mobileStickBase) {
     mobileStickBase.addEventListener('touchstart', onMobileStickTouchStart, { passive: false });
+  }
+  if (mobileCarStickBase) {
+    mobileCarStickBase.addEventListener('touchstart', onMobileCarStickTouchStart, { passive: false });
   }
   canvas.addEventListener('touchstart', onMobileCanvasTouchStart, { passive: false });
   window.addEventListener('touchmove', onMobileGlobalTouchMove, { passive: false });
