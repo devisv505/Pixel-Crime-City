@@ -63,6 +63,13 @@ app.use(express.json({ limit: '128kb' }));
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL);
+const ADSENSE_CLIENT = String(process.env.ADSENSE_CLIENT || '').trim();
+const ADSENSE_JOIN_SLOT = String(process.env.ADSENSE_JOIN_SLOT || '').trim();
+const ADS_TXT_LINES = String(process.env.ADS_TXT_LINES || '').trim();
+const GOOGLE_FC_PUBLISHER = String(
+  process.env.GOOGLE_FC_PUBLISHER || normalizeAdSensePublisherForAdsTxt(ADSENSE_CLIENT)
+).trim();
+const SITE_CONTACT_EMAIL = String(process.env.SITE_CONTACT_EMAIL || 'devisv505@gmail.com').trim();
 const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 36));
 const DT = 1 / TICK_RATE;
 const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 24));
@@ -368,6 +375,36 @@ function escapeXml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function normalizeAdSensePublisherForAdsTxt(clientValue) {
+  const raw = String(clientValue || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw.startsWith('ca-pub-')) {
+    const body = raw.slice('ca-pub-'.length);
+    return /^\d{10,24}$/.test(body) ? `pub-${body}` : '';
+  }
+  if (raw.startsWith('pub-')) {
+    const body = raw.slice('pub-'.length);
+    return /^\d{10,24}$/.test(body) ? `pub-${body}` : '';
+  }
+  return '';
+}
+
+function splitAdsTxtLines(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function safeContactEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  if (!email) return 'devisv505@gmail.com';
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email)) {
+    return 'devisv505@gmail.com';
+  }
+  return email;
 }
 
 function protocolIdForEntity(entityId) {
@@ -3059,9 +3096,45 @@ function applyQuestCatalogReloadAndResync() {
   refreshAllOnlinePlayerQuestState(true);
 }
 
+app.get('/runtime-config.js', (_req, res) => {
+  const payload = {
+    adsense: {
+      client: ADSENSE_CLIENT,
+      joinSlot: ADSENSE_JOIN_SLOT,
+      enabled: ADSENSE_CLIENT.length > 0 && ADSENSE_JOIN_SLOT.length > 0,
+    },
+    consent: {
+      googleFcPublisher: GOOGLE_FC_PUBLISHER,
+      enabled: GOOGLE_FC_PUBLISHER.length > 0,
+    },
+    contactEmail: safeContactEmail(SITE_CONTACT_EMAIL),
+  };
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`window.__PCC_RUNTIME_CONFIG__ = ${JSON.stringify(payload)};\n`);
+});
+
 app.use(['/admin', '/api/admin'], (_req, res, next) => {
   res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
   next();
+});
+
+app.get('/ads.txt', (_req, res) => {
+  const lines = [];
+  const normalizedPub = normalizeAdSensePublisherForAdsTxt(ADSENSE_CLIENT);
+  if (normalizedPub) {
+    lines.push(`google.com, ${normalizedPub}, DIRECT, f08c47fec0942fa0`);
+  }
+  const extraLines = splitAdsTxtLines(ADS_TXT_LINES);
+  if (extraLines.length > 0) {
+    lines.push(...extraLines);
+  }
+  if (lines.length === 0) {
+    lines.push('# Configure ADSENSE_CLIENT or ADS_TXT_LINES to publish ads.txt records.');
+  }
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=1800');
+  res.send(`${lines.join('\n')}\n`);
 });
 
 app.get('/robots.txt', (req, res) => {
@@ -3082,23 +3155,41 @@ app.get('/robots.txt', (req, res) => {
 });
 
 app.get('/sitemap.xml', (req, res) => {
-  const homeUrl = absolutePublicUrl(req, '/');
+  const pages = ['/', '/privacy-policy', '/terms', '/contact'];
   const lastModified = new Date(SERVER_BOOT_TIME_MS).toISOString();
   const xml = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-    '  <url>',
-    `    <loc>${escapeXml(homeUrl)}</loc>`,
-    `    <lastmod>${lastModified}</lastmod>`,
-    '    <changefreq>daily</changefreq>',
-    '    <priority>1.0</priority>',
-    '  </url>',
+    ...pages.flatMap((pathname, index) => {
+      const priority = index === 0 ? '1.0' : '0.4';
+      const changefreq = index === 0 ? 'daily' : 'monthly';
+      return [
+        '  <url>',
+        `    <loc>${escapeXml(absolutePublicUrl(req, pathname))}</loc>`,
+        `    <lastmod>${lastModified}</lastmod>`,
+        `    <changefreq>${changefreq}</changefreq>`,
+        `    <priority>${priority}</priority>`,
+        '  </url>',
+      ];
+    }),
     '</urlset>',
     '',
   ].join('\n');
   res.setHeader('Content-Type', 'application/xml; charset=utf-8');
   res.setHeader('Cache-Control', 'public, max-age=1800');
   res.send(xml);
+});
+
+app.get('/privacy-policy', (_req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'privacy-policy.html'));
+});
+
+app.get('/terms', (_req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'terms.html'));
+});
+
+app.get('/contact', (_req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'contact.html'));
 });
 
 app.get('/admin', (req, res) => {

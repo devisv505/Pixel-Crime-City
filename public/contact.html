@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="index,follow" />
+    <title>Contact | Pixel Crime City</title>
+    <link rel="canonical" href="/contact" />
+    <link rel="stylesheet" href="/legal.css" />
+  </head>
+  <body>
+    <main class="legal-shell">
+      <article class="legal-card">
+        <h1>Contact</h1>
+        <div class="legal-meta">Support and legal requests</div>
+
+        <p>
+          For account, gameplay, policy, or legal questions, contact us at:
+        </p>
+        <p>
+          <strong>Email:</strong>
+          <a id="contactEmailLink" href="mailto:devisv505@gmail.com">devisv505@gmail.com</a>
+        </p>
+
+        <p>
+          Include your player name/profile ID and a clear description of the issue.
+        </p>
+
+        <nav class="legal-nav">
+          <a href="/">Back to Game</a>
+          <a href="/privacy-policy">Privacy Policy</a>
+          <a href="/terms">Terms</a>
+        </nav>
+      </article>
+    </main>
+
+    <script src="/runtime-config.js"></script>
+    <script>
+      (function applyConfiguredContactEmail() {
+        const link = document.getElementById('contactEmailLink');
+        if (!link) return;
+        const cfg = window.__PCC_RUNTIME_CONFIG__ || {};
+        const email = String(cfg.contactEmail || '').trim();
+        if (!email || !/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email)) return;
+        link.textContent = email;
+        link.href = `mailto:${email}`;
+      })();
+    </script>
+  </body>
+</html>

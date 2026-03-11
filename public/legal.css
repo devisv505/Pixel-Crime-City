@@ -1,0 +1,104 @@
+:root {
+  --bg: #0f1b24;
+  --bg2: #0b141a;
+  --panel: #152632;
+  --panel-edge: #305061;
+  --text: #eef6ff;
+  --muted: #afc6d8;
+  --link: #7ed9ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(circle at 20% 10%, #203a4b 0%, var(--bg) 58%, var(--bg2) 100%);
+  color: var(--text);
+  font-family: "Lucida Console", Monaco, monospace;
+}
+
+.legal-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px 12px;
+}
+
+.legal-card {
+  width: min(920px, 100%);
+  border: 2px solid var(--panel-edge);
+  background: linear-gradient(180deg, rgba(21, 38, 50, 0.96), rgba(12, 21, 28, 0.98));
+  padding: 16px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.42);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.legal-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+h2 {
+  margin: 14px 0 8px;
+  font-size: 16px;
+}
+
+p,
+li {
+  color: #dcecf8;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+a {
+  color: var(--link);
+}
+
+.legal-nav {
+  margin-top: 18px;
+  border-top: 1px solid rgba(170, 202, 224, 0.24);
+  padding-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.legal-nav a {
+  text-decoration: none;
+  border: 1px solid rgba(144, 188, 214, 0.38);
+  background: rgba(19, 35, 47, 0.64);
+  padding: 6px 9px;
+}
+
+.legal-nav a:hover {
+  filter: brightness(1.1);
+}
+
+@media (max-width: 640px) {
+  .legal-card {
+    padding: 13px;
+  }
+
+  h1 {
+    font-size: 18px;
+  }
+
+  h2 {
+    font-size: 14px;
+  }
+}
