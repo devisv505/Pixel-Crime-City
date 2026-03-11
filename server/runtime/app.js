@@ -4275,6 +4275,7 @@ function makeCar(type = 'civilian') {
     stuckTimer: 0,
     lastMoveX: spawn.x,
     lastMoveY: spawn.y,
+    followBlockedTimer: 0,
     color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
     npcOccupantCount: isCop || isAmbulance ? 2 : 1,
     stolenFromNpc: false,
@@ -4319,6 +4320,7 @@ function resetCarForRespawn(car, spawn) {
   car.stuckTimer = 0;
   car.lastMoveX = spawn.x;
   car.lastMoveY = spawn.y;
+  car.followBlockedTimer = 0;
   car.stolenFromNpc = false;
   car.ownerNpcId = null;
   car.ownerReturnTimer = 0;
@@ -6083,6 +6085,7 @@ function applyAiCarFollowSpeed(car, desiredSpeed, dt, headingAngle = car.angle, 
 
   let cappedSpeed = Math.max(0, Number(desiredSpeed) || 0);
   const lead = ignoreLeadCars ? null : nearestCarAheadInHeading(car, headingAngle, lookAhead, lateralPadding);
+  let followConstraint = false;
   if (lead) {
     const leadForwardSpeed = Math.max(0, speedAlongHeading(lead.car, headingAngle));
     const bumperGap = (car.width + lead.car.width) * 0.5 + minGap;
@@ -6090,11 +6093,18 @@ function applyAiCarFollowSpeed(car, desiredSpeed, dt, headingAngle = car.angle, 
     const desiredClearGap = minGap + Math.max(0, car.speed) * timeGap;
     if (freeGap <= 2) {
       cappedSpeed = 0;
+      followConstraint = true;
     } else if (freeGap < desiredClearGap) {
       cappedSpeed = Math.min(cappedSpeed, Math.max(0, leadForwardSpeed - 6));
+      followConstraint = true;
     } else if (freeGap < desiredClearGap + 18) {
       cappedSpeed = Math.min(cappedSpeed, leadForwardSpeed + 4);
+      followConstraint = true;
     }
+  }
+
+  if (followConstraint && cappedSpeed <= Math.max(14, (Number(desiredSpeed) || 0) * 0.5)) {
+    car.followBlockedTimer = Math.max(Number(car.followBlockedTimer) || 0, 0.9);
   }
 
   car.speed = approach(car.speed, cappedSpeed, dt * (cappedSpeed < car.speed ? brakeRate : accelRate));
@@ -7242,6 +7252,7 @@ function stepPlayers(dt) {
 
 function isCarStuckRespawnSuppressed(car) {
   if (!car || car.driverId || !car.npcDriver) return true;
+  if ((Number(car.followBlockedTimer) || 0) > 0) return true;
   if (car.type === 'cop' && Array.isArray(car.dismountCopIds) && car.dismountCopIds.length > 0) {
     return true;
   }
@@ -7271,6 +7282,8 @@ function updateCarStuckState(car, dt) {
   if (!Number.isFinite(car.lastMoveX)) car.lastMoveX = car.x;
   if (!Number.isFinite(car.lastMoveY)) car.lastMoveY = car.y;
   if (!Number.isFinite(car.stuckTimer)) car.stuckTimer = 0;
+  if (!Number.isFinite(car.followBlockedTimer)) car.followBlockedTimer = 0;
+  car.followBlockedTimer = Math.max(0, car.followBlockedTimer - dt);
 
   if (isCarStuckRespawnSuppressed(car)) {
     car.stuckTimer = 0;
