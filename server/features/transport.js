@@ -21,6 +21,8 @@ function createTransportFeature(deps) {
     protocolIdForEntity,
     clamp,
     buyItemForPlayer,
+    onPlayerJoin = null,
+    onPlayerDisconnect = null,
     decodeClientFrame,
     encodeErrorFrame,
     encodeNoticeFrame,
@@ -39,6 +41,13 @@ function createTransportFeature(deps) {
 
     const player = players.get(client.playerId);
     if (player) {
+      try {
+        if (typeof onPlayerDisconnect === 'function') {
+          onPlayerDisconnect(player);
+        }
+      } catch {
+        // Session tracking hooks should never break disconnect flow.
+      }
       releaseQuestTargetReservationsForProfile(player.profileId);
       if (player.inCarId) {
         const car = cars.get(player.inCarId);
@@ -115,6 +124,7 @@ function createTransportFeature(deps) {
       activeQuestTargetQuestId: 0,
       activeQuestTargetCarId: '',
       activeQuestTargetCarQuestId: 0,
+      sessionStartedAt: 0,
       requestStats: false,
       lastInputSeq: 0,
       lastClientSendTime: 0,
@@ -140,6 +150,13 @@ function createTransportFeature(deps) {
     restoreProgressForPlayer(player, profileTicket, name);
     attachCrimeReputationToPlayer(player, profileId);
     attachQuestStateToPlayer(player);
+    try {
+      if (typeof onPlayerJoin === 'function') {
+        onPlayerJoin(player);
+      }
+    } catch {
+      // Session tracking hooks should never block join.
+    }
     const initialProgressSignature = progressSignatureFromPlayer(player);
     const initialProgressTicket = createProgressTicketForPlayer(player);
 

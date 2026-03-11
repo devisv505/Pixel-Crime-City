@@ -251,6 +251,8 @@ const ADMIN_USING_LOCAL_DEFAULTS =
   ADMIN_AUTH_PASS === 'change_me';
 const ADMIN_SESSION_COOKIE = 'pcc_admin_session';
 const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const ADMIN_PLAYER_STATS_DEFAULT_PAGE_SIZE = 100;
+const ADMIN_PLAYER_STATS_MAX_PAGE_SIZE = 500;
 const NPC_PLAYER_CAR_FEAR_MIN_SPEED = 14;
 const NPC_PLAYER_CAR_FEAR_RADIUS_BASE = 26;
 const NPC_PLAYER_CAR_FEAR_RADIUS_MAX = 76;
@@ -283,6 +285,7 @@ const bloodStains = new Map();
 let crimeReputationDb = null;
 const crimeReputationSql = {};
 const questSql = {};
+const playerStatsSql = {};
 let activeQuestCatalog = [];
 const adminSessions = new Map();
 const questTargetAssignmentsByKey = new Map();
@@ -774,6 +777,23 @@ function crimeRecordFromRow(row, fallbackProfileId = '') {
   );
 }
 
+function normalizePlayerStatsRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const profileId = sanitizeProfileId(row.profileId);
+  if (!profileId) return null;
+  const safeName = sanitizeName(row.name) || `Profile ${crimeProfileTag(profileId)}`;
+  const lastEnteredAt = Math.max(0, Math.round(Number(row.lastEnteredAt) || 0));
+  const longestSessionMs = Math.max(0, Math.round(Number(row.longestSessionMs) || 0));
+  const updatedAt = Math.max(0, Math.round(Number(row.updatedAt) || 0));
+  return {
+    profileId,
+    name: safeName,
+    lastEnteredAt,
+    longestSessionMs,
+    updatedAt,
+  };
+}
+
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1164,6 +1184,17 @@ function ensureCrimeReputationDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_player_quest_target_car_id
         ON player_quest_target_car (target_car_id);
+      CREATE TABLE IF NOT EXISTS player_stats (
+        profile_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        last_entered_at INTEGER NOT NULL,
+        longest_session_ms INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_player_stats_last_entered
+        ON player_stats (last_entered_at DESC, profile_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_player_stats_name
+        ON player_stats (name COLLATE NOCASE);
     `);
     runCrimeReputationMigrations(crimeReputationDb);
     crimeReputationSql.selectByProfileId = crimeReputationDb.prepare(`
@@ -1558,6 +1589,55 @@ function ensureCrimeReputationDb() {
       ORDER BY qp.reputation DESC, qp.updated_at DESC, qp.profile_id ASC
       LIMIT @limit OFFSET @offset
     `);
+    playerStatsSql.upsertOnJoin = crimeReputationDb.prepare(`
+      INSERT INTO player_stats (profile_id, name, last_entered_at, longest_session_ms, updated_at)
+      VALUES (@profileId, @name, @lastEnteredAt, @longestSessionMs, @updatedAt)
+      ON CONFLICT(profile_id) DO UPDATE SET
+        name = excluded.name,
+        last_entered_at = excluded.last_entered_at,
+        updated_at = excluded.updated_at
+    `);
+    playerStatsSql.upsertSessionDuration = crimeReputationDb.prepare(`
+      INSERT INTO player_stats (profile_id, name, last_entered_at, longest_session_ms, updated_at)
+      VALUES (@profileId, @name, @lastEnteredAt, @sessionMs, @updatedAt)
+      ON CONFLICT(profile_id) DO UPDATE SET
+        name = excluded.name,
+        longest_session_ms = CASE
+          WHEN excluded.longest_session_ms > player_stats.longest_session_ms
+            THEN excluded.longest_session_ms
+          ELSE player_stats.longest_session_ms
+        END,
+        updated_at = excluded.updated_at
+    `);
+    playerStatsSql.countAll = crimeReputationDb.prepare('SELECT COUNT(1) AS total FROM player_stats');
+    playerStatsSql.countByName = crimeReputationDb.prepare(`
+      SELECT COUNT(1) AS total
+      FROM player_stats
+      WHERE name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
+    `);
+    playerStatsSql.listPage = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        name,
+        last_entered_at AS lastEnteredAt,
+        longest_session_ms AS longestSessionMs,
+        updated_at AS updatedAt
+      FROM player_stats
+      ORDER BY last_entered_at DESC, profile_id ASC
+      LIMIT @limit OFFSET @offset
+    `);
+    playerStatsSql.listPageByName = crimeReputationDb.prepare(`
+      SELECT
+        profile_id AS profileId,
+        name,
+        last_entered_at AS lastEnteredAt,
+        longest_session_ms AS longestSessionMs,
+        updated_at AS updatedAt
+      FROM player_stats
+      WHERE name LIKE @nameLike ESCAPE '\\' COLLATE NOCASE
+      ORDER BY last_entered_at DESC, profile_id ASC
+      LIMIT @limit OFFSET @offset
+    `);
     return true;
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -1573,6 +1653,9 @@ function ensureCrimeReputationDb() {
     }
     for (const key of Object.keys(questSql)) {
       delete questSql[key];
+    }
+    for (const key of Object.keys(playerStatsSql)) {
+      delete playerStatsSql[key];
     }
     questTargetAssignmentsByKey.clear();
     questTargetOwnerByNpcId.clear();
@@ -1650,6 +1733,9 @@ function closeCrimeReputationStore() {
   }
   for (const key of Object.keys(questSql)) {
     delete questSql[key];
+  }
+  for (const key of Object.keys(playerStatsSql)) {
+    delete playerStatsSql[key];
   }
   questTargetAssignmentsByKey.clear();
   questTargetOwnerByNpcId.clear();
@@ -2808,6 +2894,52 @@ function attachCrimeReputationToPlayer(player, profileId) {
   player.crimeRating = clampCrimeRating(record.crimeRating);
 }
 
+function trackPlayerSessionJoin(player) {
+  if (!player) return;
+  const profileId = resolveCrimeProfileIdForJoin(player.name, player.profileId);
+  if (!profileId) return;
+  const safeName = sanitizeName(player.name) || `Profile ${crimeProfileTag(profileId)}`;
+  const now = Date.now();
+  player.sessionStartedAt = now;
+  if (!ensureCrimeReputationDb() || !playerStatsSql.upsertOnJoin) return;
+  try {
+    playerStatsSql.upsertOnJoin.run({
+      profileId,
+      name: safeName,
+      lastEnteredAt: now,
+      longestSessionMs: 0,
+      updatedAt: now,
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[stats] failed to mark join for ${profileId}: ${error.message}`);
+  }
+}
+
+function trackPlayerSessionDisconnect(player) {
+  if (!player) return;
+  const profileId = resolveCrimeProfileIdForJoin(player.name, player.profileId);
+  if (!profileId) return;
+  const safeName = sanitizeName(player.name) || `Profile ${crimeProfileTag(profileId)}`;
+  const now = Date.now();
+  const sessionStartedAt = Math.max(0, Math.round(Number(player.sessionStartedAt) || 0));
+  const sessionMs = sessionStartedAt > 0 ? Math.max(0, now - sessionStartedAt) : 0;
+  player.sessionStartedAt = 0;
+  if (!ensureCrimeReputationDb() || !playerStatsSql.upsertSessionDuration) return;
+  try {
+    playerStatsSql.upsertSessionDuration.run({
+      profileId,
+      name: safeName,
+      lastEnteredAt: sessionStartedAt > 0 ? sessionStartedAt : now,
+      sessionMs,
+      updatedAt: now,
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[stats] failed to store session for ${profileId}: ${error.message}`);
+  }
+}
+
 function addCrimeRating(player, amount) {
   if (!player) return;
   const gain = clampCrimeRating(amount);
@@ -3261,6 +3393,10 @@ app.get('/admin/quests', requireAdminPageAuth, (req, res) => {
   res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-quests.html'));
 });
 
+app.get('/admin/player-stats', requireAdminPageAuth, (req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-player-stats.html'));
+});
+
 app.post('/api/admin/login', (req, res) => {
   if (!ADMIN_AUTH_ENABLED) {
     res.status(503).json({ ok: false, error: 'Admin panel disabled: set ADMIN_USER and ADMIN_PASS.' });
@@ -3297,6 +3433,68 @@ app.get('/api/admin/session', (req, res) => {
     setAdminSessionCookie(res, authState.token);
   }
   res.json({ ok: true, enabled: true, authenticated: !!authState.ok });
+});
+
+app.get('/api/admin/player-stats', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({
+      page: 1,
+      pageSize: ADMIN_PLAYER_STATS_DEFAULT_PAGE_SIZE,
+      total: 0,
+      totalPages: 1,
+      query: '',
+      players: [],
+      error: 'Player stats store unavailable',
+    });
+    return;
+  }
+
+  const requestedPage = Number.parseInt(String(req.query.page || '1'), 10);
+  const requestedPageSize = Number.parseInt(String(req.query.pageSize || ADMIN_PLAYER_STATS_DEFAULT_PAGE_SIZE), 10);
+  const searchQuery = normalizeCrimeBoardSearchQuery(String(req.query.q || ''));
+  const hasSearch = searchQuery.length > 0;
+  const nameLike = `%${escapeSqlLikePattern(searchQuery)}%`;
+  const pageSize = clamp(
+    Number.isFinite(requestedPageSize) ? requestedPageSize : ADMIN_PLAYER_STATS_DEFAULT_PAGE_SIZE,
+    1,
+    ADMIN_PLAYER_STATS_MAX_PAGE_SIZE
+  );
+
+  try {
+    const total = Number(
+      hasSearch ? playerStatsSql.countByName.get({ nameLike })?.total : playerStatsSql.countAll.get()?.total
+    ) || 0;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = clamp(Number.isFinite(requestedPage) ? requestedPage : 1, 1, totalPages);
+    const start = (page - 1) * pageSize;
+    const rows =
+      total > 0
+        ? hasSearch
+          ? playerStatsSql.listPageByName.all({ nameLike, limit: pageSize, offset: start })
+          : playerStatsSql.listPage.all({ limit: pageSize, offset: start })
+        : [];
+
+    res.json({
+      page,
+      pageSize,
+      total,
+      totalPages,
+      query: searchQuery,
+      players: rows.map((row) => normalizePlayerStatsRow(row)).filter(Boolean),
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[stats] failed to query admin player stats: ${error.message}`);
+    res.status(500).json({
+      page: 1,
+      pageSize,
+      total: 0,
+      totalPages: 1,
+      query: searchQuery,
+      players: [],
+      error: 'Player stats query failed',
+    });
+  }
 });
 
 app.get('/api/admin/quests', requireAdminApiAuth, (req, res) => {
@@ -8841,6 +9039,8 @@ const transportFeature = createTransportFeature({
   protocolIdForEntity,
   clamp,
   buyItemForPlayer,
+  onPlayerJoin: trackPlayerSessionJoin,
+  onPlayerDisconnect: trackPlayerSessionDisconnect,
   decodeClientFrame,
   encodeErrorFrame,
   encodeNoticeFrame,

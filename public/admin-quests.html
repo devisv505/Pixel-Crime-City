@@ -37,7 +37,18 @@
         padding: 6px 10px;
         cursor: pointer;
       }
+      .button-link {
+        display: inline-block;
+        border: 1px solid #4a6b84;
+        background: #1f3344;
+        color: #ebf5ff;
+        padding: 6px 10px;
+        text-decoration: none;
+      }
       button.secondary {
+        background: #162531;
+      }
+      .button-link.secondary {
         background: #162531;
       }
       button:disabled {
@@ -129,6 +140,7 @@
       <div class="topbar">
         <button id="reloadBtn" type="button">Reload</button>
         <button id="saveOrderBtn" type="button" class="secondary">Save Order</button>
+        <a href="/admin/player-stats" class="button-link secondary">Player Stats</a>
         <button id="logoutBtn" type="button" class="secondary">Logout</button>
         <span id="status" class="status"></span>
       </div>

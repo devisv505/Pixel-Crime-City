@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Player Stats Admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0f1822;
+        color: #e8f2fb;
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 22px;
+      }
+      .topbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      button,
+      .button-link {
+        border: 1px solid #4a6b84;
+        background: #1f3344;
+        color: #ebf5ff;
+        padding: 6px 10px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button.secondary,
+      .button-link.secondary {
+        background: #162531;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .status {
+        min-height: 18px;
+        color: #ffd08e;
+      }
+      .card {
+        border: 1px solid #355167;
+        background: #13222f;
+        padding: 12px;
+      }
+      .filters {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .filters label {
+        font-size: 12px;
+        color: #a8c0d3;
+      }
+      .filters input,
+      .filters select {
+        border: 1px solid #4a6b84;
+        background: #0d1b26;
+        color: #e8f2fb;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #284457;
+        text-align: left;
+        padding: 6px;
+        vertical-align: top;
+      }
+      th {
+        font-size: 12px;
+        color: #a8c0d3;
+      }
+      .mono {
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+      }
+      .pager {
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      @media (max-width: 760px) {
+        .wrap {
+          padding: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Player Stats Admin</h1>
+      <div class="topbar">
+        <a href="/admin/quests" class="button-link secondary">Quest Admin</a>
+        <button id="reloadBtn" type="button">Reload</button>
+        <button id="logoutBtn" type="button" class="secondary">Logout</button>
+        <span id="status" class="status"></span>
+      </div>
+
+      <section class="card">
+        <div class="filters">
+          <label for="searchInput">Player Name</label>
+          <input id="searchInput" maxlength="32" placeholder="Search name" />
+          <button id="searchBtn" type="button" class="secondary">Search</button>
+          <button id="clearBtn" type="button" class="secondary">Clear</button>
+          <label for="pageSizeSelect">Page Size</label>
+          <select id="pageSizeSelect">
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Profile</th>
+              <th>Last Entered</th>
+              <th>Longest Session</th>
+            </tr>
+          </thead>
+          <tbody id="statsRows"></tbody>
+        </table>
+
+        <div class="pager">
+          <button id="prevBtn" type="button" class="secondary">Prev</button>
+          <span id="pageLabel">Page 1 / 1</span>
+          <button id="nextBtn" type="button">Next</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const statusNode = document.getElementById('status');
+      const statsRows = document.getElementById('statsRows');
+      const searchInput = document.getElementById('searchInput');
+      const pageSizeSelect = document.getElementById('pageSizeSelect');
+      const pageLabel = document.getElementById('pageLabel');
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+
+      let currentPage = 1;
+      let totalPages = 1;
+      let totalRows = 0;
+      let currentQuery = '';
+
+      function setStatus(text) {
+        statusNode.textContent = text || '';
+      }
+
+      function formatDateTime(ms) {
+        const value = Number(ms) || 0;
+        if (!Number.isFinite(value) || value <= 0) return '-';
+        return new Date(value).toLocaleString();
+      }
+
+      function formatDuration(ms) {
+        const totalMs = Math.max(0, Math.round(Number(ms) || 0));
+        const totalSec = Math.floor(totalMs / 1000);
+        const hours = Math.floor(totalSec / 3600);
+        const minutes = Math.floor((totalSec % 3600) / 60);
+        const seconds = totalSec % 60;
+        if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+        if (minutes > 0) return `${minutes}m ${seconds}s`;
+        return `${seconds}s`;
+      }
+
+      async function api(path) {
+        const response = await fetch(path, {
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (response.status === 401) {
+          window.location.href = '/admin';
+          throw new Error('Authentication required');
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        return payload || {};
+      }
+
+      function renderRows(rows) {
+        statsRows.innerHTML = '';
+        if (!Array.isArray(rows) || rows.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 5;
+          td.textContent = 'No player stats found.';
+          tr.appendChild(td);
+          statsRows.appendChild(tr);
+          return;
+        }
+
+        rows.forEach((row, index) => {
+          const tr = document.createElement('tr');
+
+          const rank = document.createElement('td');
+          rank.textContent = String((currentPage - 1) * Number(pageSizeSelect.value || '100') + index + 1);
+          tr.appendChild(rank);
+
+          const name = document.createElement('td');
+          name.textContent = row.name || '-';
+          tr.appendChild(name);
+
+          const profile = document.createElement('td');
+          profile.className = 'mono';
+          profile.textContent = row.profileId || '-';
+          tr.appendChild(profile);
+
+          const entered = document.createElement('td');
+          entered.textContent = formatDateTime(row.lastEnteredAt);
+          tr.appendChild(entered);
+
+          const longest = document.createElement('td');
+          longest.textContent = formatDuration(row.longestSessionMs);
+          tr.appendChild(longest);
+
+          statsRows.appendChild(tr);
+        });
+      }
+
+      async function loadStats() {
+        const pageSize = Number.parseInt(String(pageSizeSelect.value || '100'), 10) || 100;
+        const query = encodeURIComponent(String(currentQuery || '').trim());
+        const payload = await api(`/api/admin/player-stats?page=${currentPage}&pageSize=${pageSize}&q=${query}`);
+        totalPages = Math.max(1, Number(payload.totalPages) || 1);
+        totalRows = Math.max(0, Number(payload.total) || 0);
+        currentPage = Math.min(Math.max(1, Number(payload.page) || 1), totalPages);
+        const rows = Array.isArray(payload.players) ? payload.players : [];
+        renderRows(rows);
+        pageLabel.textContent = `Page ${currentPage} / ${totalPages} (Total ${totalRows})`;
+        prevBtn.disabled = currentPage <= 1;
+        nextBtn.disabled = currentPage >= totalPages;
+      }
+
+      document.getElementById('reloadBtn').addEventListener('click', async () => {
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      document.getElementById('searchBtn').addEventListener('click', async () => {
+        currentQuery = String(searchInput.value || '').trim();
+        currentPage = 1;
+        setStatus('Searching...');
+        try {
+          await loadStats();
+          setStatus(currentQuery ? `Filtered by "${currentQuery}".` : 'Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Search failed.');
+        }
+      });
+
+      document.getElementById('clearBtn').addEventListener('click', async () => {
+        searchInput.value = '';
+        currentQuery = '';
+        currentPage = 1;
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      pageSizeSelect.addEventListener('change', async () => {
+        currentPage = 1;
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      prevBtn.addEventListener('click', async () => {
+        if (currentPage <= 1) return;
+        currentPage -= 1;
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      nextBtn.addEventListener('click', async () => {
+        if (currentPage >= totalPages) return;
+        currentPage += 1;
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      });
+
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+          try {
+            await fetch('/api/admin/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch {}
+          window.location.href = '/admin';
+        });
+      }
+
+      searchInput.addEventListener('keydown', async (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        currentQuery = String(searchInput.value || '').trim();
+        currentPage = 1;
+        setStatus('Searching...');
+        try {
+          await loadStats();
+          setStatus(currentQuery ? `Filtered by "${currentQuery}".` : 'Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Search failed.');
+        }
+      });
+
+      (async () => {
+        setStatus('Loading...');
+        try {
+          await loadStats();
+          setStatus('Loaded.');
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      })();
+    </script>
+  </body>
+</html>
