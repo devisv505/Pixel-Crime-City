@@ -391,6 +391,12 @@ function normalizeAdSensePublisherForAdsTxt(clientValue) {
   return '';
 }
 
+function normalizeAdSenseClient(clientValue) {
+  const value = String(clientValue || '').trim().toLowerCase();
+  if (!/^ca-pub-\d{10,24}$/.test(value)) return '';
+  return value;
+}
+
 function splitAdsTxtLines(value) {
   return String(value || '')
     .split(/\r?\n/)
@@ -405,6 +411,29 @@ function safeContactEmail(value) {
     return 'devisv505@gmail.com';
   }
   return email;
+}
+
+let indexHtmlTemplateCache = null;
+let indexHtmlTemplateLoadAttempted = false;
+
+function getIndexHtmlTemplate() {
+  if (indexHtmlTemplateLoadAttempted) return indexHtmlTemplateCache;
+  indexHtmlTemplateLoadAttempted = true;
+  try {
+    const filePath = path.join(PROJECT_ROOT, 'public', 'index.html');
+    indexHtmlTemplateCache = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[seo] failed to load index template: ${error.message}`);
+    indexHtmlTemplateCache = null;
+  }
+  return indexHtmlTemplateCache;
+}
+
+function buildAdSenseVerifyScriptTag() {
+  const client = normalizeAdSenseClient(ADSENSE_CLIENT);
+  if (!client) return '';
+  return `<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${client}" crossorigin="anonymous"></script>`;
 }
 
 function protocolIdForEntity(entityId) {
@@ -3596,6 +3625,23 @@ app.get('/api/reputation-leaderboard', (req, res) => {
 
 process.on('exit', () => {
   closeCrimeReputationStore();
+});
+
+app.get('/', (_req, res, next) => {
+  const template = getIndexHtmlTemplate();
+  if (!template) {
+    next();
+    return;
+  }
+  const adSenseVerifyScript = buildAdSenseVerifyScriptTag();
+  let html = template;
+  if (html.includes('<!-- ADSENSE_VERIFY_SCRIPT -->')) {
+    html = html.replace('<!-- ADSENSE_VERIFY_SCRIPT -->', adSenseVerifyScript);
+  } else if (adSenseVerifyScript) {
+    html = html.replace('</head>', `  ${adSenseVerifyScript}\n  </head>`);
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 });
 
 app.use(express.static(path.join(PROJECT_ROOT, 'public')));
