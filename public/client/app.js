@@ -50,6 +50,7 @@ const hudWanted = document.getElementById('hudWanted');
 const hudCrime = document.getElementById('hudCrime');
 const hudOnline = document.getElementById('hudOnline');
 const hudWorldStats = document.getElementById('hudWorldStats');
+const hudHelp = hud ? hud.querySelector('.hud-help') : null;
 const mapBtn = document.getElementById('mapBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsOverlay = document.getElementById('settingsOverlay');
@@ -124,6 +125,19 @@ const GARAGE_REPAINT_PRESETS = Object.freeze([
     stripe: '#e6d8ff',
     item: 'garage_repaint_selected_red',
   }),
+]);
+const HUD_HELP_COLLAPSED_TEXT = 'Press H to show controls';
+const HUD_CONTROL_LINES = Object.freeze([
+  'WASD  Move',
+  'Mouse  Aim',
+  'Click  Shoot',
+  '1 / 2 / 3 / 4  Weapon Slot',
+  'E  Enter / Exit / Shop',
+  'Space  Horn',
+  'Q  Toggle Quests',
+  'M  Toggle Map',
+  'O  Settings',
+  'H  Toggle This Help',
 ]);
 
 const INPUT = {
@@ -221,6 +235,7 @@ let questEntries = [];
 let questPanelVisible = true;
 let interiorUiSuppressed = false;
 let garageRepaintPickerOpen = false;
+let hudHelpExpanded = false;
 
 const hudFeature = createHudFeature({
   setLocalPlayerCache: (cache) => {
@@ -2350,6 +2365,8 @@ function resetSessionState() {
   questPanelVisible = true;
   interiorUiSuppressed = false;
   garageRepaintPickerOpen = false;
+  hudHelpExpanded = false;
+  renderHudHelp();
   renderQuestPanel();
   refreshMapToggleUi();
   if (chatBar) {
@@ -2819,6 +2836,7 @@ async function connectAndJoin() {
       if (chatBar) {
         chatBar.classList.remove('hidden');
       }
+      renderHudHelp();
       renderQuestPanel();
       refreshMobileUiState();
       setJoinError('');
@@ -4361,10 +4379,23 @@ function isPlayerInsideInterior(state) {
   return !!(state && state.localPlayer && state.localPlayer.insideShopId);
 }
 
+function renderHudHelp() {
+  if (!hudHelp) return;
+  hudHelp.textContent = HUD_HELP_COLLAPSED_TEXT;
+  hudHelp.classList.remove('hud-help-expanded');
+}
+
 function refreshGameplayOverlayVisibility(state) {
   const insideInterior = isPlayerInsideInterior(state);
   if (hud) {
     hud.classList.toggle('hidden', !joined || insideInterior);
+  }
+  if (chatBar) {
+    const showChat = joined && !insideInterior;
+    chatBar.classList.toggle('hidden', !showChat);
+    if (!showChat && chatInput && document.activeElement === chatInput) {
+      chatInput.blur();
+    }
   }
   if (interiorUiSuppressed !== insideInterior) {
     interiorUiSuppressed = insideInterior;
@@ -5284,6 +5315,36 @@ function drawMapOverlay(state) {
   ctx.textBaseline = 'alphabetic';
 }
 
+function drawControlsHelpPanel() {
+  if (!joined || !hudHelpExpanded) return;
+  const panelW = Math.max(280, Math.min(420, Math.floor(canvas.width * 0.62)));
+  const lineH = 12;
+  const panelH = 34 + HUD_CONTROL_LINES.length * lineH + 10;
+  const panelX = Math.floor((canvas.width - panelW) * 0.5);
+  const panelY = Math.floor((canvas.height - panelH) * 0.5);
+
+  ctx.fillStyle = 'rgba(4, 8, 12, 0.55)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'rgba(9, 16, 24, 0.94)';
+  ctx.fillRect(panelX, panelY, panelW, panelH);
+  ctx.strokeStyle = 'rgba(168, 206, 228, 0.82)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+
+  ctx.font = '9px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = '#dff2ff';
+  ctx.fillText('Controls', panelX + 10, panelY + 14);
+
+  ctx.font = '8px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = '#c8dceb';
+  let y = panelY + 28;
+  for (const line of HUD_CONTROL_LINES) {
+    ctx.fillText(line, panelX + 12, y);
+    y += lineH;
+  }
+}
+
 function renderState(state, dt) {
   updateEffects(dt);
   updateCarTraces(state, dt);
@@ -5336,6 +5397,7 @@ function renderState(state, dt) {
       const w = ctx.measureText(statusNotice).width;
       ctx.fillText(statusNotice, Math.floor(canvas.width * 0.5 - w * 0.5), 18);
     }
+    drawControlsHelpPanel();
     return;
   }
   garageRepaintPickerOpen = false;
@@ -5419,6 +5481,7 @@ function renderState(state, dt) {
     const w = ctx.measureText(statusNotice).width;
     ctx.fillText(statusNotice, Math.floor(canvas.width * 0.5 - w * 0.5), 14);
   }
+  drawControlsHelpPanel();
 }
 
 function resizeCanvas() {
@@ -5884,6 +5947,15 @@ function attachUiEvents() {
       return;
     }
 
+    if (joined && event.code === 'KeyH' && !event.repeat) {
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
+      if (isSettingsOpen()) return;
+      hudHelpExpanded = !hudHelpExpanded;
+      renderHudHelp();
+      event.preventDefault();
+      return;
+    }
+
     if (isSettingsOpen() && event.code === 'Escape') {
       closeSettingsPanel();
       event.preventDefault();
@@ -5953,6 +6025,7 @@ export function boot() {
   loadProfilesFromStorage();
   renderCrimeBoardRows();
   setCrimeBoardStatus('');
+  renderHudHelp();
   renderQuestPanel();
   setStep('name');
   resizeCanvas();

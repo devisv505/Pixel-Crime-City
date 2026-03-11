@@ -393,9 +393,19 @@ button.secondary {
 }
 
 .hud-help {
-  margin-top: 5px;
+  margin-top: 4px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
+}
+
+.hud-help-expanded {
+  margin-top: 5px;
+  max-width: min(72vw, 560px);
+  border: 1px solid rgba(126, 163, 187, 0.45);
+  background: rgba(8, 14, 22, 0.74);
+  padding: 4px 6px;
+  color: #d7e8f6;
+  line-height: 1.35;
 }
 
 .quest-panel {
