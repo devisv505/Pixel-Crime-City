@@ -189,6 +189,30 @@ const WORLD = {
   npcNavNodes: [],
 };
 const { wrapDelta, wrapCoord, wrapWorldX, wrapWorldY, wrappedLerp } = createWorldMath(WORLD);
+const TRUCK_SCALE = 1.2;
+const GARAGE_SELL_BASE_PRICE = 50;
+const GARAGE_TRUCK_SELL_PRICE = GARAGE_SELL_BASE_PRICE * 2;
+
+function carScaleByType(type) {
+  return type === 'truck' ? TRUCK_SCALE : 1;
+}
+
+function carDimensionsByType(type) {
+  const scale = carScaleByType(type);
+  return {
+    width: CAR_WIDTH * scale,
+    height: CAR_HEIGHT * scale,
+  };
+}
+
+function canRepaintGarageCarType(type) {
+  return type === 'civilian' || type === 'truck';
+}
+
+function garageSellPriceByType(type) {
+  return type === 'truck' ? GARAGE_TRUCK_SELL_PRICE : GARAGE_SELL_BASE_PRICE;
+}
+
 let hospitalPlotKeys = new Set();
 let garagePlotKeys = new Set();
 
@@ -1624,9 +1648,10 @@ function isSolidForCar(x, y) {
 }
 
 function carBodyPoints(car) {
+  const dimensions = carDimensionsByType(car?.type);
   const points = [{ x: car.x, y: car.y }];
-  const halfL = CAR_WIDTH * CAR_COLLISION_HALF_LENGTH_SCALE;
-  const halfW = CAR_HEIGHT * CAR_COLLISION_HALF_WIDTH_SCALE;
+  const halfL = dimensions.width * CAR_COLLISION_HALF_LENGTH_SCALE;
+  const halfW = dimensions.height * CAR_COLLISION_HALF_WIDTH_SCALE;
   const c = Math.cos(car.angle);
   const s = Math.sin(car.angle);
   const basis = [
@@ -2633,6 +2658,7 @@ function pruneAckedInputs(ackSeq) {
 function carPhysicsByType(type) {
   if (type === 'cop') return { maxSpeed: 190, turnSpeed: 3.1 };
   if (type === 'ambulance') return { maxSpeed: 165, turnSpeed: 2.6 };
+  if (type === 'truck') return { maxSpeed: 72, turnSpeed: 2.2 };
   return { maxSpeed: 145, turnSpeed: 2.2 };
 }
 
@@ -4110,6 +4136,7 @@ function localGarageCar(state) {
 function garageCarTypeLabel(type) {
   if (type === 'cop') return 'Police';
   if (type === 'ambulance') return 'Ambulance';
+  if (type === 'truck') return 'Truck';
   if (type === 'civilian') return 'Civilian';
   return 'Unknown';
 }
@@ -4119,7 +4146,8 @@ function drawGarageInterior(state) {
   const garage = findShopByIdInWorld(state.world, local.insideShopId);
   const garageCar = localGarageCar(state);
   const hasCar = !!garageCar;
-  const canRepaint = !!garageCar && garageCar.type === 'civilian';
+  const canRepaint = !!garageCar && canRepaintGarageCarType(garageCar.type);
+  const sellPrice = garageSellPriceByType(garageCar?.type);
   const titleFont = isMobileUi ? 8 : 10;
   const bodyFont = isMobileUi ? 7 : 8;
   const lineStep = isMobileUi ? 15 : 18;
@@ -4165,13 +4193,13 @@ function drawGarageInterior(state) {
     const col2X = panelTextX + Math.max(100, Math.floor(panelW * 0.42));
     const optionsY = textStartY + lineStep * 3;
     ctx.fillStyle = '#ffd6a1';
-    ctx.fillText('1) Sell +$50', panelTextX, optionsY);
+    ctx.fillText(`1) Sell +$${sellPrice}`, panelTextX, optionsY);
     ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
     ctx.fillText('2) Repaint rnd -$10', col2X, optionsY);
     ctx.fillText('3) Palette -$100', panelTextX, optionsY + lineStep);
     ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
     ctx.fillText(
-      canRepaint ? 'Repaint clears active police pursuit' : 'Only civilian cars can be repainted',
+      canRepaint ? 'Repaint clears active police pursuit' : 'Only civilian or truck cars can be repainted',
       panelTextX,
       optionsY + lineStep * 2
     );
@@ -4179,13 +4207,13 @@ function drawGarageInterior(state) {
     ctx.fillText('Press E to leave garage', panelTextX, optionsY + lineStep * 3);
   } else {
     ctx.fillStyle = '#ffd6a1';
-    ctx.fillText('1) Sell vehicle +$50', panelTextX, textStartY + lineStep * 3);
+    ctx.fillText(`1) Sell vehicle +$${sellPrice}`, panelTextX, textStartY + lineStep * 3);
     ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
     ctx.fillText('2) Repaint random -$10', panelTextX, textStartY + lineStep * 4);
     ctx.fillText('3) Repaint selected -$100 (palette)', panelTextX, textStartY + lineStep * 5);
     ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
     ctx.fillText(
-      canRepaint ? 'Repaint removes active police pursuit' : 'Repaint available only for civilian cars',
+      canRepaint ? 'Repaint removes active police pursuit' : 'Repaint available only for civilian/truck cars',
       panelTextX,
       textStartY + lineStep * 6
     );
@@ -4416,14 +4444,63 @@ function getCarSpritePalette(type, bodyColor) {
 }
 
 function sportStripeColorForCar(type, bodyColor) {
-  if (type === 'cop' || type === 'ambulance') return '';
+  if (type === 'cop' || type === 'ambulance' || type === 'truck') return '';
   const safeColor = normalizeHexColor(bodyColor, '#000000');
   const preset = GARAGE_REPAINT_PRESETS.find((entry) => normalizeHexColor(entry.color, '#000000') === safeColor);
   return preset ? normalizeHexColor(preset.stripe, '#ffffff') : '';
 }
 
+function drawTruckSpriteShape(g, width, height, palette) {
+  const paintRect = (x, y, w, h, token) => {
+    if (w <= 0 || h <= 0) return;
+    const color = palette[token];
+    if (!color) return;
+    g.fillStyle = color;
+    g.fillRect(x, y, w, h);
+  };
+
+  g.clearRect(0, 0, width, height);
+  const x0 = 1;
+  const x1 = width - 2;
+  const y0 = 1;
+  const y1 = height - 2;
+  const bodyTop = y0 + 2;
+  const bodyHeight = Math.max(5, y1 - y0 - 2);
+  const cabFront = Math.max(x0 + 5, Math.floor(width * 0.6));
+  const cabRear = x1;
+  const bedFront = x0;
+  const bedRear = Math.max(bedFront + 4, cabFront - 1);
+  const midY = Math.floor(height * 0.5);
+
+  // Chassis silhouette.
+  paintRect(x0, bodyTop, x1 - x0 + 1, bodyHeight, '1');
+  // Cargo bed.
+  paintRect(bedFront, bodyTop, bedRear - bedFront + 1, bodyHeight, '2');
+  paintRect(bedFront + 1, bodyTop + 1, bedRear - bedFront - 1, bodyHeight - 2, '3');
+  paintRect(bedFront + 1, bodyTop + 1, Math.max(2, bedRear - bedFront - 2), 1, '4');
+  // Cab.
+  paintRect(cabFront, bodyTop - 1, cabRear - cabFront + 1, bodyHeight + 2, '3');
+  paintRect(cabFront + 1, bodyTop, cabRear - cabFront - 1, bodyHeight, '4');
+  paintRect(cabFront + 2, midY - 2, 3, 3, '9');
+  paintRect(cabFront + 1, midY - 2, 1, 4, '6');
+  // Split between cab and bed.
+  paintRect(cabFront, bodyTop, 1, bodyHeight, '1');
+  // Lights.
+  paintRect(cabRear - 1, midY - 1, 1, 1, '7');
+  paintRect(bedFront + 1, midY - 1, 1, 1, '8');
+  // Triple-axle wheel hints.
+  const wheelXs = [bedFront + 2, Math.max(bedFront + 4, Math.floor((bedFront + bedRear) * 0.5)), cabFront + 1];
+  for (const wx of wheelXs) {
+    paintRect(wx, y0, 2, 2, '1');
+    paintRect(wx, y1 - 1, 2, 2, '1');
+  }
+}
+
 function buildCarSprite(type, bodyColor) {
-  const template = customCarTemplateState === 'ready' && customCarTemplate ? customCarTemplate : CAR_SPRITE_TEMPLATE_FALLBACK;
+  const template =
+    type !== 'truck' && customCarTemplateState === 'ready' && customCarTemplate
+      ? customCarTemplate
+      : CAR_SPRITE_TEMPLATE_FALLBACK;
   const width = template[0].length;
   const height = template.length;
   const sprite = document.createElement('canvas');
@@ -4433,15 +4510,19 @@ function buildCarSprite(type, bodyColor) {
   const palette = getCarSpritePalette(type, bodyColor);
   g.imageSmoothingEnabled = false;
 
-  for (let y = 0; y < height; y += 1) {
-    const row = template[y];
-    for (let x = 0; x < width; x += 1) {
-      const token = row[x];
-      if (token === '.') continue;
-      const color = palette[token];
-      if (!color) continue;
-      g.fillStyle = color;
-      g.fillRect(x, y, 1, 1);
+  if (type === 'truck') {
+    drawTruckSpriteShape(g, width, height, palette);
+  } else {
+    for (let y = 0; y < height; y += 1) {
+      const row = template[y];
+      for (let x = 0; x < width; x += 1) {
+        const token = row[x];
+        if (token === '.') continue;
+        const color = palette[token];
+        if (!color) continue;
+        g.fillStyle = color;
+        g.fillRect(x, y, 1, 1);
+      }
     }
   }
 
@@ -4485,16 +4566,19 @@ function getCarSprite(type, bodyColor) {
   return sprite;
 }
 
-function drawCarShadow(sx, sy, angle, sprite) {
+function drawCarShadow(sx, sy, angle, sprite, scale = 1) {
+  const safeScale = Number.isFinite(scale) ? scale : 1;
   const verticalWeight = Math.abs(Math.sin(angle));
-  const shadowOffsetX = Math.round(1 + verticalWeight * 4);
-  const shadowOffsetY = Math.round(3 + (1 - verticalWeight) * 3);
+  const shadowOffsetX = Math.round((1 + verticalWeight * 4) * safeScale);
+  const shadowOffsetY = Math.round((3 + (1 - verticalWeight) * 3) * safeScale);
+  const shadowW = Math.max(1, Math.floor(sprite.width * 0.88 * safeScale));
+  const shadowH = Math.max(1, Math.floor(sprite.height * 0.48 * safeScale));
 
   ctx.save();
   ctx.translate(sx + shadowOffsetX, sy + shadowOffsetY);
   ctx.rotate(angle);
   ctx.fillStyle = 'rgba(0, 0, 0, 0.24)';
-  ctx.fillRect(-Math.floor(sprite.width * 0.44), -Math.floor(sprite.height * 0.24), Math.floor(sprite.width * 0.88), Math.floor(sprite.height * 0.48));
+  ctx.fillRect(-Math.floor(shadowW * 0.5), -Math.floor(shadowH * 0.5), shadowW, shadowH);
   ctx.restore();
 }
 
@@ -4527,19 +4611,24 @@ function drawCarDamageSmoke(car, halfW, halfH) {
 }
 
 function drawCar(car, worldLeft, worldTop) {
+  const carScale = carScaleByType(car.type);
+  const cullPadding = Math.ceil(32 * carScale);
   const sx = Math.round(car.x - worldLeft);
   const sy = Math.round(car.y - worldTop);
 
-  if (sx < -32 || sy < -32 || sx > canvas.width + 32 || sy > canvas.height + 32) {
+  if (sx < -cullPadding || sy < -cullPadding || sx > canvas.width + cullPadding || sy > canvas.height + cullPadding) {
     return;
   }
 
   const sprite = getCarSprite(car.type, car.color);
-  drawCarShadow(sx, sy, car.angle, sprite);
+  drawCarShadow(sx, sy, car.angle, sprite, carScale);
 
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate(car.angle);
+  if (carScale !== 1) {
+    ctx.scale(carScale, carScale);
+  }
 
   const halfW = Math.floor(sprite.width * 0.5);
   const halfH = Math.floor(sprite.height * 0.5);
@@ -4547,7 +4636,7 @@ function drawCar(car, worldLeft, worldTop) {
   ctx.drawImage(sprite, -halfW, -halfH);
   if (car.questTarget) {
     ctx.strokeStyle = 'rgba(255, 220, 122, 0.95)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1 / carScale;
     ctx.strokeRect(-halfW - 2 + 0.5, -halfH - 2 + 0.5, sprite.width + 4, sprite.height + 4);
   }
 
@@ -5329,8 +5418,9 @@ function updateCarTraces(state, dt) {
     const angle = Number.isFinite(car.angle) ? car.angle : 0;
     const c = Math.cos(angle);
     const s = Math.sin(angle);
-    const rearOffset = CAR_WIDTH * 0.34;
-    const wheelOffset = CAR_HEIGHT * 0.24;
+    const dimensions = carDimensionsByType(car.type);
+    const rearOffset = dimensions.width * 0.34;
+    const wheelOffset = dimensions.height * 0.24;
     const rearX = car.x - c * rearOffset;
     const rearY = car.y - s * rearOffset;
     pushCarTraceMark(rearX - s * wheelOffset, rearY + c * wheelOffset, angle, speed);
@@ -5500,6 +5590,17 @@ function drawMapOverlay(state) {
   const activeTargetQuest = Array.isArray(questEntries)
     ? questEntries.find((entry) => entry.status === 'active' && isTargetAreaQuestAction(entry.actionType))
     : null;
+  const trucksForMap = Array.isArray(state.cars)
+    ? state.cars.filter(
+        (car) =>
+          car &&
+          car.type === 'truck' &&
+          Number.isFinite(car.x) &&
+          Number.isFinite(car.y) &&
+          !car.destroyed
+      )
+    : [];
+  const truckCount = trucksForMap.length;
 
   const world = state.world || WORLD;
   const navDebugNodes = Array.isArray(world.npcNavNodes) ? world.npcNavNodes : [];
@@ -5612,6 +5713,18 @@ function drawMapOverlay(state) {
     ctx.fillRect(hx - 2, hy - 1, 4, 2);
   }
 
+  for (const truck of trucksForMap) {
+    const tx = Math.round(toMapX(truck.x));
+    const ty = Math.round(toMapY(truck.y));
+    ctx.fillStyle = '#ffb45a';
+    ctx.fillRect(tx - 2, ty - 1, 5, 3);
+    ctx.fillStyle = '#3a2509';
+    ctx.fillRect(tx - 1, ty - 1, 1, 3);
+    ctx.fillRect(tx + 1, ty - 1, 1, 3);
+    ctx.fillStyle = 'rgba(255, 241, 214, 0.95)';
+    ctx.fillRect(tx, ty - 1, 1, 1);
+  }
+
   if (
     activeTargetQuest &&
     Number.isFinite(activeTargetQuest.targetZoneX) &&
@@ -5661,6 +5774,9 @@ function drawMapOverlay(state) {
   ctx.strokeStyle = mobileMapOverlay ? 'rgba(178, 216, 236, 0.42)' : 'rgba(178, 216, 236, 0.56)';
   ctx.lineWidth = 1;
   ctx.strokeRect(mapX + 0.5, mapY + 0.5, mapW - 1, mapH - 1);
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = mobileMapOverlay ? 'rgba(255, 219, 161, 0.92)' : '#ffd59a';
+  ctx.fillText(`Trucks: ${truckCount}`, mapX + 4, mapY + 8);
 
   const legendPad = 4;
   const markerSize = 4;
@@ -6008,9 +6124,9 @@ function handleActionKey(event) {
   if (local.insideShopId) {
     if (isGarageInteriorId(local.insideShopId)) {
       const garageCar = latestState ? localGarageCar(latestState) : null;
-      const canRepaintGarageCar = !!garageCar && garageCar.type === 'civilian';
+      const canRepaintGarageCar = !!garageCar && canRepaintGarageCarType(garageCar.type);
       const repaintBlockedMessage = garageCar
-        ? 'Only civilian cars can be repainted. Sell this vehicle instead.'
+        ? 'Only civilian or truck cars can be repainted. Sell this vehicle instead.'
         : 'Drive a car into the garage first.';
       if (garageRepaintPickerOpen) {
         if (!canRepaintGarageCar) {

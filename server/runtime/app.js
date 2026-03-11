@@ -195,6 +195,7 @@ const {
   COP_CAR_HUNT_JOIN_RADIUS_SQ,
   COP_CAR_HUNT_LEASH_RADIUS_SQ,
   TRAFFIC_COUNT,
+  TRUCK_COUNT,
   COP_COUNT,
   COP_OFFICER_COUNT,
   AMBULANCE_COUNT,
@@ -264,6 +265,12 @@ const NPC_PLAYER_CAR_FEAR_PANIC_BASE_MAX_SECONDS = 1.9;
 const NPC_PLAYER_CAR_FEAR_PANIC_MAX_SECONDS = 3.4;
 const TRAFFIC_JAM_PASS_TRIGGER_SECONDS = 10;
 const TRAFFIC_JAM_PASS_DURATION_SECONDS = 3.4;
+const TRUCK_COLLISION_MASS = 2.3;
+const DEFAULT_COLLISION_MASS = 1.0;
+const TRUCK_SELL_PRICE_MULTIPLIER = 2;
+const TRUCK_PUSH_MIN_FORWARD_SPEED = 8;
+const TRUCK_PUSH_DOT_MIN = 0.15;
+const TRUCK_PUSH_SPEED_CAP = 30;
 const {
   wrapCoord,
   wrapWorldX,
@@ -4234,25 +4241,128 @@ function releaseCarDriver(car) {
   car.abandonTimer = 0;
 }
 
+const CAR_TYPE_STATS = Object.freeze({
+  civilian: Object.freeze({
+    baseSpeed: 55,
+    maxSpeed: 145,
+    turnSpeed: 2.2,
+    width: 24,
+    height: 14,
+    maxHealth: 100,
+    npcOccupantCount: 1,
+    cruiseSpeed: 62,
+  }),
+  truck: Object.freeze({
+    baseSpeed: 55,
+    maxSpeed: 72,
+    turnSpeed: 2.2,
+    width: 29,
+    height: 17,
+    maxHealth: 200,
+    npcOccupantCount: 1,
+    cruiseSpeed: 38,
+  }),
+  cop: Object.freeze({
+    baseSpeed: 75,
+    maxSpeed: 190,
+    turnSpeed: 3.1,
+    width: 24,
+    height: 14,
+    maxHealth: 100,
+    npcOccupantCount: 2,
+    cruiseSpeed: 88,
+  }),
+  ambulance: Object.freeze({
+    baseSpeed: 60,
+    maxSpeed: 165,
+    turnSpeed: 2.6,
+    width: 24,
+    height: 14,
+    maxHealth: 100,
+    npcOccupantCount: 2,
+    cruiseSpeed: 72,
+  }),
+});
+
+function carStatsByType(type = 'civilian') {
+  return CAR_TYPE_STATS[type] || CAR_TYPE_STATS.civilian;
+}
+
+function isCivilianStyleCarType(type) {
+  return type === 'civilian' || type === 'truck';
+}
+
+function carCruiseSpeedByType(type) {
+  return carStatsByType(type).cruiseSpeed;
+}
+
+function carMaxHealthByType(type) {
+  return carStatsByType(type).maxHealth;
+}
+
+function garageSellPriceByType(type) {
+  if (type === 'truck') return GARAGE_SELL_PRICE * TRUCK_SELL_PRICE_MULTIPLIER;
+  return GARAGE_SELL_PRICE;
+}
+
+function canGarageRepaintType(type) {
+  return isCivilianStyleCarType(type);
+}
+
+function defaultCarColorForType(type) {
+  if (type === 'cop') return '#5ca1ff';
+  if (type === 'ambulance') return '#f4f6fb';
+  if (!Array.isArray(CAR_PALETTE) || CAR_PALETTE.length === 0) return '#f2f2f2';
+  return CAR_PALETTE[randInt(0, CAR_PALETTE.length)];
+}
+
+function carCollisionMassByType(type) {
+  if (type === 'truck') return TRUCK_COLLISION_MASS;
+  return DEFAULT_COLLISION_MASS;
+}
+
+function truckForwardShoveDot(pusher, target, impactNx, impactNy) {
+  if (!pusher || !target) return 0;
+  if (pusher.type !== 'truck' || target.type === 'truck') return 0;
+
+  const forwardSpeed = Number.isFinite(pusher.speed) ? pusher.speed : 0;
+  if (forwardSpeed <= TRUCK_PUSH_MIN_FORWARD_SPEED) return 0;
+
+  const hx = Math.cos(pusher.angle);
+  const hy = Math.sin(pusher.angle);
+  const dot = hx * impactNx + hy * impactNy;
+  if (dot <= TRUCK_PUSH_DOT_MIN) return 0;
+  return dot;
+}
+
+function applyTruckForwardShove(pusher, target, impactNx, impactNy) {
+  const dot = truckForwardShoveDot(pusher, target, impactNx, impactNy);
+  if (dot <= 0) return 0;
+
+  const forwardSpeed = Number.isFinite(pusher.speed) ? pusher.speed : 0;
+  const currentTargetSpeed = Number.isFinite(target.speed) ? target.speed : 0;
+  const desiredSpeed = clamp(forwardSpeed * dot * 0.55, 0, TRUCK_PUSH_SPEED_CAP);
+  const nudgedSpeed = Math.max(currentTargetSpeed, currentTargetSpeed * 0.7 + desiredSpeed * 0.3);
+  target.angle = angleApproach(target.angle, pusher.angle, 0.07 + dot * 0.09);
+  target.speed = clamp(nudgedSpeed, -92, Math.min(target.maxSpeed, TRUCK_PUSH_SPEED_CAP));
+  return dot;
+}
+
 function makeCar(type = 'civilian') {
   const spawn = randomRoadSpawn();
-  const isCop = type === 'cop';
-  const isAmbulance = type === 'ambulance';
-  const baseSpeed = isCop ? 75 : isAmbulance ? 60 : 55;
-  const maxSpeed = isCop ? 190 : isAmbulance ? 165 : 145;
-  const turnSpeed = isCop ? 3.1 : isAmbulance ? 2.6 : 2.2;
+  const stats = carStatsByType(type);
   const car = {
     id: makeId('car'),
     type,
     x: spawn.x,
     y: spawn.y,
     angle: spawn.angle,
-    speed: baseSpeed,
-    maxSpeed,
-    turnSpeed,
-    width: 24,
-    height: 14,
-    health: CAR_MAX_HEALTH,
+    speed: stats.baseSpeed,
+    maxSpeed: stats.maxSpeed,
+    turnSpeed: stats.turnSpeed,
+    width: stats.width,
+    height: stats.height,
+    health: stats.maxHealth,
     destroyed: false,
     destroyedTimer: 0,
     destroyedX: spawn.x,
@@ -4280,8 +4390,8 @@ function makeCar(type = 'civilian') {
     followBlockedTimer: 0,
     trafficJamTimer: 0,
     trafficPassTimer: 0,
-    color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
-    npcOccupantCount: isCop || isAmbulance ? 2 : 1,
+    color: defaultCarColorForType(type),
+    npcOccupantCount: stats.npcOccupantCount,
     stolenFromNpc: false,
     occupantNpcIds: [],
     ownerNpcId: null,
@@ -4291,22 +4401,17 @@ function makeCar(type = 'civilian') {
   return car;
 }
 
-function carCruiseSpeedByType(type) {
-  if (type === 'cop') return 88;
-  if (type === 'ambulance') return 72;
-  return 62;
-}
-
 function resetCarForRespawn(car, spawn) {
-  const isCop = car.type === 'cop';
-  const isAmbulance = car.type === 'ambulance';
+  const stats = carStatsByType(car.type);
   car.x = spawn.x;
   car.y = spawn.y;
   car.angle = spawn.angle;
-  car.speed = isCop ? 75 : isAmbulance ? 60 : 55;
-  car.maxSpeed = isCop ? 190 : isAmbulance ? 165 : 145;
-  car.turnSpeed = isCop ? 3.1 : isAmbulance ? 2.6 : 2.2;
-  car.health = CAR_MAX_HEALTH;
+  car.speed = stats.baseSpeed;
+  car.maxSpeed = stats.maxSpeed;
+  car.turnSpeed = stats.turnSpeed;
+  car.width = stats.width;
+  car.height = stats.height;
+  car.health = stats.maxHealth;
   car.destroyed = false;
   car.destroyedTimer = 0;
   car.destroyedX = spawn.x;
@@ -4330,6 +4435,7 @@ function resetCarForRespawn(car, spawn) {
   car.stolenFromNpc = false;
   car.ownerNpcId = null;
   car.ownerReturnTimer = 0;
+  car.npcOccupantCount = stats.npcOccupantCount;
   car.occupantNpcIds = [];
   if (car.type === 'cop') {
     car.dismountCopIds = [];
@@ -4429,7 +4535,7 @@ function damageCar(car, amount, attacker = null) {
   const dmg = Number(amount);
   if (!Number.isFinite(dmg) || dmg <= 0) return false;
   triggerCopCarAggroOnAttack(car, attacker);
-  car.health = clamp(car.health - dmg, 0, CAR_MAX_HEALTH);
+  car.health = clamp(car.health - dmg, 0, carMaxHealthByType(car.type));
   if (car.health <= 0) {
     destroyCar(car, attacker);
     return true;
@@ -5624,13 +5730,16 @@ function trySellGarageCar(player) {
     return { ok: false, message: 'No valid car to sell.' };
   }
 
+  const sellPrice = garageSellPriceByType(car.type);
   const wasTargetCar = isCarQuestTargetForPlayer(car.id, player.profileId);
-  player.money = clamp(Math.round(Number(player.money) || 0) + GARAGE_SELL_PRICE, 0, 0xffffffff);
+  player.money = clamp(Math.round(Number(player.money) || 0) + sellPrice, 0, 0xffffffff);
   incrementQuestAction(player, 'steal_car_any', 1);
   if (car.type === 'cop') {
     incrementQuestAction(player, 'steal_car_cop_sell_garage', 1);
   } else if (car.type === 'ambulance') {
     incrementQuestAction(player, 'steal_car_ambulance_sell_garage', 1);
+  } else if (car.type === 'truck') {
+    incrementQuestAction(player, 'steal_car_truck_sell_garage', 1);
   } else if (car.type === 'civilian') {
     incrementQuestAction(player, 'steal_car_civilian_sell_garage', 1);
   }
@@ -5652,14 +5761,14 @@ function trySellGarageCar(player) {
   emitEvent('purchase', {
     playerId: player.id,
     item: 'garage_sell',
-    amount: GARAGE_SELL_PRICE,
+    amount: sellPrice,
     x: player.x,
     y: player.y,
   });
 
   // Selling a car finishes the garage interaction immediately.
   exitShop(player);
-  return { ok: true, message: `Car sold for $${GARAGE_SELL_PRICE}. Leaving garage.` };
+  return { ok: true, message: `Car sold for $${sellPrice}. Leaving garage.` };
 }
 
 function tryRepaintGarageCar(player, selectedColor = null) {
@@ -5670,8 +5779,8 @@ function tryRepaintGarageCar(player, selectedColor = null) {
   if (!car || car.destroyed || car.driverId !== player.id) {
     return { ok: false, message: 'No valid car to repaint.' };
   }
-  if (car.type !== 'civilian') {
-    return { ok: false, message: 'Only civilian cars can be repainted. Sell this vehicle instead.' };
+  if (!canGarageRepaintType(car.type)) {
+    return { ok: false, message: 'Only civilian or truck vehicles can be repainted. Sell this vehicle instead.' };
   }
 
   const customColor = selectedColor ? sanitizeColor(selectedColor) : null;
@@ -5846,6 +5955,8 @@ function handleEnterOrExit(player) {
         incrementQuestAction(player, 'steal_car_cop', 1);
       } else if (candidate.type === 'ambulance') {
         incrementQuestAction(player, 'steal_car_ambulance', 1);
+      } else if (candidate.type === 'truck') {
+        incrementQuestAction(player, 'steal_car_truck', 1);
       }
     }
 
@@ -5864,6 +5975,9 @@ function handleEnterOrExit(player) {
   } else if (candidate.type === 'ambulance' && !candidate.stolenFromNpc) {
     incrementQuestAction(player, 'steal_car_any', 1);
     incrementQuestAction(player, 'steal_car_ambulance', 1);
+  } else if (candidate.type === 'truck' && !candidate.stolenFromNpc) {
+    incrementQuestAction(player, 'steal_car_any', 1);
+    incrementQuestAction(player, 'steal_car_truck', 1);
   }
 
   emitEvent('enterCar', { playerId: player.id, carId: candidate.id, x: player.x, y: player.y });
@@ -7479,7 +7593,7 @@ function stepCars(dt) {
         car.sirenOn = !!(car.dismountTargetPlayerId || car.huntTargetPlayerId);
       }
     }
-    const abandonedDt = car.type === 'civilian' ? lodStepDt(car.id, car.x, car.y, dt) : dt;
+    const abandonedDt = isCivilianStyleCarType(car.type) ? lodStepDt(car.id, car.x, car.y, dt) : dt;
     if (abandonedDt > 0) {
       stepAbandonedCar(car, abandonedDt);
     }
@@ -7539,17 +7653,22 @@ function stepCarHitsByCars(ctx = tickSpatialContext) {
       const nx = dx / dist;
       const ny = dy / dist;
       const penetration = Math.max(0, minDist - dist);
+      const aMass = carCollisionMassByType(a.type);
+      const bMass = carCollisionMassByType(b.type);
+      const totalMass = Math.max(0.001, aMass + bMass);
 
       if (penetration > 0) {
         const push = penetration * 0.55;
+        const aPushShare = bMass / totalMass;
+        const bPushShare = aMass / totalMass;
         const aPrevX = a.x;
         const aPrevY = a.y;
         const bPrevX = b.x;
         const bPrevY = b.y;
-        a.x -= nx * push;
-        a.y -= ny * push;
-        b.x += nx * push;
-        b.y += ny * push;
+        a.x -= nx * push * aPushShare;
+        a.y -= ny * push * aPushShare;
+        b.x += nx * push * bPushShare;
+        b.y += ny * push * bPushShare;
         enforceCarCollisions(a, aPrevX, aPrevY);
         enforceCarCollisions(b, bPrevX, bPrevY);
       }
@@ -7579,12 +7698,20 @@ function stepCarHitsByCars(ctx = tickSpatialContext) {
       const transfer = clamp(0.26 + hit / 210, 0.26, 0.52);
       const aOldSpeed = a.speed;
       const bOldSpeed = b.speed;
-      a.speed = clamp((aOldSpeed * (1 - transfer) + bOldSpeed * transfer) * 0.82, -92, a.maxSpeed);
-      b.speed = clamp((bOldSpeed * (1 - transfer) + aOldSpeed * transfer) * 0.82, -92, b.maxSpeed);
+      const aTransfer = clamp(transfer * (bMass / totalMass), 0.08, 0.78);
+      const bTransfer = clamp(transfer * (aMass / totalMass), 0.08, 0.78);
+      a.speed = clamp((aOldSpeed * (1 - aTransfer) + bOldSpeed * aTransfer) * 0.82, -92, a.maxSpeed);
+      b.speed = clamp((bOldSpeed * (1 - bTransfer) + aOldSpeed * bTransfer) * 0.82, -92, b.maxSpeed);
 
+      const pushDotAB = truckForwardShoveDot(a, b, nx, ny);
+      const pushDotBA = truckForwardShoveDot(b, a, -nx, -ny);
       const turn = 0.1 + transfer * 0.18;
-      a.angle = angleApproach(a.angle, Math.atan2(-ny, -nx), turn);
-      b.angle = angleApproach(b.angle, Math.atan2(ny, nx), turn);
+      const aTurnFactor = pushDotAB > 0 ? 0.16 : pushDotBA > 0 ? 0.32 : 1;
+      const bTurnFactor = pushDotBA > 0 ? 0.16 : pushDotAB > 0 ? 0.32 : 1;
+      a.angle = angleApproach(a.angle, Math.atan2(-ny, -nx), turn * aTurnFactor);
+      b.angle = angleApproach(b.angle, Math.atan2(ny, nx), turn * bTurnFactor);
+      applyTruckForwardShove(a, b, nx, ny);
+      applyTruckForwardShove(b, a, -nx, -ny);
 
       if (hit > 18 && a.bodyHitCooldown <= 0 && b.bodyHitCooldown <= 0) {
         a.bodyHitCooldown = 0.16;
@@ -8452,6 +8579,7 @@ function resetAmbientSceneWhenEmpty() {
 
 function ensureCarPopulation() {
   let civilian = 0;
+  let truck = 0;
   let cop = 0;
   let ambulance = 0;
   for (const car of cars.values()) {
@@ -8459,6 +8587,8 @@ function ensureCarPopulation() {
       cop += 1;
     } else if (car.type === 'ambulance') {
       ambulance += 1;
+    } else if (car.type === 'truck') {
+      truck += 1;
     } else {
       civilian += 1;
     }
@@ -8467,6 +8597,10 @@ function ensureCarPopulation() {
   while (civilian < TRAFFIC_COUNT) {
     makeCar('civilian');
     civilian += 1;
+  }
+  while (truck < TRUCK_COUNT) {
+    makeCar('truck');
+    truck += 1;
   }
   while (cop < COP_COUNT) {
     makeCar('cop');
@@ -8764,6 +8898,8 @@ function shouldIncludeCarForPlayer(player, car) {
   if (car.destroyed) return false;
   if (!OPT_AOI) return true;
   if (car.id === player.inCarId || car.driverId === player.id) return true;
+  // Always include trucks for map/debug visibility (small fixed pool).
+  if (car.type === 'truck') return true;
   if (car.type === 'cop' && (car.dismountTargetPlayerId === player.id || car.huntTargetPlayerId === player.id)) {
     return true;
   }
@@ -8946,7 +9082,7 @@ function toWireCarRecord(record) {
     driverId: protocolIdForEntityOptional(record.driverId),
     npcDriver: !!record.npcDriver,
     sirenOn: !!record.sirenOn,
-    health: clamp(Math.round(record.health || 0), 0, CAR_MAX_HEALTH),
+    health: clamp(Math.round(record.health || 0), 0, carMaxHealthByType(record.type)),
     smoking: !!record.smoking,
     questTarget: !!record.questTarget,
   };
@@ -9274,6 +9410,9 @@ serverFeatures.crime.loadCrimeReputationStore();
 
 for (let i = 0; i < TRAFFIC_COUNT; i++) {
   serverFeatures.vehicles.makeCar('civilian');
+}
+for (let i = 0; i < TRUCK_COUNT; i++) {
+  serverFeatures.vehicles.makeCar('truck');
 }
 for (let i = 0; i < COP_COUNT; i++) {
   serverFeatures.vehicles.makeCar('cop');

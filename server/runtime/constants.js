@@ -16,7 +16,9 @@ function createRuntimeConstants({ worldRev }) {
     'steal_car_cop_sell_garage',
     'steal_car_ambulance_sell_garage',
     'steal_car_civilian_sell_garage',
+    'steal_car_truck_sell_garage',
     'steal_car_ambulance',
+    'steal_car_truck',
     'kill_target_npc',
     'steal_target_car',
   ]);
@@ -102,6 +104,30 @@ function createRuntimeConstants({ worldRev }) {
       targetCount: 5,
       rewardMoney: 210,
       rewardReputation: 11,
+      rewardUnlockGunShop: false,
+      resetOnDeath: false,
+      isActive: true,
+    }),
+    Object.freeze({
+      questKey: 'truck_theft_2',
+      title: 'Heavy Lift',
+      description: 'Steal 2 trucks.',
+      actionType: 'steal_car_truck',
+      targetCount: 2,
+      rewardMoney: 220,
+      rewardReputation: 12,
+      rewardUnlockGunShop: false,
+      resetOnDeath: false,
+      isActive: true,
+    }),
+    Object.freeze({
+      questKey: 'truck_sell_2',
+      title: 'Cargo Flip',
+      description: 'Sell 2 trucks in garage.',
+      actionType: 'steal_car_truck_sell_garage',
+      targetCount: 2,
+      rewardMoney: 300,
+      rewardReputation: 16,
       rewardUnlockGunShop: false,
       resetOnDeath: false,
       isActive: true,
@@ -275,6 +301,7 @@ function createRuntimeConstants({ worldRev }) {
 
   // Population and misc runtime limits.
   const TRAFFIC_COUNT = 254;
+  const TRUCK_COUNT = 10;
   const COP_COUNT = 32;
   const COP_OFFICER_COUNT = 32;
   const AMBULANCE_COUNT = 8;
@@ -531,6 +558,7 @@ function createRuntimeConstants({ worldRev }) {
     COP_CAR_HUNT_JOIN_RADIUS_SQ,
     COP_CAR_HUNT_LEASH_RADIUS_SQ,
     TRAFFIC_COUNT,
+    TRUCK_COUNT,
     COP_COUNT,
     COP_OFFICER_COUNT,
     AMBULANCE_COUNT,

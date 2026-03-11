@@ -48,6 +48,7 @@ const CAR_TYPE_TO_CODE = Object.freeze({
   civilian: 0,
   cop: 1,
   ambulance: 2,
+  truck: 3,
 });
 
 const CORPSE_STATE_TO_CODE = Object.freeze({
@@ -105,6 +106,8 @@ const QUEST_ACTION_TO_CODE = Object.freeze({
   steal_target_car: 8,
   steal_car_ambulance_sell_garage: 9,
   steal_car_civilian_sell_garage: 10,
+  steal_car_truck: 11,
+  steal_car_truck_sell_garage: 12,
 });
 
 const CODE_TO_QUEST_ACTION = Object.freeze({
@@ -118,6 +121,8 @@ const CODE_TO_QUEST_ACTION = Object.freeze({
   8: 'steal_target_car',
   9: 'steal_car_ambulance_sell_garage',
   10: 'steal_car_civilian_sell_garage',
+  11: 'steal_car_truck',
+  12: 'steal_car_truck_sell_garage',
 });
 
 const QUEST_STATUS_TO_CODE = Object.freeze({
