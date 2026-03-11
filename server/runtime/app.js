@@ -344,6 +344,24 @@ const COP_CAR_DEFAULT_CREW_SIZE = 2;
 const COP_COMBAT_STANDOFF_MIN = 96;
 const COP_COMBAT_STANDOFF_MAX = 168;
 const COP_COMBAT_STANDOFF_PIVOT = 132;
+const COP_SHOT_HIT_CHANCE_NEAR = 0.72;
+const COP_SHOT_HIT_CHANCE_FAR = 0.48;
+const COP_SHOT_HIT_AIM_JITTER = 0.032;
+const COP_SHOT_MISS_AIM_OFFSET_MIN = 0.14;
+const COP_SHOT_MISS_AIM_OFFSET_MAX = 0.24;
+const COP_SHOT_TARGET_RADIUS = PLAYER_RADIUS + 1;
+const COP_HUNT_JOIN_RADIUS = 960;
+const COP_HUNT_LEASH_RADIUS = 1280;
+const COP_HUNT_LOST_TIMEOUT = 6.5;
+const COP_MAX_HUNTERS_PER_PLAYER = 4;
+const COP_CAR_HUNT_JOIN_RADIUS = 1200;
+const COP_CAR_HUNT_LEASH_RADIUS = 1560;
+const COP_CAR_HUNT_LOST_TIMEOUT = 7.5;
+const COP_MAX_HUNTER_CARS_PER_PLAYER = 4;
+const COP_HUNT_JOIN_RADIUS_SQ = COP_HUNT_JOIN_RADIUS * COP_HUNT_JOIN_RADIUS;
+const COP_HUNT_LEASH_RADIUS_SQ = COP_HUNT_LEASH_RADIUS * COP_HUNT_LEASH_RADIUS;
+const COP_CAR_HUNT_JOIN_RADIUS_SQ = COP_CAR_HUNT_JOIN_RADIUS * COP_CAR_HUNT_JOIN_RADIUS;
+const COP_CAR_HUNT_LEASH_RADIUS_SQ = COP_CAR_HUNT_LEASH_RADIUS * COP_CAR_HUNT_LEASH_RADIUS;
 
 const TRAFFIC_COUNT = 254;
 const COP_COUNT = 32;
@@ -3959,6 +3977,8 @@ function makeCar(type = 'civilian') {
     dismountCooldown: 0,
     dismountCopIds: [],
     crewCopIds: [],
+    huntTargetPlayerId: null,
+    huntLostTimer: 0,
     dismountTargetPlayerId: null,
     sirenOn: false,
     ambulanceMode: 'idle',
@@ -4006,6 +4026,8 @@ function resetCarForRespawn(car, spawn) {
   car.hornCooldown = randRange(0, 1);
   car.bodyHitCooldown = 0;
   car.dismountCooldown = 0;
+  car.huntTargetPlayerId = null;
+  car.huntLostTimer = 0;
   car.sirenOn = false;
   car.stuckTimer = 0;
   car.lastMoveX = spawn.x;
@@ -4073,6 +4095,8 @@ function destroyCar(car, attacker = null) {
   car.abandonTimer = 0;
   car.aiCooldown = 0;
   car.bodyHitCooldown = 0;
+  car.huntTargetPlayerId = null;
+  car.huntLostTimer = 0;
   car.sirenOn = false;
 
   if (car.type === 'cop') {
@@ -4222,6 +4246,7 @@ function makeCopUnit() {
     inCarId: null,
     mode: 'patrol',
     targetPlayerId: null,
+    huntLostTimer: 0,
     alertTimer: 0,
     combatStrafeDir: Math.random() < 0.5 ? -1 : 1,
     combatStrafeTimer: randRange(0.8, 1.6),
@@ -4254,6 +4279,7 @@ function respawnCop(cop, spawnOverride = null, rejoinPreviousCar = false) {
   cop.inCarId = null;
   cop.mode = canRejoin ? 'return' : 'patrol';
   cop.targetPlayerId = null;
+  cop.huntLostTimer = 0;
   cop.alertTimer = 0;
   cop.combatStrafeDir = Math.random() < 0.5 ? -1 : 1;
   cop.combatStrafeTimer = randRange(0.8, 1.6);
@@ -4288,6 +4314,7 @@ function killCop(cop, killer = null) {
   cop.reviveTimer = 0;
   cop.corpseDownTimer = 0;
   cop.targetPlayerId = null;
+  cop.huntLostTimer = 0;
   cop.cooldown = 0;
   cop.inCarId = null;
   makeBloodStain(cop.x, cop.y);
@@ -4319,6 +4346,7 @@ function damageCop(cop, amount, attacker = null) {
   if (attacker && attacker.health > 0) {
     cop.targetPlayerId = attacker.id;
     cop.mode = 'hunt';
+    cop.huntLostTimer = 0;
     addStars(attacker, 0.35, 18);
     addCrimeRating(attacker, CRIME_WEIGHTS.cop_assault);
   }
@@ -4731,7 +4759,7 @@ function clearPolicePursuitForPlayer(player) {
 
   for (const car of cars.values()) {
     if (car.type !== 'cop') continue;
-    if (car.dismountTargetPlayerId !== player.id) continue;
+    if (car.dismountTargetPlayerId !== player.id && car.huntTargetPlayerId !== player.id) continue;
     resetCopCarDeployment(car);
     car.sirenOn = false;
   }
@@ -4739,6 +4767,7 @@ function clearPolicePursuitForPlayer(player) {
   for (const cop of cops.values()) {
     if (cop.targetPlayerId !== player.id) continue;
     cop.targetPlayerId = null;
+    cop.huntLostTimer = 0;
     if (cop.assignedCarId) {
       cop.mode = 'return';
       cop.rejoinCarId = cop.assignedCarId;
@@ -5262,13 +5291,57 @@ function stepAbandonedCar(car, dt) {
   enforceCarCollisions(car, prevX, prevY);
 }
 
-function nearestFiveStarPlayer(x, y) {
+function isFiveStarTrackablePlayer(player) {
+  return !!(player && player.health > 0 && player.stars >= 5 && !player.insideShopId);
+}
+
+function activeCopHunterCountsByPlayer() {
+  const counts = new Map();
+  for (const cop of cops.values()) {
+    if (!cop || !cop.alive || cop.inCarId) continue;
+    if (cop.mode !== 'hunt') continue;
+    const targetId = String(cop.targetPlayerId || '');
+    if (!targetId) continue;
+    const target = players.get(targetId);
+    if (!isFiveStarTrackablePlayer(target)) continue;
+    counts.set(targetId, (counts.get(targetId) || 0) + 1);
+  }
+  return counts;
+}
+
+function activeCopCarHunterCountsByPlayer() {
+  const counts = new Map();
+  for (const car of cars.values()) {
+    if (!car || car.type !== 'cop' || car.destroyed || !car.npcDriver) continue;
+    const targetId = String(car.huntTargetPlayerId || '');
+    if (!targetId) continue;
+    const target = players.get(targetId);
+    if (!isFiveStarTrackablePlayer(target)) continue;
+    counts.set(targetId, (counts.get(targetId) || 0) + 1);
+  }
+  return counts;
+}
+
+function nearestFiveStarPlayer(x, y, options = null) {
+  const maxDistanceSq = Number.isFinite(Number(options?.maxDistanceSq))
+    ? Math.max(0, Number(options.maxDistanceSq))
+    : Infinity;
+  const capPerPlayer = Number.isFinite(Number(options?.capPerPlayer))
+    ? Math.max(0, Math.round(Number(options.capPerPlayer)))
+    : Infinity;
+  const countsByPlayer = options?.countsByPlayer instanceof Map ? options.countsByPlayer : null;
+  const keepTargetId = String(options?.keepTargetId || '');
   let winner = null;
   let winnerScore = Infinity;
 
   for (const player of players.values()) {
-    if (player.health <= 0 || player.stars < 5 || player.insideShopId) continue;
+    if (!isFiveStarTrackablePlayer(player)) continue;
+    if (countsByPlayer && Number.isFinite(capPerPlayer) && capPerPlayer >= 0) {
+      const currentCount = countsByPlayer.get(player.id) || 0;
+      if (currentCount >= capPerPlayer && player.id !== keepTargetId) continue;
+    }
     const dist2 = wrappedDistanceSq(x, y, player.x, player.y);
+    if (dist2 > maxDistanceSq) continue;
     if (dist2 < winnerScore) {
       winner = player;
       winnerScore = dist2;
@@ -5333,6 +5406,7 @@ function availableCopForCar(car, target, alreadySelected) {
   best.dir = wrappedDirection(best.x, best.y, target.x, target.y);
   best.mode = 'hunt';
   best.targetPlayerId = target.id;
+  best.huntLostTimer = 0;
   best.rejoinCarId = null;
   best.assignedCarId = car.id;
   best.inCarId = null;
@@ -5385,6 +5459,8 @@ function tryDeployCopOfficers(car, target, forceDeploy = false) {
 
 function resetCopCarDeployment(car) {
   if (!car || car.type !== 'cop') return;
+  car.huntTargetPlayerId = null;
+  car.huntLostTimer = 0;
   if (!Array.isArray(car.dismountCopIds) || car.dismountCopIds.length === 0) {
     car.dismountCopIds = [];
     car.dismountTargetPlayerId = null;
@@ -5404,24 +5480,40 @@ function resetCopCarDeployment(car) {
 
 function stepCopCar(car, dt) {
   pruneCopCarAssignments(car);
+  if (!Number.isFinite(car.huntLostTimer)) {
+    car.huntLostTimer = 0;
+  }
 
   if (car.dismountCopIds.length > 0) {
-    let target = car.dismountTargetPlayerId ? players.get(car.dismountTargetPlayerId) : null;
-    if (
-      !target ||
-      target.health <= 0 ||
-      target.stars < 5 ||
-      target.insideShopId ||
-      wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS
-    ) {
+    const trackedTargetId = String(car.huntTargetPlayerId || car.dismountTargetPlayerId || '');
+    let target = trackedTargetId ? players.get(trackedTargetId) : null;
+    if (!isFiveStarTrackablePlayer(target)) {
       target = null;
+    }
+    if (target && wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS) {
+      target = null;
+    }
+    if (!target) {
+      const carHunterCounts = activeCopCarHunterCountsByPlayer();
+      target = nearestFiveStarPlayer(car.x, car.y, {
+        maxDistanceSq: COP_CAR_HUNT_JOIN_RADIUS_SQ,
+        countsByPlayer: carHunterCounts,
+        capPerPlayer: COP_MAX_HUNTER_CARS_PER_PLAYER,
+        keepTargetId: trackedTargetId,
+      });
     }
 
     if (target) {
+      car.huntTargetPlayerId = target.id;
       car.dismountTargetPlayerId = target.id;
+      car.huntLostTimer = 0;
       car.sirenOn = true;
     } else {
-      car.dismountTargetPlayerId = null;
+      car.huntLostTimer += dt;
+      if (car.huntLostTimer >= COP_CAR_HUNT_LOST_TIMEOUT) {
+        car.huntTargetPlayerId = null;
+        car.dismountTargetPlayerId = null;
+      }
       car.sirenOn = false;
     }
 
@@ -5437,14 +5529,36 @@ function stepCopCar(car, dt) {
     return;
   }
 
-  const target = nearestFiveStarPlayer(car.x, car.y);
+  const currentTargetId = String(car.huntTargetPlayerId || '');
+  let target = currentTargetId ? players.get(currentTargetId) : null;
+  if (!isFiveStarTrackablePlayer(target)) {
+    target = null;
+  }
+  if (target && wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_HUNT_LEASH_RADIUS_SQ) {
+    target = null;
+  }
   if (!target) {
+    const carHunterCounts = activeCopCarHunterCountsByPlayer();
+    target = nearestFiveStarPlayer(car.x, car.y, {
+      maxDistanceSq: COP_CAR_HUNT_JOIN_RADIUS_SQ,
+      countsByPlayer: carHunterCounts,
+      capPerPlayer: COP_MAX_HUNTER_CARS_PER_PLAYER,
+      keepTargetId: currentTargetId,
+    });
+  }
+  if (!target) {
+    car.huntLostTimer += dt;
+    if (car.huntLostTimer >= COP_CAR_HUNT_LOST_TIMEOUT) {
+      car.huntTargetPlayerId = null;
+    }
     car.sirenOn = false;
     stepTrafficCar(car, dt);
     car.speed = clamp(car.speed, -80, 130);
     return;
   }
 
+  car.huntLostTimer = 0;
+  car.huntTargetPlayerId = target.id;
   car.sirenOn = true;
   const chase = wrappedVector(car.x, car.y, target.x, target.y);
   const desired = Math.atan2(chase.dy, chase.dx);
@@ -6361,7 +6475,7 @@ function stepCars(dt) {
         resetCopCarDeployment(car);
         car.sirenOn = false;
       } else {
-        car.sirenOn = !!car.dismountTargetPlayerId;
+        car.sirenOn = !!(car.dismountTargetPlayerId || car.huntTargetPlayerId);
       }
     }
     const abandonedDt = car.type === 'civilian' ? lodStepDt(car.id, car.x, car.y, dt) : dt;
@@ -6761,7 +6875,8 @@ function moveCop(cop, dir, speed, dt) {
   wrapWorldPosition(cop);
 }
 
-function moveCopCombat(cop, target, dt) {
+function moveCopCombat(cop, target, dt, options = null) {
+  const holdGround = !!(options && options.holdGround);
   const toTarget = wrappedVector(cop.x, cop.y, target.x, target.y);
   const dist = toTarget.dist;
   if (dist <= 0.001) return;
@@ -6783,6 +6898,14 @@ function moveCopCombat(cop, target, dt) {
     return;
   }
   if (dist < COP_COMBAT_STANDOFF_MIN) {
+    if (holdGround) {
+      cop.dir = angleApproach(cop.dir, toward, dt * 7.2);
+      if (Math.random() < 0.24) {
+        const sidestep = angleWrap(toward + cop.combatStrafeDir * Math.PI * 0.5 + randRange(-0.05, 0.05));
+        moveCop(cop, sidestep, 30, dt);
+      }
+      return;
+    }
     moveCop(cop, angleWrap(toward + Math.PI), 84, dt);
     return;
   }
@@ -6799,7 +6922,16 @@ function shootAtTargetFromCop(cop, target) {
   if (dist >= 230 || cop.cooldown > 0) return;
 
   cop.cooldown = randRange(0.52, 0.86);
-  const aim = Math.atan2(toTarget.dy, toTarget.dx) + randRange(-0.06, 0.06);
+  const toward = Math.atan2(toTarget.dy, toTarget.dx);
+  const distT = clamp(dist / 230, 0, 1);
+  const hitChance = COP_SHOT_HIT_CHANCE_NEAR + (COP_SHOT_HIT_CHANCE_FAR - COP_SHOT_HIT_CHANCE_NEAR) * distT;
+  const shouldHit = Math.random() < hitChance;
+  let aimOffset = randRange(-COP_SHOT_HIT_AIM_JITTER, COP_SHOT_HIT_AIM_JITTER);
+  if (!shouldHit) {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    aimOffset = side * randRange(COP_SHOT_MISS_AIM_OFFSET_MIN, COP_SHOT_MISS_AIM_OFFSET_MAX);
+  }
+  const aim = toward + aimOffset;
   let maxDist = Math.min(250, firstSolidDistance(cop.x, cop.y, aim, 250));
   const carBlock = firstCarBlockDistance(cop.x, cop.y, aim, maxDist, cop.inCarId || null);
   if (carBlock) {
@@ -6807,8 +6939,16 @@ function shootAtTargetFromCop(cop, target) {
   }
   const ex = wrapWorldX(cop.x + Math.cos(aim) * maxDist);
   const ey = wrapWorldY(cop.y + Math.sin(aim) * maxDist);
-  const directDist = toTarget.dist;
-  if (!target.inCarId && directDist <= maxDist + 4) {
+  const rayDx = Math.cos(aim);
+  const rayDy = Math.sin(aim);
+  const along = toTarget.dx * rayDx + toTarget.dy * rayDy;
+  const perp = Math.abs(toTarget.dx * -rayDy + toTarget.dy * rayDx);
+  const hitsTargetRay =
+    !target.inCarId &&
+    along > 0 &&
+    along <= maxDist + COP_SHOT_TARGET_RADIUS &&
+    perp <= COP_SHOT_TARGET_RADIUS;
+  if (hitsTargetRay) {
     damagePlayer(target, 15, null);
   }
   if (carBlock && carBlock.dist <= maxDist + 0.01) {
@@ -6830,6 +6970,9 @@ function stepCops(dt) {
     cop.cooldown -= dt;
     cop.patrolTimer -= dt;
     cop.alertTimer = Math.max(0, (cop.alertTimer || 0) - dt);
+    if (!Number.isFinite(cop.huntLostTimer)) {
+      cop.huntLostTimer = 0;
+    }
 
     if (!cop.alive) {
       if (cop.corpseState === 'down') {
@@ -6890,18 +7033,19 @@ function stepCops(dt) {
         cop.mode = 'patrol';
         cop.targetPlayerId = null;
       } else {
-        let target = car.dismountTargetPlayerId ? players.get(car.dismountTargetPlayerId) : null;
-        if (
-          !target ||
-          target.health <= 0 ||
-          target.stars < 5 ||
-          target.insideShopId ||
-          wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS
-        ) {
+        const trackedTargetId = String(car.huntTargetPlayerId || car.dismountTargetPlayerId || '');
+        let target = trackedTargetId ? players.get(trackedTargetId) : null;
+        if (!isFiveStarTrackablePlayer(target)) {
+          target = null;
+        }
+        if (target && wrappedDistanceSq(car.x, car.y, target.x, target.y) > COP_CAR_RECALL_RADIUS * COP_CAR_RECALL_RADIUS) {
           target = null;
         }
 
         if (target) {
+          car.huntTargetPlayerId = target.id;
+          car.dismountTargetPlayerId = target.id;
+          cop.huntLostTimer = 0;
           if (cop.rejoinCarId && cop.assignedCarId === cop.rejoinCarId) {
             cop.mode = 'return';
             cop.targetPlayerId = null;
@@ -6909,10 +7053,11 @@ function stepCops(dt) {
           } else {
             cop.mode = 'hunt';
             cop.targetPlayerId = target.id;
-            moveCopCombat(cop, target, dt);
+            moveCopCombat(cop, target, dt, { holdGround: true });
             shootAtTargetFromCop(cop, target);
           }
         } else {
+          cop.huntLostTimer += dt;
           cop.mode = 'return';
           cop.targetPlayerId = null;
           moveCop(cop, wrappedDirection(cop.x, cop.y, car.x, car.y), 106, dt);
@@ -6928,6 +7073,7 @@ function stepCops(dt) {
           cop.rejoinCarId = null;
           cop.mode = 'in_car';
           cop.targetPlayerId = null;
+          cop.huntLostTimer = 0;
           cop.cooldown = randRange(0.22, 0.6);
           removeCopFromAssignedCar(cop);
         }
@@ -6937,19 +7083,46 @@ function stepCops(dt) {
       }
     }
 
-    const target = nearestFiveStarPlayer(cop.x, cop.y);
+    const previousTargetId = String(cop.targetPlayerId || '');
+    let target = previousTargetId ? players.get(previousTargetId) : null;
+    if (!isFiveStarTrackablePlayer(target)) {
+      target = null;
+    }
+    if (target && wrappedDistanceSq(cop.x, cop.y, target.x, target.y) > COP_HUNT_LEASH_RADIUS_SQ) {
+      target = null;
+    }
+    if (!target) {
+      cop.huntLostTimer += dt;
+      const hunterCounts = activeCopHunterCountsByPlayer();
+      target = nearestFiveStarPlayer(cop.x, cop.y, {
+        maxDistanceSq: COP_HUNT_JOIN_RADIUS_SQ,
+        countsByPlayer: hunterCounts,
+        capPerPlayer: COP_MAX_HUNTERS_PER_PLAYER,
+        keepTargetId: previousTargetId,
+      });
+    }
     if (target) {
       cop.mode = 'hunt';
       cop.targetPlayerId = target.id;
+      cop.huntLostTimer = 0;
       moveCopCombat(cop, target, dt);
       shootAtTargetFromCop(cop, target);
     } else {
+      const inLeashGrace = previousTargetId && cop.huntLostTimer < COP_HUNT_LOST_TIMEOUT;
+      if (inLeashGrace) {
+        cop.mode = 'hunt';
+        cop.targetPlayerId = previousTargetId;
+        moveCop(cop, cop.dir, 62, dt);
+        wrapWorldPosition(cop);
+        continue;
+      }
       const patrolDt = lodStepDt(cop.id, cop.x, cop.y, dt, 2, 3);
       if (patrolDt <= 0) {
         continue;
       }
       cop.mode = 'patrol';
       cop.targetPlayerId = null;
+      cop.huntLostTimer = 0;
       if (cop.patrolTimer <= 0) {
         cop.patrolTimer = randRange(0.6, 1.7);
         cop.dir += randRange(-1.3, 1.3);
@@ -6991,10 +7164,12 @@ function maybeEmitCopTriggerAlerts() {
     for (const car of cars.values()) {
       if (car.type !== 'cop' || !!car.driverId || !car.sirenOn) continue;
       let trackingPlayer = false;
-      if (car.dismountTargetPlayerId) {
+      if (car.huntTargetPlayerId) {
+        trackingPlayer = car.huntTargetPlayerId === player.id;
+      } else if (car.dismountTargetPlayerId) {
         trackingPlayer = car.dismountTargetPlayerId === player.id;
       } else {
-        const target = nearestFiveStarPlayer(car.x, car.y);
+        const target = nearestFiveStarPlayer(car.x, car.y, { maxDistanceSq: COP_CAR_HUNT_JOIN_RADIUS_SQ });
         trackingPlayer = !!(target && target.id === player.id);
       }
       if (!trackingPlayer) continue;
@@ -7565,7 +7740,9 @@ function shouldIncludeCarForPlayer(player, car) {
   if (car.destroyed) return false;
   if (!OPT_AOI) return true;
   if (car.id === player.inCarId || car.driverId === player.id) return true;
-  if (car.type === 'cop' && car.dismountTargetPlayerId === player.id) return true;
+  if (car.type === 'cop' && (car.dismountTargetPlayerId === player.id || car.huntTargetPlayerId === player.id)) {
+    return true;
+  }
   return entityInsidePlayerAoi(player, car.x, car.y, AOI_CAR_RADIUS_SQ);
 }
 
