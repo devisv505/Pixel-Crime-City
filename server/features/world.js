@@ -449,6 +449,41 @@ function createWorldFeature(deps) {
       }
     }
 
+    const neighborNodeIdsByNode = new Map();
+    for (const node of nodes) {
+      const edges = edgesByNode.get(node.id) || [];
+      const neighbors = [];
+      for (const edge of edges) {
+        if (!edge || !Number.isInteger(edge.to)) continue;
+        neighbors.push(edge.to);
+      }
+      neighborNodeIdsByNode.set(node.id, Object.freeze(neighbors));
+    }
+
+    const componentIdByNodeId = new Map();
+    const componentNodeIds = [];
+    let nextComponentId = 1;
+    for (const node of nodes) {
+      if (componentIdByNodeId.has(node.id)) continue;
+      const componentId = nextComponentId;
+      nextComponentId += 1;
+      const stack = [node.id];
+      const members = [];
+      componentIdByNodeId.set(node.id, componentId);
+      while (stack.length > 0) {
+        const currentNodeId = stack.pop();
+        members.push(currentNodeId);
+        const neighbors = neighborNodeIdsByNode.get(currentNodeId) || [];
+        for (const neighborNodeId of neighbors) {
+          if (!Number.isInteger(neighborNodeId)) continue;
+          if (componentIdByNodeId.has(neighborNodeId)) continue;
+          componentIdByNodeId.set(neighborNodeId, componentId);
+          stack.push(neighborNodeId);
+        }
+      }
+      componentNodeIds.push(Object.freeze(members));
+    }
+
     const poiByKind = Object.freeze({
       intersection_corner: [],
       park: [],
@@ -541,6 +576,10 @@ function createWorldFeature(deps) {
       nodesById,
       nodeIdByCell,
       edgesByNode,
+      neighborNodeIdsByNode,
+      componentIdByNodeId,
+      componentNodeIds: Object.freeze(componentNodeIds),
+      componentCount: componentNodeIds.length,
       poiByKind,
       poiKindByNodeId,
       poiAll: Array.from(poiAllSet),
@@ -759,6 +798,9 @@ function createWorldFeature(deps) {
     randomCurbSpawn,
     randomRoadSpawnFarFrom,
     npcNavGraph,
+    neighborNodeIdsByNode: npcNavGraph.neighborNodeIdsByNode,
+    componentIdByNodeId: npcNavGraph.componentIdByNodeId,
+    componentNodeIds: npcNavGraph.componentNodeIds,
     nearestNavNode,
     findNavPath,
     samplePoiNode,
