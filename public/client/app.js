@@ -105,10 +105,25 @@ const COLOR_CHOICES = [
   '#b4ff8d',
 ];
 const GARAGE_REPAINT_PRESETS = Object.freeze([
-  Object.freeze({ label: 'Yellow', color: '#f6cf3f', stripe: '#ffffff', item: 'garage_repaint_selected_yellow' }),
-  Object.freeze({ label: 'Blue', color: '#4f8dff', stripe: '#e7f1ff', item: 'garage_repaint_selected_blue' }),
+  Object.freeze({
+    label: 'Sunset Orange',
+    color: '#ff7a1a',
+    stripe: '#ffe2c2',
+    item: 'garage_repaint_selected_yellow',
+  }),
+  Object.freeze({
+    label: 'Neon Lime',
+    color: '#8dff2b',
+    stripe: '#f1ffd8',
+    item: 'garage_repaint_selected_blue',
+  }),
   Object.freeze({ label: 'Black', color: '#1f232b', stripe: '#a9b2bf', item: 'garage_repaint_selected_black' }),
-  Object.freeze({ label: 'Red', color: '#d84e4e', stripe: '#ffd9d9', item: 'garage_repaint_selected_red' }),
+  Object.freeze({
+    label: 'Electric Purple',
+    color: '#8a4dff',
+    stripe: '#e6d8ff',
+    item: 'garage_repaint_selected_red',
+  }),
 ]);
 
 const INPUT = {

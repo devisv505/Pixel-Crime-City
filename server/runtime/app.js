@@ -424,10 +424,10 @@ const GARAGE_REPAINT_SELECTED_PRICE = 100;
 const GARAGE_REPAINT_SELECTED_KEY = 'garage_repaint_selected';
 const GARAGE_REPAINT_SELECTED_PREFIX = 'garage_repaint_selected:';
 const GARAGE_REPAINT_SELECTED_PRESET_COLORS = Object.freeze({
-  garage_repaint_selected_yellow: '#f6cf3f',
-  garage_repaint_selected_blue: '#4f8dff',
+  garage_repaint_selected_yellow: '#ff7a1a',
+  garage_repaint_selected_blue: '#8dff2b',
   garage_repaint_selected_black: '#1f232b',
-  garage_repaint_selected_red: '#d84e4e',
+  garage_repaint_selected_red: '#8a4dff',
 });
 const SHOPS = [
   { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
