@@ -62,6 +62,7 @@ const wss = new WebSocketServer({ server });
 app.use(express.json({ limit: '128kb' }));
 
 const PORT = Number(process.env.PORT || 3000);
+const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL);
 const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 36));
 const DT = 1 / TICK_RATE;
 const SNAPSHOT_RATE = Math.max(1, Math.min(TICK_RATE, Number(process.env.SNAPSHOT_RATE) || 24));
@@ -311,6 +312,62 @@ const { emitEvent, drainPendingEvents, clearPendingEvents } = createEventsFeatur
 
 function entityInsidePlayerAoi(player, x, y, radiusSq) {
   return wrappedDistanceSq(player.x, player.y, x, y) <= radiusSq;
+}
+
+function normalizePublicBaseUrl(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    parsed.hash = '';
+    parsed.search = '';
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function firstHeaderValue(headerValue) {
+  if (Array.isArray(headerValue)) {
+    for (const item of headerValue) {
+      const text = String(item || '').trim();
+      if (text) return text.split(',')[0].trim();
+    }
+    return '';
+  }
+  const text = String(headerValue || '').trim();
+  if (!text) return '';
+  return text.split(',')[0].trim();
+}
+
+function resolvePublicBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const forwardedProto = firstHeaderValue(req?.headers?.['x-forwarded-proto']);
+  const forwardedHost = firstHeaderValue(req?.headers?.['x-forwarded-host']);
+  const host = forwardedHost || req.get('host') || `localhost:${PORT}`;
+  let protocol = String(forwardedProto || req.protocol || 'http').trim().toLowerCase();
+  if (protocol.includes(':')) {
+    protocol = protocol.split(':')[0];
+  }
+  if (protocol !== 'http' && protocol !== 'https') {
+    protocol = 'http';
+  }
+  return `${protocol}://${host}`;
+}
+
+function absolutePublicUrl(req, pathname = '/') {
+  const safePath = String(pathname || '/').startsWith('/') ? String(pathname || '/') : `/${pathname}`;
+  return `${resolvePublicBaseUrl(req)}${safePath}`;
+}
+
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function protocolIdForEntity(entityId) {
@@ -3001,6 +3058,48 @@ function applyQuestCatalogReloadAndResync() {
   reloadActiveQuestCatalog();
   refreshAllOnlinePlayerQuestState(true);
 }
+
+app.use(['/admin', '/api/admin'], (_req, res, next) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  next();
+});
+
+app.get('/robots.txt', (req, res) => {
+  const sitemapUrl = absolutePublicUrl(req, '/sitemap.xml');
+  const lines = [
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /admin',
+    'Disallow: /admin/',
+    'Disallow: /api/admin',
+    'Disallow: /api/admin/',
+    `Sitemap: ${sitemapUrl}`,
+    '',
+  ];
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=1800');
+  res.send(lines.join('\n'));
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const homeUrl = absolutePublicUrl(req, '/');
+  const lastModified = new Date(SERVER_BOOT_TIME_MS).toISOString();
+  const xml = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    '  <url>',
+    `    <loc>${escapeXml(homeUrl)}</loc>`,
+    `    <lastmod>${lastModified}</lastmod>`,
+    '    <changefreq>daily</changefreq>',
+    '    <priority>1.0</priority>',
+    '  </url>',
+    '</urlset>',
+    '',
+  ].join('\n');
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=1800');
+  res.send(xml);
+});
 
 app.get('/admin', (req, res) => {
   if (!ADMIN_AUTH_ENABLED) {

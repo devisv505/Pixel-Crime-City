@@ -47,3 +47,19 @@ In gun shop:
 
 - Node.js + Express + ws (authoritative multiplayer simulation)
 - HTML5 Canvas client with interpolation rendering
+
+## SEO / Indexing
+
+- `robots.txt` is served at `/robots.txt`
+- `sitemap.xml` is served at `/sitemap.xml`
+- Admin routes are marked `noindex` to keep them out of search
+
+For production, set:
+
+```bash
+PUBLIC_BASE_URL=https://your-domain.com
+```
+
+Then submit this URL in Google Search Console:
+
+`https://your-domain.com/sitemap.xml`
