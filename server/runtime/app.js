@@ -287,6 +287,8 @@ const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const CRIME_WEIGHTS = Object.freeze({
   npc_kill: 10,
   npc_kill_witnessed: 16,
+  gunfire_witnessed: 5,
+  car_theft_witnessed: 6,
   cop_assault: 2,
   cop_kill: 22,
   player_kill: 13,
@@ -350,6 +352,7 @@ const COP_SHOT_HIT_AIM_JITTER = 0.032;
 const COP_SHOT_MISS_AIM_OFFSET_MIN = 0.14;
 const COP_SHOT_MISS_AIM_OFFSET_MAX = 0.24;
 const COP_SHOT_TARGET_RADIUS = PLAYER_RADIUS + 1;
+const POLICE_GUNFIRE_REPORT_COOLDOWN = 1.1;
 const COP_HUNT_JOIN_RADIUS = 960;
 const COP_HUNT_LEASH_RADIUS = 1280;
 const COP_HUNT_LOST_TIMEOUT = 6.5;
@@ -3935,6 +3938,81 @@ function policeWitnessReport(x, y, radius = POLICE_WITNESS_RADIUS) {
   return { policeNear, witnessCopIds, witnessX, witnessY };
 }
 
+function alertWitnessCopsForPlayer(playerId, witnessCopIds) {
+  const targetId = String(playerId || '');
+  if (!targetId || !Array.isArray(witnessCopIds) || witnessCopIds.length === 0) return;
+  for (const copId of witnessCopIds) {
+    const cop = cops.get(copId);
+    if (!cop || !cop.alive) continue;
+    cop.alertTimer = Math.max(cop.alertTimer || 0, COP_ALERT_MARK_SECONDS);
+    if (cop.inCarId) continue;
+    cop.mode = 'hunt';
+    cop.targetPlayerId = targetId;
+    cop.huntLostTimer = 0;
+  }
+}
+
+function alertNearbyCopCarsForPlayer(player, x, y, radius = POLICE_WITNESS_RADIUS) {
+  if (!player || player.health <= 0) return;
+  const r2 = radius * radius;
+  for (const car of cars.values()) {
+    if (!car || car.type !== 'cop' || car.destroyed) continue;
+    if (wrappedDistanceSq(car.x, car.y, x, y) > r2) continue;
+    car.huntTargetPlayerId = player.id;
+    car.dismountTargetPlayerId = player.id;
+    car.sirenOn = true;
+    tryDeployCopOfficers(car, player, true);
+  }
+}
+
+function reportWitnessedGunfire(player, x, y) {
+  if (!player || player.health <= 0 || player.insideShopId) return;
+  if (!Number.isFinite(player.gunfireWitnessCooldown)) {
+    player.gunfireWitnessCooldown = 0;
+  }
+  if (player.gunfireWitnessCooldown > 0) return;
+
+  const witness = policeWitnessReport(x, y);
+  if (!witness.policeNear) return;
+
+  player.gunfireWitnessCooldown = POLICE_GUNFIRE_REPORT_COOLDOWN;
+  const alreadyInFiveStarPursuit = player.stars >= 5 || player.starHeat >= 4.99;
+  forceFiveStars(player, 34);
+  addCrimeRating(player, CRIME_WEIGHTS.gunfire_witnessed);
+  alertWitnessCopsForPlayer(player.id, witness.witnessCopIds);
+  alertNearbyCopCarsForPlayer(player, x, y, POLICE_WITNESS_RADIUS * 1.15);
+
+  if (!alreadyInFiveStarPursuit) {
+    emitEvent('copWitness', {
+      playerId: player.id,
+      x: witness.witnessX,
+      y: witness.witnessY,
+    });
+    player.copAlertPlayed = true;
+  }
+}
+
+function reportWitnessedCarTheft(player, x, y) {
+  if (!player || player.health <= 0 || player.insideShopId) return;
+  const witness = policeWitnessReport(x, y);
+  if (!witness.policeNear) return;
+
+  const alreadyInFiveStarPursuit = player.stars >= 5 || player.starHeat >= 4.99;
+  forceFiveStars(player, 38);
+  addCrimeRating(player, CRIME_WEIGHTS.car_theft_witnessed);
+  alertWitnessCopsForPlayer(player.id, witness.witnessCopIds);
+  alertNearbyCopCarsForPlayer(player, x, y, POLICE_WITNESS_RADIUS * 1.2);
+
+  if (!alreadyInFiveStarPursuit) {
+    emitEvent('copWitness', {
+      playerId: player.id,
+      x: witness.witnessX,
+      y: witness.witnessY,
+    });
+    player.copAlertPlayed = true;
+  }
+}
+
 function releaseCarDriver(car) {
   if (!car.driverId) return;
   const player = players.get(car.driverId);
@@ -5014,9 +5092,11 @@ function handleEnterOrExit(player) {
     } else if (candidate.type === 'ambulance') {
       addStars(player, 1.0, 28);
       addCrimeRating(player, CRIME_WEIGHTS.car_theft_ambulance);
+      reportWitnessedCarTheft(player, candidate.x, candidate.y);
       } else {
         addStars(player, 0.75, 26);
         addCrimeRating(player, CRIME_WEIGHTS.car_theft_civilian);
+        reportWitnessedCarTheft(player, candidate.x, candidate.y);
       }
       incrementQuestAction(player, 'steal_car_any', 1);
       if (candidate.type === 'cop') {
@@ -6092,6 +6172,10 @@ function fireShot(player, clickAimOverride = null) {
   const sx = player.x + Math.cos(dir) * 8;
   const sy = player.y + Math.sin(dir) * 8;
 
+  if (weapon.type !== 'melee') {
+    reportWitnessedGunfire(player, sx, sy);
+  }
+
   if (player.weapon === 'bazooka') {
     const targetX = clickAimOverride ? clickAimOverride.x : player.input.aimX;
     const targetY = clickAimOverride ? clickAimOverride.y : player.input.aimY;
@@ -6229,6 +6313,11 @@ function stepPlayers(dt) {
     }
     if (player.shootCooldown > 0) {
       player.shootCooldown -= dt;
+    }
+    if (!Number.isFinite(player.gunfireWitnessCooldown)) {
+      player.gunfireWitnessCooldown = 0;
+    } else if (player.gunfireWitnessCooldown > 0) {
+      player.gunfireWitnessCooldown = Math.max(0, player.gunfireWitnessCooldown - dt);
     }
 
     if (player.health <= 0) {
@@ -6561,6 +6650,20 @@ function stepCarHitsByCars(ctx = tickSpatialContext) {
       if (relAlong >= -6 && penetration < 0.6) continue;
 
       const hit = Math.abs(relAlong);
+      if (hit > 22) {
+        if (a.type === 'cop' && b.driverId) {
+          const offender = players.get(b.driverId);
+          if (offender && offender.health > 0 && !offender.insideShopId) {
+            triggerCopCarAggroOnAttack(a, offender);
+          }
+        }
+        if (b.type === 'cop' && a.driverId) {
+          const offender = players.get(a.driverId);
+          if (offender && offender.health > 0 && !offender.insideShopId) {
+            triggerCopCarAggroOnAttack(b, offender);
+          }
+        }
+      }
       const transfer = clamp(0.26 + hit / 210, 0.26, 0.52);
       const aOldSpeed = a.speed;
       const bOldSpeed = b.speed;
@@ -7320,6 +7423,19 @@ function stepCopHitsByCars(ctx = tickSpatialContext) {
       }
 
       const driver = players.get(car.driverId) || null;
+      if (driver && driver.health > 0 && !driver.insideShopId) {
+        const alreadyInFiveStarPursuit = driver.stars >= 5 || driver.starHeat >= 4.99;
+        forceFiveStars(driver, 42);
+        alertNearbyCopCarsForPlayer(driver, cop.x, cop.y, POLICE_WITNESS_RADIUS * 1.2);
+        if (!alreadyInFiveStarPursuit) {
+          emitEvent('copWitness', {
+            playerId: driver.id,
+            x: cop.x,
+            y: cop.y,
+          });
+          driver.copAlertPlayed = true;
+        }
+      }
       killCop(cop, driver);
       emitEvent('impact', { x: cop.x, y: cop.y });
       break;

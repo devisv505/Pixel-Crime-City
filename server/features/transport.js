@@ -100,6 +100,7 @@ function createTransportFeature(deps) {
       respawnTimer: 0,
       hitCooldown: 0,
       shootCooldown: 0,
+      gunfireWitnessCooldown: 0,
       lastShootSeq: 0,
       weapon: 'pistol',
       ownedPistol: true,
