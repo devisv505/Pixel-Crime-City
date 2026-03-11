@@ -401,6 +401,21 @@ button.secondary {
   flex: 0 0 auto;
 }
 
+.site-link-kofi {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: rgba(114, 164, 242, 0.55) !important;
+  background: rgba(35, 78, 132, 0.42) !important;
+}
+
+.site-link-kofi svg {
+  width: 12px;
+  height: 12px;
+  fill: #eaf4ff;
+  flex: 0 0 auto;
+}
+
 .menu-ad-wrap {
   position: fixed;
   left: 50%;
