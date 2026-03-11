@@ -1185,10 +1185,65 @@ function applyMobileStickToMovement() {
     INPUT.right = false;
     return;
   }
-  INPUT.left = mobileStick.x < -MOBILE_STICK_DEADZONE;
-  INPUT.right = mobileStick.x > MOBILE_STICK_DEADZONE;
-  INPUT.up = mobileStick.y < -MOBILE_STICK_DEADZONE;
-  INPUT.down = mobileStick.y > MOBILE_STICK_DEADZONE;
+  const mx = Number.isFinite(mobileStick.x) ? mobileStick.x : 0;
+  const my = Number.isFinite(mobileStick.y) ? mobileStick.y : 0;
+  const mag = Math.hypot(mx, my);
+  if (mag < MOBILE_STICK_DEADZONE) {
+    INPUT.up = false;
+    INPUT.down = false;
+    INPUT.left = false;
+    INPUT.right = false;
+    return;
+  }
+
+  const local = latestState?.localPlayer || null;
+  if (local && local.inCarId) {
+    const car = latestState?.carsById?.get(local.inCarId) || null;
+    const carAngle = Number.isFinite(car?.angle) ? Number(car.angle) : 0;
+    const desiredAngle = Math.atan2(my, mx);
+    const forwardDiff = normalizeAngle(desiredAngle - carAngle);
+    const reverse = Math.abs(forwardDiff) > Math.PI * 0.68;
+    const steerRef = reverse ? carAngle + Math.PI : carAngle;
+    const steerDiff = normalizeAngle(desiredAngle - steerRef);
+    const steerDeadzone = 0.16;
+
+    INPUT.up = !reverse;
+    INPUT.down = reverse;
+    INPUT.left = steerDiff < -steerDeadzone;
+    INPUT.right = steerDiff > steerDeadzone;
+    return;
+  }
+
+  // On foot, direction follows stick angle (8-way sectors) instead of per-axis WASD thresholds.
+  const angle = Math.atan2(my, mx);
+  const octant = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
+
+  INPUT.up = false;
+  INPUT.down = false;
+  INPUT.left = false;
+  INPUT.right = false;
+
+  if (octant === 0) {
+    INPUT.right = true;
+  } else if (octant === 1) {
+    INPUT.right = true;
+    INPUT.down = true;
+  } else if (octant === 2) {
+    INPUT.down = true;
+  } else if (octant === 3) {
+    INPUT.down = true;
+    INPUT.left = true;
+  } else if (octant === 4) {
+    INPUT.left = true;
+  } else if (octant === 5) {
+    INPUT.left = true;
+    INPUT.up = true;
+  } else if (octant === 6) {
+    INPUT.up = true;
+  } else {
+    INPUT.up = true;
+    INPUT.right = true;
+  }
 }
 
 function releaseMobileStick() {
