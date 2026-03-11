@@ -93,4 +93,4 @@ SITE_CONTACT_EMAIL=support@your-domain.com
 ADS_TXT_LINES="network.example, 123, DIRECT\nanother.example, 456, RESELLER"
 ```
 
-`/ads.txt` is generated dynamically from these values.
+`/ads.txt` now includes records from `public/ads.txt` (if present), plus values derived from `ADSENSE_CLIENT` and `ADS_TXT_LINES`.

@@ -55,6 +55,7 @@ const {
 } = require('../../server-protocol');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
+const ADS_TXT_FILE_PATH = path.join(PROJECT_ROOT, 'public', 'ads.txt');
 
 const app = express();
 const server = http.createServer(app);
@@ -400,6 +401,19 @@ function splitAdsTxtLines(value) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+function loadAdsTxtFileLines() {
+  try {
+    const raw = fs.readFileSync(ADS_TXT_FILE_PATH, 'utf8');
+    return splitAdsTxtLines(raw);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      // eslint-disable-next-line no-console
+      console.warn(`[ads] failed to read ads.txt file: ${error.message}`);
+    }
+    return [];
+  }
 }
 
 function safeContactEmail(value) {
@@ -3149,16 +3163,23 @@ app.use(['/admin', '/api/admin'], (_req, res, next) => {
 
 app.get('/ads.txt', (_req, res) => {
   const lines = [];
+  const pushUniqueLine = (line) => {
+    if (!line) return;
+    if (lines.includes(line)) return;
+    lines.push(line);
+  };
+  const fileLines = loadAdsTxtFileLines();
+  fileLines.forEach(pushUniqueLine);
   const normalizedPub = normalizeAdSensePublisherForAdsTxt(ADSENSE_CLIENT);
   if (normalizedPub) {
-    lines.push(`google.com, ${normalizedPub}, DIRECT, f08c47fec0942fa0`);
+    pushUniqueLine(`google.com, ${normalizedPub}, DIRECT, f08c47fec0942fa0`);
   }
   const extraLines = splitAdsTxtLines(ADS_TXT_LINES);
   if (extraLines.length > 0) {
-    lines.push(...extraLines);
+    extraLines.forEach(pushUniqueLine);
   }
   if (lines.length === 0) {
-    lines.push('# Configure ADSENSE_CLIENT or ADS_TXT_LINES to publish ads.txt records.');
+    lines.push('# Configure public/ads.txt, ADSENSE_CLIENT, or ADS_TXT_LINES to publish ads.txt records.');
   }
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'public, max-age=1800');
