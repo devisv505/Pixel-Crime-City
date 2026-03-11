@@ -6024,6 +6024,83 @@ function chooseAvoidanceHeading(car, desiredAngle) {
   return bestAngle;
 }
 
+function speedAlongHeading(car, headingAngle) {
+  if (!car) return 0;
+  const hx = Math.cos(headingAngle);
+  const hy = Math.sin(headingAngle);
+  const fx = Math.cos(car.angle);
+  const fy = Math.sin(car.angle);
+  return (Number(car.speed) || 0) * (fx * hx + fy * hy);
+}
+
+function nearestCarAheadInHeading(car, headingAngle, maxDistance, lateralPadding = 8) {
+  if (!car) return null;
+  const hx = Math.cos(headingAngle);
+  const hy = Math.sin(headingAngle);
+  const sx = -hy;
+  const sy = hx;
+  const maxDist = Math.max(24, Number(maxDistance) || 0);
+  const lanePadding = Math.max(0, Number(lateralPadding) || 0);
+
+  let best = null;
+  let bestForwardDist = maxDist + 1;
+  for (const other of cars.values()) {
+    if (!other || other.id === car.id || other.destroyed) continue;
+    const dx = wrapDelta(other.x - car.x, WORLD.width);
+    const dy = wrapDelta(other.y - car.y, WORLD.height);
+    const forwardDist = dx * hx + dy * hy;
+    if (forwardDist <= 0 || forwardDist > maxDist) continue;
+    const lateralDist = Math.abs(dx * sx + dy * sy);
+    const laneHalfWidth = (car.height + other.height) * 0.5 + lanePadding;
+    if (lateralDist > laneHalfWidth) continue;
+
+    // Ignore clearly oncoming traffic farther away.
+    const headingDot = Math.cos(other.angle) * hx + Math.sin(other.angle) * hy;
+    if (headingDot < -0.2 && forwardDist > 26) continue;
+
+    if (forwardDist < bestForwardDist) {
+      best = other;
+      bestForwardDist = forwardDist;
+    }
+  }
+
+  if (!best) return null;
+  return { car: best, forwardDist: bestForwardDist };
+}
+
+function applyAiCarFollowSpeed(car, desiredSpeed, dt, headingAngle = car.angle, options = null) {
+  const opts = options || {};
+  const ignoreLeadCars = !!opts.ignoreLeadCars;
+  const minGap = Math.max(2, Number(opts.minGap) || 8);
+  const timeGap = Math.max(0.2, Number(opts.timeGap) || 0.5);
+  const brakeRate = Math.max(1, Number(opts.brakeRate) || 160);
+  const accelRate = Math.max(1, Number(opts.accelRate) || 58);
+  const lateralPadding = Math.max(0, Number(opts.lateralPadding) || 8);
+  const lookAheadBase = Math.max(20, Number(opts.lookAheadBase) || 38);
+  const lookAheadPerSpeed = Math.max(0.1, Number(opts.lookAheadPerSpeed) || 1);
+  const lookAheadMax = Math.max(lookAheadBase + 10, Number(opts.lookAheadMax) || 150);
+  const lookAhead = clamp(lookAheadBase + Math.max(0, car.speed) * lookAheadPerSpeed, lookAheadBase + 10, lookAheadMax);
+
+  let cappedSpeed = Math.max(0, Number(desiredSpeed) || 0);
+  const lead = ignoreLeadCars ? null : nearestCarAheadInHeading(car, headingAngle, lookAhead, lateralPadding);
+  if (lead) {
+    const leadForwardSpeed = Math.max(0, speedAlongHeading(lead.car, headingAngle));
+    const bumperGap = (car.width + lead.car.width) * 0.5 + minGap;
+    const freeGap = Math.max(0, lead.forwardDist - bumperGap);
+    const desiredClearGap = minGap + Math.max(0, car.speed) * timeGap;
+    if (freeGap <= 2) {
+      cappedSpeed = 0;
+    } else if (freeGap < desiredClearGap) {
+      cappedSpeed = Math.min(cappedSpeed, Math.max(0, leadForwardSpeed - 6));
+    } else if (freeGap < desiredClearGap + 18) {
+      cappedSpeed = Math.min(cappedSpeed, leadForwardSpeed + 4);
+    }
+  }
+
+  car.speed = approach(car.speed, cappedSpeed, dt * (cappedSpeed < car.speed ? brakeRate : accelRate));
+  return lead;
+}
+
 function stepDrivenCar(car, input, dt) {
   const throttle = input.up ? 1 : 0;
   const brake = input.down ? 1 : 0;
@@ -6083,7 +6160,17 @@ function stepTrafficCar(car, dt) {
     car.aiCooldown = randRange(0.9, 1.5);
   }
 
-  car.speed = approach(car.speed, 78, dt * 58);
+  applyAiCarFollowSpeed(car, 78, dt, car.angle, {
+    minGap: 8,
+    timeGap: 0.52,
+    brakeRate: 168,
+    accelRate: 58,
+    lateralPadding: 8,
+    lookAheadBase: 40,
+    lookAheadPerSpeed: 1.1,
+    lookAheadMax: 156,
+  });
+  car.speed = clamp(car.speed, 0, Math.min(car.maxSpeed, 95));
   const prevX = car.x;
   const prevY = car.y;
   car.x += Math.cos(car.angle) * car.speed * dt;
@@ -6381,7 +6468,17 @@ function stepCopCar(car, dt) {
   car.angle = angleApproach(car.angle, steerDesired, dt * 2.4);
   const dist = chase.dist;
   const desiredSpeed = dist > 170 ? 120 : 42;
-  car.speed = approach(car.speed, desiredSpeed, dt * 88);
+  applyAiCarFollowSpeed(car, desiredSpeed, dt, car.angle, {
+    minGap: 6,
+    timeGap: 0.4,
+    brakeRate: 188,
+    accelRate: 88,
+    lateralPadding: 7,
+    lookAheadBase: 38,
+    lookAheadPerSpeed: 1.05,
+    lookAheadMax: 170,
+    ignoreLeadCars: true,
+  });
   car.speed = clamp(car.speed, -60, 150);
 
   const prevX = car.x;
