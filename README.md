@@ -82,7 +82,8 @@ ADSENSE_JOIN_SLOT=1234567890
 Optional:
 
 ```bash
-# Funding Choices publisher id (for consent message), usually pub-XXXXXXXXXXXXXX
+# Funding Choices publisher id (enables Google privacy widget/chip)
+# Leave unset to disable the floating privacy chip in-game.
 GOOGLE_FC_PUBLISHER=pub-XXXXXXXXXXXXXXXX
 
 # contact page email

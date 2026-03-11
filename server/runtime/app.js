@@ -66,9 +66,7 @@ const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL);
 const ADSENSE_CLIENT = String(process.env.ADSENSE_CLIENT || '').trim();
 const ADSENSE_JOIN_SLOT = String(process.env.ADSENSE_JOIN_SLOT || '').trim();
 const ADS_TXT_LINES = String(process.env.ADS_TXT_LINES || '').trim();
-const GOOGLE_FC_PUBLISHER = String(
-  process.env.GOOGLE_FC_PUBLISHER || normalizeAdSensePublisherForAdsTxt(ADSENSE_CLIENT)
-).trim();
+const GOOGLE_FC_PUBLISHER = String(process.env.GOOGLE_FC_PUBLISHER || '').trim();
 const SITE_CONTACT_EMAIL = String(process.env.SITE_CONTACT_EMAIL || 'devisv505@gmail.com').trim();
 const TICK_RATE = Math.max(10, Math.min(60, Number(process.env.TICK_RATE) || 36));
 const DT = 1 / TICK_RATE;
@@ -3126,6 +3124,7 @@ function applyQuestCatalogReloadAndResync() {
 }
 
 app.get('/runtime-config.js', (_req, res) => {
+  const consentPublisher = normalizeAdSensePublisherForAdsTxt(GOOGLE_FC_PUBLISHER);
   const payload = {
     adsense: {
       client: ADSENSE_CLIENT,
@@ -3133,8 +3132,8 @@ app.get('/runtime-config.js', (_req, res) => {
       enabled: ADSENSE_CLIENT.length > 0 && ADSENSE_JOIN_SLOT.length > 0,
     },
     consent: {
-      googleFcPublisher: GOOGLE_FC_PUBLISHER,
-      enabled: GOOGLE_FC_PUBLISHER.length > 0,
+      googleFcPublisher: consentPublisher,
+      enabled: consentPublisher.length > 0,
     },
     contactEmail: safeContactEmail(SITE_CONTACT_EMAIL),
   };
