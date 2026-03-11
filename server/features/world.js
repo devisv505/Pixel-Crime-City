@@ -341,24 +341,58 @@ function createWorldFeature(deps) {
   }
 
   function buildNpcNavGraph() {
-    const navCols = Math.max(1, Math.floor(WORLD.width / NPC_NAV_SPACING));
-    const navRows = Math.max(1, Math.floor(WORLD.height / NPC_NAV_SPACING));
+    const blocksX = Math.max(1, Math.floor(WORLD.width / BLOCK_PX));
+    const blocksY = Math.max(1, Math.floor(WORLD.height / BLOCK_PX));
+    const navCols = blocksX * 3;
+    const navRows = blocksY * 3;
     const nodes = [];
     const nodesById = new Map();
     const nodeIdByCell = new Map();
+    const nodeIdByBlockGrid = new Map();
+    const nodeIdsByBlock = new Map();
     const edgesByNode = new Map();
+    const localNodeXs = Object.freeze([ROAD_START - 8, Math.round((ROAD_START + ROAD_END) * 0.5), ROAD_END + 8]);
+    const localNodeYs = Object.freeze([ROAD_START - 8, Math.round((ROAD_START + ROAD_END) * 0.5), ROAD_END + 8]);
 
-    for (let cy = 0; cy < navRows; cy += 1) {
-      for (let cx = 0; cx < navCols; cx += 1) {
-        const x = wrapWorldX(cx * NPC_NAV_SPACING + NPC_NAV_HALF);
-        const y = wrapWorldY(cy * NPC_NAV_SPACING + NPC_NAV_HALF);
-        if (!navWalkablePoint(x, y)) continue;
-        const id = nodes.length;
-        const node = { id, x, y, cx, cy };
-        nodes.push(node);
-        nodesById.set(id, node);
-        nodeIdByCell.set(navCellKey(cx, cy), id);
-        edgesByNode.set(id, []);
+    function blockNodeKey(blockX, blockY, ix, iy) {
+      return `${blockX},${blockY},${ix},${iy}`;
+    }
+
+    function blockKey(blockX, blockY) {
+      return navCellKey(blockX, blockY);
+    }
+
+    for (let by = 0; by < blocksY; by += 1) {
+      for (let bx = 0; bx < blocksX; bx += 1) {
+        const blockNodeIds = [];
+        for (let iy = 0; iy < 3; iy += 1) {
+          for (let ix = 0; ix < 3; ix += 1) {
+            const localX = localNodeXs[ix];
+            const localY = localNodeYs[iy];
+            const x = wrapWorldX(bx * BLOCK_PX + localX);
+            const y = wrapWorldY(by * BLOCK_PX + localY);
+            const id = nodes.length;
+            const node = {
+              id,
+              x,
+              y,
+              bx,
+              by,
+              ix,
+              iy,
+              cx: bx * 3 + ix,
+              cy: by * 3 + iy,
+              connectExternal: ix !== 1 && iy !== 1,
+            };
+            nodes.push(node);
+            nodesById.set(id, node);
+            nodeIdByCell.set(navCellKey(node.cx, node.cy), id);
+            nodeIdByBlockGrid.set(blockNodeKey(bx, by, ix, iy), id);
+            edgesByNode.set(id, []);
+            blockNodeIds.push(id);
+          }
+        }
+        nodeIdsByBlock.set(blockKey(bx, by), Object.freeze(blockNodeIds));
       }
     }
 
@@ -377,75 +411,84 @@ function createWorldFeature(deps) {
       edgeSet.add(key);
     }
 
-    const cardinal = [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ];
+    function nodeIdAt(blockX, blockY, ix, iy) {
+      const bx = navIndexWrap(blockX, blocksX);
+      const by = navIndexWrap(blockY, blocksY);
+      const id = nodeIdByBlockGrid.get(blockNodeKey(bx, by, ix, iy));
+      return Number.isInteger(id) ? id : null;
+    }
 
-    for (const node of nodes) {
-      for (const [dx, dy] of cardinal) {
-        const nx = navIndexWrap(node.cx + dx, navCols);
-        const ny = navIndexWrap(node.cy + dy, navRows);
-        const neighborId = nodeIdByCell.get(navCellKey(nx, ny));
-        if (!Number.isInteger(neighborId)) continue;
-        const neighbor = nodesById.get(neighborId);
-        if (!neighbor) continue;
-        if (!navSegmentTraversable(node.x, node.y, neighbor.x, neighbor.y, false)) continue;
-        addEdge(node.id, neighbor.id, false);
+    for (let by = 0; by < blocksY; by += 1) {
+      for (let bx = 0; bx < blocksX; bx += 1) {
+        for (let iy = 0; iy < 3; iy += 1) {
+          for (let ix = 0; ix < 3; ix += 1) {
+            const fromId = nodeIdAt(bx, by, ix, iy);
+            if (!Number.isInteger(fromId)) continue;
+            const from = nodesById.get(fromId);
+            if (!from) continue;
+
+            if (ix < 2) {
+              const rightId = nodeIdAt(bx, by, ix + 1, iy);
+              const rightNode = Number.isInteger(rightId) ? nodesById.get(rightId) : null;
+              if (rightNode && navSegmentTraversable(from.x, from.y, rightNode.x, rightNode.y, true)) {
+                addEdge(fromId, rightId, false);
+              }
+            }
+            if (iy < 2) {
+              const downId = nodeIdAt(bx, by, ix, iy + 1);
+              const downNode = Number.isInteger(downId) ? nodesById.get(downId) : null;
+              if (downNode && navSegmentTraversable(from.x, from.y, downNode.x, downNode.y, true)) {
+                addEdge(fromId, downId, false);
+              }
+            }
+          }
+        }
       }
     }
 
-    function straddlesVerticalRoad(localXA, localXB) {
-      return (
-        (localXA < ROAD_START && localXB >= ROAD_END) ||
-        (localXB < ROAD_START && localXA >= ROAD_END)
-      );
-    }
-
-    function straddlesHorizontalRoad(localYA, localYB) {
-      return (
-        (localYA < ROAD_START && localYB >= ROAD_END) ||
-        (localYB < ROAD_START && localYA >= ROAD_END)
-      );
-    }
-
-    const crossSteps = [
+    const cornerIndices = Object.freeze([
+      [0, 0],
       [2, 0],
-      [-2, 0],
       [0, 2],
-      [0, -2],
-    ];
+      [2, 2],
+    ]);
 
-    for (const node of nodes) {
-      for (const [dx, dy] of crossSteps) {
-        const nx = navIndexWrap(node.cx + dx, navCols);
-        const ny = navIndexWrap(node.cy + dy, navRows);
-        const neighborId = nodeIdByCell.get(navCellKey(nx, ny));
-        if (!Number.isInteger(neighborId)) continue;
-        const neighbor = nodesById.get(neighborId);
-        if (!neighbor) continue;
+    for (let by = 0; by < blocksY; by += 1) {
+      for (let bx = 0; bx < blocksX; bx += 1) {
+        for (const [ix, iy] of cornerIndices) {
+          const fromId = nodeIdAt(bx, by, ix, iy);
+          if (!Number.isInteger(fromId)) continue;
+          const fromNode = nodesById.get(fromId);
+          if (!fromNode) continue;
 
-        const localXA = mod(node.x, BLOCK_PX);
-        const localYA = mod(node.y, BLOCK_PX);
-        const localXB = mod(neighbor.x, BLOCK_PX);
-        const localYB = mod(neighbor.y, BLOCK_PX);
-        let validCrossing = false;
-
-        if (dy === 0) {
-          if (inCrosswalkBand(localYA) && straddlesVerticalRoad(localXA, localXB)) {
-            validCrossing = true;
+          if (ix === 0) {
+            const neighborId = nodeIdAt(bx - 1, by, 2, iy);
+            const neighborNode = Number.isInteger(neighborId) ? nodesById.get(neighborId) : null;
+            if (neighborNode && navSegmentTraversable(fromNode.x, fromNode.y, neighborNode.x, neighborNode.y, true)) {
+              addEdge(fromId, neighborId, false);
+            }
+          } else if (ix === 2) {
+            const neighborId = nodeIdAt(bx + 1, by, 0, iy);
+            const neighborNode = Number.isInteger(neighborId) ? nodesById.get(neighborId) : null;
+            if (neighborNode && navSegmentTraversable(fromNode.x, fromNode.y, neighborNode.x, neighborNode.y, true)) {
+              addEdge(fromId, neighborId, false);
+            }
           }
-        } else if (dx === 0) {
-          if (inCrosswalkBand(localXA) && straddlesHorizontalRoad(localYA, localYB)) {
-            validCrossing = true;
+
+          if (iy === 0) {
+            const neighborId = nodeIdAt(bx, by - 1, ix, 2);
+            const neighborNode = Number.isInteger(neighborId) ? nodesById.get(neighborId) : null;
+            if (neighborNode && navSegmentTraversable(fromNode.x, fromNode.y, neighborNode.x, neighborNode.y, true)) {
+              addEdge(fromId, neighborId, false);
+            }
+          } else if (iy === 2) {
+            const neighborId = nodeIdAt(bx, by + 1, ix, 0);
+            const neighborNode = Number.isInteger(neighborId) ? nodesById.get(neighborId) : null;
+            if (neighborNode && navSegmentTraversable(fromNode.x, fromNode.y, neighborNode.x, neighborNode.y, true)) {
+              addEdge(fromId, neighborId, false);
+            }
           }
         }
-
-        if (!validCrossing) continue;
-        if (!navSegmentTraversable(node.x, node.y, neighbor.x, neighbor.y, true)) continue;
-        addEdge(node.id, neighbor.id, true);
       }
     }
 
@@ -572,9 +615,12 @@ function createWorldFeature(deps) {
       maxPathExpansions: NPC_NAV_MAX_PATH_EXPANSIONS,
       navCols,
       navRows,
+      blockCols: blocksX,
+      blockRows: blocksY,
       nodes,
       nodesById,
       nodeIdByCell,
+      nodeIdsByBlock,
       edgesByNode,
       neighborNodeIdsByNode,
       componentIdByNodeId,
@@ -593,27 +639,29 @@ function createWorldFeature(deps) {
     if (!graph || graph.nodes.length === 0) return null;
     const wx = wrapWorldX(x);
     const wy = wrapWorldY(y);
-    const rawCx = Math.round((wx - NPC_NAV_HALF) / NPC_NAV_SPACING);
-    const rawCy = Math.round((wy - NPC_NAV_HALF) / NPC_NAV_SPACING);
-    const baseCx = navIndexWrap(rawCx, graph.navCols);
-    const baseCy = navIndexWrap(rawCy, graph.navRows);
+    const blocksX = Math.max(1, Number(graph.blockCols) || Math.floor(WORLD.width / BLOCK_PX) || 1);
+    const blocksY = Math.max(1, Number(graph.blockRows) || Math.floor(WORLD.height / BLOCK_PX) || 1);
+    const baseBx = navIndexWrap(Math.floor(wx / BLOCK_PX), blocksX);
+    const baseBy = navIndexWrap(Math.floor(wy / BLOCK_PX), blocksY);
     let best = null;
     let bestDistSq = Infinity;
 
-    for (let ring = 0; ring <= maxRings; ring += 1) {
+    for (let ring = 0; ring <= Math.max(0, Math.floor(maxRings)); ring += 1) {
       for (let dy = -ring; dy <= ring; dy += 1) {
         for (let dx = -ring; dx <= ring; dx += 1) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
-          const cx = navIndexWrap(baseCx + dx, graph.navCols);
-          const cy = navIndexWrap(baseCy + dy, graph.navRows);
-          const nodeId = graph.nodeIdByCell.get(navCellKey(cx, cy));
-          if (!Number.isInteger(nodeId)) continue;
-          const node = graph.nodesById.get(nodeId);
-          if (!node) continue;
-          const d2 = wrappedDistanceSq(wx, wy, node.x, node.y);
-          if (d2 < bestDistSq) {
-            best = node;
-            bestDistSq = d2;
+          const bx = navIndexWrap(baseBx + dx, blocksX);
+          const by = navIndexWrap(baseBy + dy, blocksY);
+          const nodeIds = graph.nodeIdsByBlock?.get(navCellKey(bx, by));
+          if (!Array.isArray(nodeIds) || nodeIds.length === 0) continue;
+          for (const nodeId of nodeIds) {
+            const node = graph.nodesById.get(nodeId);
+            if (!node) continue;
+            const d2 = wrappedDistanceSq(wx, wy, node.x, node.y);
+            if (d2 < bestDistSq) {
+              best = node;
+              bestDistSq = d2;
+            }
           }
         }
       }

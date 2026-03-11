@@ -244,6 +244,15 @@ const ADMIN_USING_LOCAL_DEFAULTS =
   ADMIN_AUTH_PASS === 'change_me';
 const ADMIN_SESSION_COOKIE = 'pcc_admin_session';
 const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const NPC_PLAYER_CAR_FEAR_MIN_SPEED = 14;
+const NPC_PLAYER_CAR_FEAR_RADIUS_BASE = 26;
+const NPC_PLAYER_CAR_FEAR_RADIUS_MAX = 76;
+const NPC_PLAYER_CAR_FEAR_RADIUS_PER_SPEED = 0.62;
+const NPC_PLAYER_CAR_FEAR_AHEAD_DOT_MIN = -0.2;
+const NPC_PLAYER_CAR_FEAR_SIDE_DISTANCE = 24;
+const NPC_PLAYER_CAR_FEAR_PANIC_MIN_SECONDS = 0.9;
+const NPC_PLAYER_CAR_FEAR_PANIC_BASE_MAX_SECONDS = 1.9;
+const NPC_PLAYER_CAR_FEAR_PANIC_MAX_SECONDS = 3.4;
 const {
   wrapCoord,
   wrapWorldX,
@@ -4216,6 +4225,7 @@ function resetNpcAiRuntime(npc, spawnX = null, spawnY = null) {
   npc.crossBlockTimer = 0;
   npc.panicTimer = Math.max(0, Number(npc.panicTimer) || 0);
   npc.crossingTimer = 0;
+  npc.vehicleFearUntil = 0;
   npc.wanderTimer = Number.isFinite(npc.wanderTimer) ? npc.wanderTimer : randRange(0.5, 2.1);
   npc.navStuckTimer = 0;
   npc.navLastX = Number.isFinite(px) ? px : npc.x;
@@ -4394,6 +4404,8 @@ function triggerNpcPanic(npc, sourceX, sourceY, minSeconds = NPC_PANIC_MIN_SECON
 function recoverNpcFromRoad(npc, stepDt, maxDistance = 160) {
   if (!npc) return;
   if (groundTypeAt(npc.x, npc.y) !== 'road') return;
+  // Do not snap while the NPC is intentionally traversing to an active nav target.
+  if (Number.isInteger(npc.navTargetNodeId)) return;
   const nearest = nearestNavNode(npc.x, npc.y, 5);
   if (!nearest) return;
 
@@ -4529,6 +4541,7 @@ function makeNpc() {
     crossDir: 0,
     crossWaitUntil: 0,
     crossBlockTimer: 0,
+    vehicleFearUntil: 0,
     groupId: null,
     groupRole: 'solo',
     groupLeaderId: null,
@@ -7652,6 +7665,56 @@ function stepNpcHitsByCars(ctx = tickSpatialContext) {
   }
 }
 
+function stepNpcFearByPlayerCars(ctx = tickSpatialContext) {
+  const allCars = Array.isArray(ctx?.cars) ? ctx.cars : [];
+  if (allCars.length === 0) return;
+  const npcGrid = ctx?.npcGrid || null;
+  const nowSec = Date.now() / 1000;
+
+  for (const car of allCars) {
+    if (!car || car.destroyed || !car.driverId) continue;
+    const driver = players.get(car.driverId);
+    if (!driver || driver.health <= 0 || driver.insideShopId) continue;
+
+    const speed = Math.abs(Number(car.speed) || 0);
+    if (speed < NPC_PLAYER_CAR_FEAR_MIN_SPEED) continue;
+
+    const fearRadius = clamp(
+      NPC_PLAYER_CAR_FEAR_RADIUS_BASE + speed * NPC_PLAYER_CAR_FEAR_RADIUS_PER_SPEED,
+      NPC_PLAYER_CAR_FEAR_RADIUS_BASE,
+      NPC_PLAYER_CAR_FEAR_RADIUS_MAX
+    );
+    const fearRadiusSq = fearRadius * fearRadius;
+    const panicMax = clamp(
+      NPC_PLAYER_CAR_FEAR_PANIC_BASE_MAX_SECONDS + speed * 0.02,
+      NPC_PLAYER_CAR_FEAR_PANIC_BASE_MAX_SECONDS,
+      NPC_PLAYER_CAR_FEAR_PANIC_MAX_SECONDS
+    );
+    const forwardX = Math.cos(Number(car.angle) || 0);
+    const forwardY = Math.sin(Number(car.angle) || 0);
+    const candidates = npcGrid ? spatialQueryNeighbors(npcGrid, car.x, car.y) : npcs.values();
+
+    for (const npc of candidates) {
+      if (!npc || !npc.alive) continue;
+      if (Number(npc.vehicleFearUntil) > nowSec) continue;
+
+      const dx = wrapDelta(npc.x - car.x, WORLD.width);
+      const dy = wrapDelta(npc.y - car.y, WORLD.height);
+      const d2 = dx * dx + dy * dy;
+      if (d2 > fearRadiusSq) continue;
+
+      const dist = Math.sqrt(Math.max(0.0001, d2));
+      const nx = dx / dist;
+      const ny = dy / dist;
+      const aheadDot = nx * forwardX + ny * forwardY;
+      if (dist > NPC_PLAYER_CAR_FEAR_SIDE_DISTANCE && aheadDot < NPC_PLAYER_CAR_FEAR_AHEAD_DOT_MIN) continue;
+
+      triggerNpcPanic(npc, car.x, car.y, NPC_PLAYER_CAR_FEAR_PANIC_MIN_SECONDS, panicMax);
+      npc.vehicleFearUntil = nowSec + randRange(0.45, 0.95);
+    }
+  }
+}
+
 function stepCopHitsByCars(ctx = tickSpatialContext) {
   const impactCars = Array.isArray(ctx?.impactCars) ? ctx.impactCars : [];
   if (impactCars.length === 0) return;
@@ -8661,6 +8724,7 @@ setInterval(() => {
   serverFeatures.vehicles.stepCarHitsByCars(tickSpatialContext);
   serverFeatures.cops.stepCops(DT);
   maybeEmitCopTriggerAlerts();
+  stepNpcFearByPlayerCars(tickSpatialContext);
   serverFeatures.npcs.stepNpcs(DT);
   tickSpatialContext = buildTickSpatialContext();
   serverFeatures.combat.stepPlayerHits(tickSpatialContext);
