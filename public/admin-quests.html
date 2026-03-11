@@ -30,6 +30,9 @@
         align-items: center;
         margin-bottom: 10px;
       }
+      .topbar .logout-right {
+        margin-left: auto;
+      }
       button {
         border: 1px solid #4a6b84;
         background: #1f3344;
@@ -138,11 +141,9 @@
     <div class="wrap">
       <h1>Quest Admin</h1>
       <div class="topbar">
-        <button id="reloadBtn" type="button">Reload</button>
-        <button id="saveOrderBtn" type="button" class="secondary">Save Order</button>
         <a href="/admin/player-stats" class="button-link secondary">Player Stats</a>
-        <button id="logoutBtn" type="button" class="secondary">Logout</button>
         <span id="status" class="status"></span>
+        <button id="logoutBtn" type="button" class="secondary logout-right">Logout</button>
       </div>
 
       <div class="grid">
@@ -257,11 +258,12 @@
       const formTitle = document.getElementById('formTitle');
       const statusNode = document.getElementById('status');
       const questRows = document.getElementById('questRows');
-      const saveOrderBtn = document.getElementById('saveOrderBtn');
       const logoutBtn = document.getElementById('logoutBtn');
 
       let quests = [];
       let orderDirty = false;
+      let orderSaveRunning = false;
+      let orderSavePending = false;
       const allowedActions = new Set([
         'kill_npc',
         'kill_cop',
@@ -390,6 +392,30 @@
         quests[next] = current;
         orderDirty = true;
         renderQuestRows();
+        void scheduleOrderSave();
+      }
+
+      async function scheduleOrderSave() {
+        if (!orderDirty) return;
+        if (orderSaveRunning) {
+          orderSavePending = true;
+          return;
+        }
+        orderSaveRunning = true;
+        setStatus('Saving order...');
+        try {
+          await saveOrder();
+        } catch (error) {
+          setStatus(error.message || 'Order save failed.');
+        } finally {
+          orderSaveRunning = false;
+          if (orderSavePending) {
+            orderSavePending = false;
+            if (orderDirty) {
+              void scheduleOrderSave();
+            }
+          }
+        }
       }
 
       function renderQuestRows() {
@@ -401,7 +427,6 @@
           td.textContent = 'No quests found.';
           tr.appendChild(td);
           questRows.appendChild(tr);
-          saveOrderBtn.disabled = true;
           return;
         }
 
@@ -493,8 +518,6 @@
 
           questRows.appendChild(tr);
         });
-
-        saveOrderBtn.disabled = !orderDirty;
       }
 
       async function api(path, options) {
@@ -581,16 +604,6 @@
         await loadQuests();
       }
 
-      document.getElementById('reloadBtn').addEventListener('click', async () => {
-        setStatus('Loading...');
-        try {
-          await loadQuests();
-          setStatus('Loaded.');
-        } catch (error) {
-          setStatus(error.message || 'Load failed.');
-        }
-      });
-
       document.getElementById('saveBtn').addEventListener('click', async () => {
         setStatus('Saving...');
         try {
@@ -608,15 +621,6 @@
       document.getElementById('resetBtn').addEventListener('click', () => {
         resetForm();
         setStatus('Form reset.');
-      });
-
-      saveOrderBtn.addEventListener('click', async () => {
-        setStatus('Saving order...');
-        try {
-          await saveOrder();
-        } catch (error) {
-          setStatus(error.message || 'Order save failed.');
-        }
       });
 
       if (logoutBtn) {

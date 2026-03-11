@@ -31,6 +31,9 @@
         flex-wrap: wrap;
         margin-bottom: 10px;
       }
+      .topbar .logout-right {
+        margin-left: auto;
+      }
       button,
       .button-link {
         border: 1px solid #4a6b84;
@@ -115,9 +118,8 @@
       <h1>Player Stats Admin</h1>
       <div class="topbar">
         <a href="/admin/quests" class="button-link secondary">Quest Admin</a>
-        <button id="reloadBtn" type="button">Reload</button>
-        <button id="logoutBtn" type="button" class="secondary">Logout</button>
         <span id="status" class="status"></span>
+        <button id="logoutBtn" type="button" class="secondary logout-right">Logout</button>
       </div>
 
       <section class="card">
@@ -260,16 +262,6 @@
         prevBtn.disabled = currentPage <= 1;
         nextBtn.disabled = currentPage >= totalPages;
       }
-
-      document.getElementById('reloadBtn').addEventListener('click', async () => {
-        setStatus('Loading...');
-        try {
-          await loadStats();
-          setStatus('Loaded.');
-        } catch (error) {
-          setStatus(error.message || 'Load failed.');
-        }
-      });
 
       document.getElementById('searchBtn').addEventListener('click', async () => {
         currentQuery = String(searchInput.value || '').trim();
