@@ -262,6 +262,8 @@ const NPC_PLAYER_CAR_FEAR_SIDE_DISTANCE = 24;
 const NPC_PLAYER_CAR_FEAR_PANIC_MIN_SECONDS = 0.9;
 const NPC_PLAYER_CAR_FEAR_PANIC_BASE_MAX_SECONDS = 1.9;
 const NPC_PLAYER_CAR_FEAR_PANIC_MAX_SECONDS = 3.4;
+const TRAFFIC_JAM_PASS_TRIGGER_SECONDS = 10;
+const TRAFFIC_JAM_PASS_DURATION_SECONDS = 3.4;
 const {
   wrapCoord,
   wrapWorldX,
@@ -4276,6 +4278,8 @@ function makeCar(type = 'civilian') {
     lastMoveX: spawn.x,
     lastMoveY: spawn.y,
     followBlockedTimer: 0,
+    trafficJamTimer: 0,
+    trafficPassTimer: 0,
     color: isCop ? '#5ca1ff' : isAmbulance ? '#f4f6fb' : CAR_PALETTE[randInt(0, CAR_PALETTE.length)],
     npcOccupantCount: isCop || isAmbulance ? 2 : 1,
     stolenFromNpc: false,
@@ -4321,6 +4325,8 @@ function resetCarForRespawn(car, spawn) {
   car.lastMoveX = spawn.x;
   car.lastMoveY = spawn.y;
   car.followBlockedTimer = 0;
+  car.trafficJamTimer = 0;
+  car.trafficPassTimer = 0;
   car.stolenFromNpc = false;
   car.ownerNpcId = null;
   car.ownerReturnTimer = 0;
@@ -6145,22 +6151,28 @@ function stepDrivenCar(car, input, dt) {
 
 function stepTrafficCar(car, dt) {
   car.aiCooldown -= dt;
+  if (!Number.isFinite(car.trafficJamTimer)) car.trafficJamTimer = 0;
+  if (!Number.isFinite(car.trafficPassTimer)) car.trafficPassTimer = 0;
+  car.trafficPassTimer = Math.max(0, car.trafficPassTimer - dt);
+  const inPassMode = car.trafficPassTimer > 0;
 
   const targetCardinal = snapToRightAngle(car.angle);
   const steerCardinal = chooseAvoidanceHeading(car, targetCardinal);
   car.angle = angleApproach(car.angle, steerCardinal, dt * 2.8);
 
   const movingHorizontal = Math.abs(Math.cos(car.angle)) >= Math.abs(Math.sin(car.angle));
+  const keepRightDirection = movingHorizontal ? Math.cos(car.angle) >= 0 : Math.sin(car.angle) < 0;
+  const defaultLane = movingHorizontal ? laneFor(car.y, keepRightDirection) : laneFor(car.x, keepRightDirection);
+  const passLane = movingHorizontal ? laneFor(car.y, !keepRightDirection) : laneFor(car.x, !keepRightDirection);
+  const targetLane = inPassMode ? passLane : defaultLane;
   if (movingHorizontal) {
-    const desiredY = laneFor(car.y, Math.cos(car.angle) >= 0);
-    car.y = lerp(car.y, desiredY, Math.min(1, dt * 4.4));
+    car.y = lerp(car.y, targetLane, Math.min(1, dt * (inPassMode ? 4.9 : 4.4)));
   } else {
     // Keep right-hand lane on vertical roads (south uses west lane, north uses east lane).
-    const desiredX = laneFor(car.x, Math.sin(car.angle) < 0);
-    car.x = lerp(car.x, desiredX, Math.min(1, dt * 4.4));
+    car.x = lerp(car.x, targetLane, Math.min(1, dt * (inPassMode ? 4.9 : 4.4)));
   }
 
-  if (isIntersection(car.x, car.y) && car.aiCooldown <= 0) {
+  if (!inPassMode && isIntersection(car.x, car.y) && car.aiCooldown <= 0) {
     const choice = Math.random();
     if (choice < 0.3) {
       car.angle = snapToRightAngle(car.angle + Math.PI * 0.5);
@@ -6170,7 +6182,9 @@ function stepTrafficCar(car, dt) {
     car.aiCooldown = randRange(0.9, 1.5);
   }
 
-  applyAiCarFollowSpeed(car, 78, dt, car.angle, {
+  const shiftedTowardPassLane = movingHorizontal ? Math.abs(car.y - defaultLane) > 4 : Math.abs(car.x - defaultLane) > 4;
+  const passCanIgnoreLead = inPassMode && shiftedTowardPassLane;
+  applyAiCarFollowSpeed(car, inPassMode ? 84 : 78, dt, car.angle, {
     minGap: 8,
     timeGap: 0.52,
     brakeRate: 168,
@@ -6179,7 +6193,25 @@ function stepTrafficCar(car, dt) {
     lookAheadBase: 40,
     lookAheadPerSpeed: 1.1,
     lookAheadMax: 156,
+    ignoreLeadCars: passCanIgnoreLead,
   });
+
+  const jamBlocked = (Number(car.followBlockedTimer) || 0) > 0.05 && car.speed < 14 && !isIntersection(car.x, car.y);
+  if (jamBlocked) {
+    car.trafficJamTimer += dt;
+  } else if (!inPassMode) {
+    car.trafficJamTimer = Math.max(0, car.trafficJamTimer - dt * 2.5);
+  }
+
+  if (!inPassMode && car.trafficJamTimer >= TRAFFIC_JAM_PASS_TRIGGER_SECONDS) {
+    const roadInfo = roadInfoAt(car.x, car.y);
+    const onRoad = !!(roadInfo.inHorizontalRoad || roadInfo.inVerticalRoad);
+    if (onRoad && !isIntersection(car.x, car.y)) {
+      car.trafficPassTimer = TRAFFIC_JAM_PASS_DURATION_SECONDS;
+    }
+    car.trafficJamTimer = 0;
+  }
+
   car.speed = clamp(car.speed, 0, Math.min(car.maxSpeed, 95));
   const prevX = car.x;
   const prevY = car.y;
