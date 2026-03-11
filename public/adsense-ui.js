@@ -30,7 +30,10 @@
 
   function ensureAdScript() {
     const existing = document.querySelector('script[data-pcc-adsense="1"]');
-    if (existing) return Promise.resolve();
+    const anyAdSenseScript = document.querySelector(
+      'script[src*="pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"]'
+    );
+    if (existing || anyAdSenseScript) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.async = true;
