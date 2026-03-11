@@ -78,6 +78,15 @@ const AOI_CAR_RADIUS_SQ = AOI_CAR_RADIUS * AOI_CAR_RADIUS;
 const OPT_AOI = envFlag('OPT_AOI', true);
 const OPT_ZONE_LOD = envFlag('OPT_ZONE_LOD', true);
 const OPT_CLIENT_VFX = envFlag('OPT_CLIENT_VFX', true);
+const OPT_NPC_NAV_DEBUG_MAP = envFlag('OPT_NPC_NAV_DEBUG_MAP', false);
+const NPC_NAV_DEBUG_MAP_STRIDE = Math.max(
+  1,
+  Number.parseInt(String(process.env.NPC_NAV_DEBUG_MAP_STRIDE || '1'), 10) || 1
+);
+const NPC_NAV_DEBUG_MAP_MAX_NODES = Math.max(
+  0,
+  Number.parseInt(String(process.env.NPC_NAV_DEBUG_MAP_MAX_NODES || '5000'), 10) || 5000
+);
 const WORLD_REV = Number.isFinite(Number(process.env.WORLD_REV)) ? Number(process.env.WORLD_REV) : 1;
 const PROGRESS_SECRET = String(process.env.PROGRESS_SECRET || 'pcc-progress-secret-v1');
 const PROGRESS_TOKEN_VERSION = 1;
@@ -337,6 +346,26 @@ const STAR_DECAY_PER_SECOND = 1 / 60;
 
 const NPC_COUNT = 512;
 const NPC_RADIUS = 6;
+const NPC_NAV_REACH_RADIUS = 6;
+const NPC_IDLE_MIN_SECONDS = 1.2;
+const NPC_IDLE_MAX_SECONDS = 4.0;
+const NPC_PANIC_MIN_SECONDS = 2.0;
+const NPC_PANIC_MAX_SECONDS = 4.5;
+const NPC_RETURN_SPEED_BONUS = 18;
+const NPC_PANIC_SPEED_BONUS = 42;
+const NPC_FOLLOW_SPEED_BONUS = 14;
+const NPC_FOLLOW_CATCHUP_SPEED = 84;
+const NPC_CROSS_WAIT_MIN_SECONDS = 0.25;
+const NPC_CROSS_WAIT_MAX_SECONDS = 0.9;
+const NPC_CROSS_BLOCK_TIMEOUT_SECONDS = 4.0;
+const NPC_CROSS_SAFE_GAP_SECONDS = 2.2;
+const NPC_CROSS_MIN_CAR_SPEED = 16;
+const NPC_GROUP_DENSITY = 0.15;
+const NPC_GROUP_MIN_SIZE = 2;
+const NPC_GROUP_MAX_SIZE = 3;
+const NPC_GROUP_JOIN_RADIUS = 220;
+const NPC_GROUP_FOLLOW_RESUME_DIST = 24;
+const NPC_GROUP_FOLLOW_BREAK_DIST = 80;
 const COP_RADIUS = 7;
 const COP_HEALTH = 200;
 const COP_CAR_DISMOUNT_RADIUS = 92;
@@ -388,6 +417,7 @@ const clients = new Map();
 const players = new Map();
 const cars = new Map();
 const npcs = new Map();
+const npcGroups = new Map();
 const cops = new Map();
 const cashDrops = new Map();
 const bloodStains = new Map();
@@ -400,6 +430,7 @@ const questTargetAssignmentsByKey = new Map();
 const questTargetOwnerByNpcId = new Map();
 const questTargetCarAssignmentsByKey = new Map();
 const questTargetCarOwnerByCarId = new Map();
+let nextNpcGroupId = 1;
 
 const makeId = createIdGenerator(1);
 const eventState = { nextEventId: 1, pending: [] };
@@ -528,6 +559,8 @@ const STATIC_WORLD_PAYLOAD = Object.freeze({
     y: HOSPITAL.y,
     radius: HOSPITAL.radius,
   }),
+  // Populated after nav graph build when OPT_NPC_NAV_DEBUG_MAP is enabled.
+  npcNavNodes: [],
 });
 const CAR_COLLISION_HALF_LENGTH_SCALE = 0.47;
 const CAR_COLLISION_HALF_WIDTH_SCALE = 0.47;
@@ -635,6 +668,11 @@ const {
   randomPedSpawn,
   randomCurbSpawn,
   randomRoadSpawnFarFrom,
+  npcNavGraph,
+  nearestNavNode,
+  findNavPath,
+  samplePoiNode,
+  navEdgeBetween,
 } = createWorldFeature({
   WORLD,
   BLOCK_PX,
@@ -644,6 +682,7 @@ const {
   LANE_B,
   HOSPITALS,
   GARAGES,
+  INTERIORS,
   BUILDING_COLLIDER_TOP_OFFSET_PX,
   CAR_BUILDING_COLLISION_INSET_X_PX,
   CAR_BUILDING_COLLISION_INSET_Y_PX,
@@ -652,11 +691,29 @@ const {
   hash2D,
   wrapWorldX,
   wrapWorldY,
+  wrapDelta,
   wrappedDistanceSq,
   randRange,
   randInt,
   isPreferredPedGround,
 });
+
+if (OPT_NPC_NAV_DEBUG_MAP && Array.isArray(npcNavGraph?.nodes) && npcNavGraph.nodes.length > 0) {
+  const stride = Math.max(1, NPC_NAV_DEBUG_MAP_STRIDE);
+  const maxNodes = Math.max(0, NPC_NAV_DEBUG_MAP_MAX_NODES);
+  let emitted = 0;
+  for (let i = 0; i < npcNavGraph.nodes.length && emitted < maxNodes; i += stride) {
+    const node = npcNavGraph.nodes[i];
+    if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
+    STATIC_WORLD_PAYLOAD.npcNavNodes.push(
+      Object.freeze({
+        x: Math.round(node.x),
+        y: Math.round(node.y),
+      })
+    );
+    emitted += 1;
+  }
+}
 
 function sanitizeName(raw) {
   if (typeof raw !== 'string') return null;
@@ -4254,6 +4311,541 @@ function triggerCopCarAggroOnAttack(car, attacker) {
   }
 }
 
+function isQuestTargetNpcId(npcId) {
+  return !!(npcId && questTargetOwnerByNpcId.has(npcId));
+}
+
+function groupedNpcRatio() {
+  if (npcs.size <= 0) return 0;
+  let grouped = 0;
+  for (const npc of npcs.values()) {
+    if (npc && npc.groupId) grouped += 1;
+  }
+  return grouped / Math.max(1, npcs.size);
+}
+
+function clearNpcGroupFields(npc) {
+  if (!npc) return;
+  npc.groupId = null;
+  npc.groupRole = 'solo';
+  npc.groupLeaderId = null;
+  npc.groupOffsetX = 0;
+  npc.groupOffsetY = 0;
+}
+
+function disbandNpcGroup(groupId) {
+  const group = npcGroups.get(groupId);
+  if (!group) return;
+  const ids = Array.isArray(group.memberIds) ? group.memberIds.slice() : [];
+  for (const memberId of ids) {
+    const member = npcs.get(memberId);
+    if (member) clearNpcGroupFields(member);
+  }
+  npcGroups.delete(groupId);
+}
+
+function promoteNpcGroupLeader(group) {
+  if (!group || !Array.isArray(group.memberIds) || group.memberIds.length === 0) return;
+  let best = null;
+  for (const memberId of group.memberIds) {
+    const member = npcs.get(memberId);
+    if (!member || !member.alive) continue;
+    if (isQuestTargetNpcId(member.id) || member.reclaimCarId) continue;
+    best = member;
+    break;
+  }
+  if (!best) {
+    disbandNpcGroup(group.id);
+    return;
+  }
+  group.leaderId = best.id;
+  for (const memberId of group.memberIds) {
+    const member = npcs.get(memberId);
+    if (!member) continue;
+    member.groupLeaderId = best.id;
+    member.groupRole = member.id === best.id ? 'leader' : 'follower';
+  }
+}
+
+function removeNpcFromGroup(npc) {
+  if (!npc || !npc.groupId) {
+    clearNpcGroupFields(npc);
+    return;
+  }
+  const group = npcGroups.get(npc.groupId);
+  const groupId = npc.groupId;
+  clearNpcGroupFields(npc);
+  if (!group) return;
+  group.memberIds = Array.isArray(group.memberIds) ? group.memberIds.filter((id) => id !== npc.id) : [];
+  if (group.memberIds.length < NPC_GROUP_MIN_SIZE) {
+    disbandNpcGroup(groupId);
+    return;
+  }
+  if (group.leaderId === npc.id) {
+    promoteNpcGroupLeader(group);
+  }
+}
+
+function attachNpcToGroupLeader(npc, group, asLeader = false) {
+  if (!npc || !group) return false;
+  removeNpcFromGroup(npc);
+  if (!Array.isArray(group.memberIds)) group.memberIds = [];
+  if (!group.memberIds.includes(npc.id)) group.memberIds.push(npc.id);
+  npc.groupId = group.id;
+  npc.groupLeaderId = asLeader ? npc.id : group.leaderId;
+  npc.groupRole = asLeader ? 'leader' : 'follower';
+  if (asLeader) {
+    npc.groupOffsetX = 0;
+    npc.groupOffsetY = 0;
+  } else {
+    const dist = randRange(8, 16);
+    const angle = randRange(-Math.PI, Math.PI);
+    npc.groupOffsetX = Math.cos(angle) * dist;
+    npc.groupOffsetY = Math.sin(angle) * dist;
+  }
+  return true;
+}
+
+function pruneNpcGroups() {
+  for (const [groupId, group] of npcGroups.entries()) {
+    if (!group || !Array.isArray(group.memberIds)) {
+      npcGroups.delete(groupId);
+      continue;
+    }
+    group.memberIds = group.memberIds.filter((memberId) => {
+      const member = npcs.get(memberId);
+      return !!(member && member.alive && member.groupId === groupId);
+    });
+    if (group.memberIds.length < NPC_GROUP_MIN_SIZE) {
+      disbandNpcGroup(groupId);
+      continue;
+    }
+    if (!group.memberIds.includes(group.leaderId)) {
+      promoteNpcGroupLeader(group);
+      continue;
+    }
+    const leader = npcs.get(group.leaderId);
+    if (!leader || !leader.alive || isQuestTargetNpcId(leader.id) || leader.reclaimCarId) {
+      promoteNpcGroupLeader(group);
+    }
+  }
+}
+
+function findJoinableNpcGroup(npc) {
+  let best = null;
+  let bestDistSq = NPC_GROUP_JOIN_RADIUS * NPC_GROUP_JOIN_RADIUS;
+  for (const group of npcGroups.values()) {
+    if (!group || !Array.isArray(group.memberIds)) continue;
+    if (group.memberIds.length >= Math.max(NPC_GROUP_MIN_SIZE, Number(group.desiredSize) || NPC_GROUP_MAX_SIZE)) {
+      continue;
+    }
+    const leader = npcs.get(group.leaderId);
+    if (!leader || !leader.alive) continue;
+    if (isQuestTargetNpcId(leader.id) || leader.reclaimCarId) continue;
+    const d2 = wrappedDistanceSq(npc.x, npc.y, leader.x, leader.y);
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      best = group;
+    }
+  }
+  return best;
+}
+
+function tryAssignNpcToGroup(npc) {
+  if (!npc || !npc.alive) return;
+  if (isQuestTargetNpcId(npc.id) || npc.reclaimCarId) {
+    removeNpcFromGroup(npc);
+    return;
+  }
+  if (npc.groupId) return;
+  const currentRatio = groupedNpcRatio();
+  const joinable = findJoinableNpcGroup(npc);
+  if (joinable && currentRatio < NPC_GROUP_DENSITY + 0.04 && Math.random() < 0.82) {
+    attachNpcToGroupLeader(npc, joinable, false);
+    return;
+  }
+  if (currentRatio >= NPC_GROUP_DENSITY) return;
+  if (Math.random() >= 0.5) return;
+
+  const groupId = `ng_${nextNpcGroupId}`;
+  nextNpcGroupId += 1;
+  const desiredSize = randInt(NPC_GROUP_MIN_SIZE, NPC_GROUP_MAX_SIZE + 1);
+  const group = {
+    id: groupId,
+    leaderId: npc.id,
+    desiredSize,
+    memberIds: [],
+  };
+  npcGroups.set(groupId, group);
+  attachNpcToGroupLeader(npc, group, true);
+}
+
+function clearNpcPath(npc) {
+  if (!npc) return;
+  npc.navPath = [];
+  npc.pathIndex = 0;
+}
+
+function resetNpcAiRuntime(npc, spawnX = null, spawnY = null) {
+  if (!npc) return;
+  clearNpcPath(npc);
+  const px = Number.isFinite(spawnX) ? spawnX : npc.x;
+  const py = Number.isFinite(spawnY) ? spawnY : npc.y;
+  const anchor = nearestNavNode(px, py, 5);
+  npc.navNodeId = anchor ? anchor.id : null;
+  npc.poiNodeId = null;
+  npc.idleUntil = 0;
+  npc.aiState = 'calm';
+  npc.panicUntil = 0;
+  npc.threatX = Number.isFinite(px) ? px : npc.x;
+  npc.threatY = Number.isFinite(py) ? py : npc.y;
+  npc.returnPoiNodeId = null;
+  npc.crossState = 'none';
+  npc.crossDir = npc.dir || 0;
+  npc.crossWaitUntil = 0;
+  npc.crossBlockTimer = 0;
+  npc.panicTimer = Math.max(0, Number(npc.panicTimer) || 0);
+  npc.crossingTimer = 0;
+  npc.wanderTimer = Number.isFinite(npc.wanderTimer) ? npc.wanderTimer : randRange(0.5, 2.1);
+  if (!npc.groupId) clearNpcGroupFields(npc);
+}
+
+function ensureNpcNavNode(npc) {
+  if (!npc) return null;
+  if (Number.isInteger(npc.navNodeId)) {
+    const existing = npcNavGraph.nodesById.get(npc.navNodeId);
+    if (existing) return existing;
+  }
+  const nearest = nearestNavNode(npc.x, npc.y, 5);
+  npc.navNodeId = nearest ? nearest.id : null;
+  return nearest || null;
+}
+
+function chooseNpcPoiPath(npc, preferredPoiNodeId = null, options = null) {
+  if (!npc) return false;
+  const startNode = ensureNpcNavNode(npc);
+  if (!startNode) return false;
+  const sampleKind = options && typeof options.sampleKind === 'string' ? options.sampleKind : '';
+  const maxAttempts = Math.max(3, Number(options && options.maxAttempts) || 8);
+  const candidates = [];
+  if (Number.isInteger(preferredPoiNodeId)) {
+    const preferred = npcNavGraph.nodesById.get(preferredPoiNodeId);
+    if (preferred) candidates.push(preferred);
+  }
+
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const next = samplePoiNode(sampleKind || null, { x: npc.x, y: npc.y });
+    if (next) candidates.push(next);
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate || !Number.isInteger(candidate.id)) continue;
+    const path = findNavPath(startNode.id, candidate.id, npcNavGraph.maxPathExpansions);
+    if (!Array.isArray(path) || path.length < 2) continue;
+    npc.navPath = path;
+    npc.pathIndex = 1;
+    npc.poiNodeId = candidate.id;
+    npc.crossState = 'none';
+    npc.crossBlockTimer = 0;
+    npc.crossWaitUntil = 0;
+    return true;
+  }
+  return false;
+}
+
+function triggerNpcPanic(npc, sourceX, sourceY, minSeconds = NPC_PANIC_MIN_SECONDS, maxSeconds = NPC_PANIC_MAX_SECONDS) {
+  if (!npc || !npc.alive) return;
+  const nowSec = Date.now() / 1000;
+  const duration = randRange(Math.max(0.5, minSeconds), Math.max(minSeconds + 0.1, maxSeconds));
+  npc.aiState = 'panic';
+  npc.panicUntil = Math.max(Number(npc.panicUntil) || 0, nowSec + duration);
+  npc.panicTimer = Math.max(Number(npc.panicTimer) || 0, duration);
+  if (Number.isFinite(sourceX) && Number.isFinite(sourceY)) {
+    npc.threatX = sourceX;
+    npc.threatY = sourceY;
+  }
+  if (!npc.returnPoiNodeId && Number.isInteger(npc.poiNodeId)) {
+    npc.returnPoiNodeId = npc.poiNodeId;
+  }
+  clearNpcPath(npc);
+  npc.crossState = 'none';
+}
+
+function moveNpcWithCollision(npc, desiredDir, speed, dt) {
+  const safeSpeed = Math.max(0, Number(speed) || 0);
+  npc.dir = angleApproach(npc.dir, desiredDir, dt * 5.8);
+  const nx = wrapWorldX(npc.x + Math.cos(npc.dir) * safeSpeed * dt);
+  const ny = wrapWorldY(npc.y + Math.sin(npc.dir) * safeSpeed * dt);
+  if (!isSolidForPed(nx, npc.y)) {
+    npc.x = nx;
+  }
+  if (!isSolidForPed(npc.x, ny)) {
+    npc.y = ny;
+  }
+  wrapWorldPosition(npc);
+}
+
+function recoverNpcFromRoad(npc, stepDt, maxDistance = 160) {
+  if (!npc || npc.crossState !== 'none') return;
+  if (groundTypeAt(npc.x, npc.y) !== 'road') return;
+  const nearest = nearestNavNode(npc.x, npc.y, 5);
+  if (!nearest) return;
+
+  const maxDistSq = Math.max(24, Number(maxDistance) || 160);
+  const d2 = wrappedDistanceSq(npc.x, npc.y, nearest.x, nearest.y);
+  if (d2 > maxDistSq * maxDistSq) return;
+
+  npc.navNodeId = nearest.id;
+  if (d2 <= NPC_NAV_REACH_RADIUS * NPC_NAV_REACH_RADIUS) {
+    npc.x = nearest.x;
+    npc.y = nearest.y;
+    return;
+  }
+
+  const dir = wrappedDirection(npc.x, npc.y, nearest.x, nearest.y);
+  const nudgeDt = Math.min(stepDt, 0.14);
+  const speed = Math.max((Number(npc.baseSpeed) || 32) + 12, 46);
+  moveNpcWithCollision(npc, dir, speed, nudgeDt);
+}
+
+function isNpcCrossingUnsafe(fromNode, toNode, horizonSeconds = NPC_CROSS_SAFE_GAP_SECONDS) {
+  if (!fromNode || !toNode) return false;
+  const dx = wrapDelta(toNode.x - fromNode.x, WORLD.width);
+  const dy = wrapDelta(toNode.y - fromNode.y, WORLD.height);
+  const midX = wrapWorldX(fromNode.x + dx * 0.5);
+  const midY = wrapWorldY(fromNode.y + dy * 0.5);
+  const spatial = tickSpatialContext;
+  const nearbyCars = spatial?.carGrid ? spatialQueryNeighbors(spatial.carGrid, midX, midY) : cars.values();
+  const horizon = Math.max(0.5, Number(horizonSeconds) || NPC_CROSS_SAFE_GAP_SECONDS);
+
+  for (const car of nearbyCars) {
+    if (!car || car.destroyed) continue;
+    const speed = Math.abs(Number(car.speed) || 0);
+    if (speed < NPC_CROSS_MIN_CAR_SPEED) continue;
+
+    const velX = Math.cos(car.angle) * speed;
+    const velY = Math.sin(car.angle) * speed;
+    const velMag = Math.max(0.0001, Math.hypot(velX, velY));
+    const dirX = velX / velMag;
+    const dirY = velY / velMag;
+    const relX = wrapDelta(midX - car.x, WORLD.width);
+    const relY = wrapDelta(midY - car.y, WORLD.height);
+    const forwardDist = relX * dirX + relY * dirY;
+    if (forwardDist < -20) continue;
+    const lateralDist = Math.abs(relX * -dirY + relY * dirX);
+    if (lateralDist > 20) continue;
+    const arrivalSec = forwardDist / velMag;
+    if (arrivalSec >= 0 && arrivalSec < horizon) return true;
+    if (arrivalSec < 0.2 && lateralDist < 26) return true;
+  }
+  return false;
+}
+
+function stepNpcPathMovement(npc, stepDt, nowSec, tier, speedBonus = 0) {
+  if (
+    !npc ||
+    !Array.isArray(npc.navPath) ||
+    npc.pathIndex <= 0 ||
+    npc.pathIndex >= npc.navPath.length
+  ) {
+    return false;
+  }
+
+  const fromId = npc.navPath[npc.pathIndex - 1];
+  const toId = npc.navPath[npc.pathIndex];
+  const fromNode = npcNavGraph.nodesById.get(fromId) || ensureNpcNavNode(npc);
+  const toNode = npcNavGraph.nodesById.get(toId);
+  if (!toNode) {
+    clearNpcPath(npc);
+    return false;
+  }
+  const edge = Number.isInteger(fromId) ? navEdgeBetween(fromId, toId) : null;
+  const crossingEdge = !!(edge && edge.crossing);
+
+  if (crossingEdge && tier !== 'cold') {
+    if (npc.crossState !== 'wait' && npc.crossState !== 'cross') {
+      npc.crossState = 'wait';
+      npc.crossDir = wrappedDirection(npc.x, npc.y, toNode.x, toNode.y);
+      npc.crossWaitUntil = nowSec + randRange(NPC_CROSS_WAIT_MIN_SECONDS, NPC_CROSS_WAIT_MAX_SECONDS);
+      npc.crossBlockTimer = 0;
+      return false;
+    }
+    if (npc.crossState === 'wait') {
+      npc.dir = angleApproach(npc.dir, npc.crossDir, stepDt * 7.6);
+      if (nowSec < npc.crossWaitUntil) {
+        return false;
+      }
+      if (isNpcCrossingUnsafe(fromNode, toNode, NPC_CROSS_SAFE_GAP_SECONDS)) {
+        npc.crossBlockTimer += stepDt;
+        if (npc.crossBlockTimer >= NPC_CROSS_BLOCK_TIMEOUT_SECONDS) {
+          npc.crossState = 'none';
+          npc.crossBlockTimer = 0;
+          clearNpcPath(npc);
+          npc.aiState = 'return';
+        }
+        return false;
+      }
+      npc.crossState = 'cross';
+      npc.crossBlockTimer = 0;
+      npc.crossDir = wrappedDirection(npc.x, npc.y, toNode.x, toNode.y);
+    } else if (npc.crossState === 'cross') {
+      npc.crossDir = wrappedDirection(npc.x, npc.y, toNode.x, toNode.y);
+    }
+  } else if (!crossingEdge) {
+    npc.crossState = 'none';
+    npc.crossBlockTimer = 0;
+  }
+
+  let speed = Math.max(24, (Number(npc.baseSpeed) || 32) + speedBonus);
+  if (crossingEdge && npc.crossState === 'cross') {
+    speed = Math.max(speed, (Number(npc.baseSpeed) || 32) + 26);
+  }
+  const desiredDir =
+    crossingEdge && npc.crossState === 'cross'
+      ? npc.crossDir
+      : wrappedDirection(npc.x, npc.y, toNode.x, toNode.y);
+  moveNpcWithCollision(npc, desiredDir, speed, stepDt);
+
+  if (wrappedDistanceSq(npc.x, npc.y, toNode.x, toNode.y) <= NPC_NAV_REACH_RADIUS * NPC_NAV_REACH_RADIUS) {
+    const snapSq = 1.5 * 1.5;
+    const d2 = wrappedDistanceSq(npc.x, npc.y, toNode.x, toNode.y);
+    if (d2 <= snapSq) {
+      npc.x = toNode.x;
+      npc.y = toNode.y;
+    } else {
+      const settleAlpha = crossingEdge ? 0.22 : 0.12;
+      npc.x = wrapWorldX(npc.x + wrapDelta(toNode.x - npc.x, WORLD.width) * settleAlpha);
+      npc.y = wrapWorldY(npc.y + wrapDelta(toNode.y - npc.y, WORLD.height) * settleAlpha);
+    }
+    npc.navNodeId = toNode.id;
+    npc.pathIndex += 1;
+    if (crossingEdge) {
+      npc.crossState = 'none';
+      npc.crossBlockTimer = 0;
+    }
+    if (npc.pathIndex >= npc.navPath.length) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stepNpcFollowerBehavior(npc, stepDt, tier) {
+  if (!npc || npc.groupRole !== 'follower' || !npc.groupLeaderId) return false;
+  const leader = npcs.get(npc.groupLeaderId);
+  if (!leader || !leader.alive || leader.groupId !== npc.groupId) {
+    removeNpcFromGroup(npc);
+    return false;
+  }
+
+  if (leader.aiState === 'panic') {
+    triggerNpcPanic(npc, leader.threatX, leader.threatY, 1.0, 2.2);
+    return false;
+  }
+
+  const targetX = wrapWorldX(leader.x + (Number(npc.groupOffsetX) || 0));
+  const targetY = wrapWorldY(leader.y + (Number(npc.groupOffsetY) || 0));
+  const distSq = wrappedDistanceSq(npc.x, npc.y, targetX, targetY);
+
+  if (tier === 'cold') {
+    const lerpAlpha = 0.35;
+    npc.x = wrapWorldX(npc.x + wrapDelta(targetX - npc.x, WORLD.width) * lerpAlpha);
+    npc.y = wrapWorldY(npc.y + wrapDelta(targetY - npc.y, WORLD.height) * lerpAlpha);
+    npc.dir = angleApproach(npc.dir, leader.dir, stepDt * 4.6);
+    npc.crossState = 'none';
+    return true;
+  }
+
+  if (leader.crossState === 'wait' && distSq <= 40 * 40) {
+    npc.dir = angleApproach(npc.dir, leader.dir, stepDt * 7);
+    npc.crossState = 'wait';
+    return true;
+  }
+
+  if (distSq <= NPC_GROUP_FOLLOW_RESUME_DIST * NPC_GROUP_FOLLOW_RESUME_DIST) {
+    npc.dir = angleApproach(npc.dir, leader.dir, stepDt * 5.6);
+    npc.crossState = 'none';
+    return true;
+  }
+
+  const speed =
+    distSq >= NPC_GROUP_FOLLOW_BREAK_DIST * NPC_GROUP_FOLLOW_BREAK_DIST
+      ? NPC_FOLLOW_CATCHUP_SPEED
+      : Math.max((Number(npc.baseSpeed) || 32) + NPC_FOLLOW_SPEED_BONUS, 52);
+  const desiredDir = wrappedDirection(npc.x, npc.y, targetX, targetY);
+  moveNpcWithCollision(npc, desiredDir, speed, stepDt);
+  npc.crossState = 'none';
+  return true;
+}
+
+function stepNpcColdTier(npc, stepDt, nowSec, allowDecisions) {
+  if (!npc) return;
+  if (npc.aiState === 'panic' && nowSec >= (Number(npc.panicUntil) || 0)) {
+    npc.aiState = 'return';
+  }
+
+  if (npc.groupRole === 'follower' && stepNpcFollowerBehavior(npc, stepDt, 'cold')) {
+    if (groundTypeAt(npc.x, npc.y) === 'road') {
+      const nearest = nearestNavNode(npc.x, npc.y, 5);
+      if (nearest) {
+        npc.x = nearest.x;
+        npc.y = nearest.y;
+        npc.navNodeId = nearest.id;
+      }
+    }
+    return;
+  }
+
+  const hasPath =
+    Array.isArray(npc.navPath) &&
+    npc.pathIndex > 0 &&
+    npc.pathIndex < npc.navPath.length;
+  if (!hasPath && allowDecisions) {
+    if (npc.aiState === 'panic') {
+      const away = wrappedVector(
+        Number.isFinite(npc.threatX) ? npc.threatX : npc.x,
+        Number.isFinite(npc.threatY) ? npc.threatY : npc.y,
+        npc.x,
+        npc.y
+      );
+      const awayDir = away.dist > 0.001 ? Math.atan2(away.dy, away.dx) : randRange(-Math.PI, Math.PI);
+      const panicDist = randRange(BLOCK_PX * 1.4, BLOCK_PX * 2.8);
+      const panicX = wrapWorldX(npc.x + Math.cos(awayDir) * panicDist);
+      const panicY = wrapWorldY(npc.y + Math.sin(awayDir) * panicDist);
+      const panicNode = nearestNavNode(panicX, panicY, 5);
+      chooseNpcPoiPath(npc, panicNode ? panicNode.id : null, { sampleKind: 'intersection_corner', maxAttempts: 6 });
+    } else if (npc.aiState === 'return') {
+      const ok = chooseNpcPoiPath(npc, npc.returnPoiNodeId, { maxAttempts: 8 });
+      if (!ok) {
+        npc.aiState = 'calm';
+        npc.returnPoiNodeId = null;
+      }
+    } else if (npc.idleUntil <= nowSec) {
+      chooseNpcPoiPath(npc, null, { maxAttempts: 8 });
+    }
+  }
+
+  const speedBonus =
+    npc.aiState === 'panic'
+      ? NPC_PANIC_SPEED_BONUS
+      : npc.aiState === 'return'
+        ? NPC_RETURN_SPEED_BONUS
+        : 0;
+  const arrived = stepNpcPathMovement(npc, stepDt, nowSec, 'cold', speedBonus);
+  if (arrived) {
+    clearNpcPath(npc);
+    npc.idleUntil = nowSec + randRange(NPC_IDLE_MIN_SECONDS, NPC_IDLE_MAX_SECONDS);
+    if (npc.aiState === 'panic') {
+      npc.aiState = 'return';
+    } else if (npc.aiState === 'return') {
+      npc.aiState = 'calm';
+      npc.returnPoiNodeId = null;
+    }
+  }
+
+  recoverNpcFromRoad(npc, stepDt, 220);
+}
+
 function makeNpc() {
   const spawn = randomPedSpawn();
   const npc = {
@@ -4277,13 +4869,35 @@ function makeNpc() {
     shirtColor: NPC_SHIRT_PALETTE[randInt(0, NPC_SHIRT_PALETTE.length)],
     shirtDark: '#2a3342',
     reclaimCarId: null,
+    aiState: 'calm',
+    navNodeId: null,
+    navPath: [],
+    pathIndex: 0,
+    poiNodeId: null,
+    idleUntil: 0,
+    panicUntil: 0,
+    threatX: spawn.x,
+    threatY: spawn.y,
+    returnPoiNodeId: null,
+    crossState: 'none',
+    crossDir: 0,
+    crossWaitUntil: 0,
+    crossBlockTimer: 0,
+    groupId: null,
+    groupRole: 'solo',
+    groupLeaderId: null,
+    groupOffsetX: 0,
+    groupOffsetY: 0,
   };
   npcs.set(npc.id, npc);
+  resetNpcAiRuntime(npc, spawn.x, spawn.y);
+  tryAssignNpcToGroup(npc);
   return npc;
 }
 
 function respawnNpc(npc, spawnOverride = null) {
   const spawn = spawnOverride || randomPedSpawn();
+  removeNpcFromGroup(npc);
   npc.x = spawn.x;
   npc.y = spawn.y;
   npc.dir = randRange(-Math.PI, Math.PI);
@@ -4300,6 +4914,8 @@ function respawnNpc(npc, spawnOverride = null) {
   npc.reviveTimer = 0;
   npc.corpseDownTimer = 0;
   npc.reclaimCarId = null;
+  resetNpcAiRuntime(npc, spawn.x, spawn.y);
+  tryAssignNpcToGroup(npc);
 }
 
 function makeCopUnit() {
@@ -4475,6 +5091,8 @@ function awardNpcKill(killerId, x, y) {
 
 function killNpc(npc, killerId = null) {
   if (!npc.alive) return;
+  removeNpcFromGroup(npc);
+  clearNpcPath(npc);
 
   const leaveCorpse = !!killerId;
 
@@ -4599,6 +5217,7 @@ function acquireNpcForEjection(x, y) {
   for (const npc of npcs.values()) {
     if (!npc.alive) continue;
     if (npc.corpseState === 'carried') continue;
+    if (isQuestTargetNpcId(npc.id)) continue;
     const score = wrappedDistanceSq(npc.x, npc.y, x, y);
     if (score > bestScore) {
       best = npc;
@@ -4610,13 +5229,14 @@ function acquireNpcForEjection(x, y) {
 
 function spawnEjectedOccupantNpc(car, x, y, dir, skinColor, shirtColor, shirtDark = '#2a3342') {
   const npc = acquireNpcForEjection(x, y);
+  removeNpcFromGroup(npc);
   const spawn = findSafePedSpawnNear(x, y, 56, true) || { x, y };
   npc.x = spawn.x;
   npc.y = spawn.y;
   npc.dir = dir;
   npc.baseSpeed = randRange(30, 48);
   npc.wanderTimer = randRange(0.2, 0.8);
-  npc.panicTimer = randRange(2.2, 4.4);
+  npc.panicTimer = 0;
   npc.crossingTimer = 0;
   npc.health = 100;
   npc.alive = true;
@@ -4629,6 +5249,8 @@ function spawnEjectedOccupantNpc(car, x, y, dir, skinColor, shirtColor, shirtDar
   npc.skinColor = skinColor;
   npc.shirtColor = shirtColor;
   npc.shirtDark = shirtDark;
+  resetNpcAiRuntime(npc, spawn.x, spawn.y);
+  triggerNpcPanic(npc, x, y, 2.2, 4.4);
   if (!Array.isArray(car.occupantNpcIds)) {
     car.occupantNpcIds = [];
   }
@@ -4721,7 +5343,7 @@ function reclaimCarAfterPlayerExit(car, player) {
   const owner = getLivingOwnerNpcForCar(car);
   if (owner) {
     owner.reclaimCarId = car.id;
-    owner.panicTimer = Math.max(owner.panicTimer, 1.1);
+    triggerNpcPanic(owner, car.x, car.y, 1.1, 1.8);
     owner.wanderTimer = Math.min(owner.wanderTimer, 0.3);
   }
 }
@@ -6262,7 +6884,7 @@ function fireShot(player, clickAimOverride = null) {
       ey = sy + Math.sin(pelletDir) * shotLength;
       if (bestHitType === 'npc') {
         bestHit.health -= weapon.damage;
-        bestHit.panicTimer = Math.max(bestHit.panicTimer, 2.7);
+        triggerNpcPanic(bestHit, sx, sy, 2.0, 3.2);
         if (bestHit.health <= 0) {
           killNpc(bestHit, player.id);
         }
@@ -6280,7 +6902,7 @@ function fireShot(player, clickAimOverride = null) {
       if (!npc.alive || npc === bestHit) continue;
       const hit = pointToSegmentDistanceSq(npc.x, npc.y, sx, sy, ex, ey);
       if (hit.distSq < 40 * 40) {
-        npc.panicTimer = Math.max(npc.panicTimer, 1.8);
+        triggerNpcPanic(npc, sx, sy, 1.2, 2.2);
         npc.dir = Math.atan2(npc.y - sy, npc.x - sx);
       }
     }
@@ -6727,10 +7349,9 @@ function stepPlayerHits(ctx = tickSpatialContext) {
 }
 
 function stepNpcs(dt) {
-  const cardinal = [0, Math.PI * 0.5, Math.PI, -Math.PI * 0.5];
-
   function stepNpcReclaimCar(npc, stepDt) {
     if (!npc.reclaimCarId) return false;
+    removeNpcFromGroup(npc);
 
     const car = cars.get(npc.reclaimCarId);
     if (!car || car.destroyed || !car.stolenFromNpc || car.type === 'cop') {
@@ -6742,32 +7363,13 @@ function stepNpcs(dt) {
       return false;
     }
 
-    const dx = wrapDelta(car.x - npc.x, WORLD.width);
-    const dy = wrapDelta(car.y - npc.y, WORLD.height);
-    const dist = Math.hypot(dx, dy);
-    const desired = Math.atan2(dy, dx);
-    npc.dir = angleApproach(npc.dir, desired, stepDt * 5.8);
-    npc.panicTimer = Math.max(npc.panicTimer, 0.2);
-    npc.crossingTimer = Math.max(npc.crossingTimer, 0.35);
+    const desired = wrappedDirection(npc.x, npc.y, car.x, car.y);
+    npc.aiState = 'return';
+    npc.crossState = 'none';
+    npc.panicTimer = Math.max(npc.panicTimer || 0, 0.2);
+    moveNpcWithCollision(npc, desired, Math.max((npc.baseSpeed || 32) + 30, 72), stepDt);
 
-    const speed = Math.max(npc.baseSpeed + 30, 72);
-    const nx = wrapWorldX(npc.x + Math.cos(npc.dir) * speed * stepDt);
-    const ny = wrapWorldY(npc.y + Math.sin(npc.dir) * speed * stepDt);
-
-    if (!isSolidForPed(nx, npc.y)) {
-      npc.x = nx;
-    } else {
-      npc.dir += randRange(0.5, 1.25);
-      npc.wanderTimer = Math.min(npc.wanderTimer, 0.2);
-    }
-    if (!isSolidForPed(npc.x, ny)) {
-      npc.y = ny;
-    } else {
-      npc.dir -= randRange(0.5, 1.25);
-      npc.wanderTimer = Math.min(npc.wanderTimer, 0.2);
-    }
-
-    if (!car.driverId && dist < 18) {
+    if (!car.driverId && wrappedDistanceSq(npc.x, npc.y, car.x, car.y) < 18 * 18) {
       car.npcDriver = true;
       car.stolenFromNpc = false;
       car.ownerNpcId = null;
@@ -6832,43 +7434,9 @@ function stepNpcs(dt) {
     refreshQuestTargetZoneIfDue(assignment, npc, Date.now());
   }
 
-  function chooseCrossingDirection(npc) {
-    const info = roadInfoAt(npc.x, npc.y);
-    if (info.inVerticalRoad && !info.inHorizontalRoad) {
-      return Math.random() < 0.5 ? 0 : Math.PI;
-    }
-    if (info.inHorizontalRoad && !info.inVerticalRoad) {
-      return Math.random() < 0.5 ? Math.PI * 0.5 : -Math.PI * 0.5;
-    }
-
-    const localX = mod(npc.x, BLOCK_PX);
-    const localY = mod(npc.y, BLOCK_PX);
-    const distV = Math.min(Math.abs(localX - ROAD_START), Math.abs(localX - ROAD_END));
-    const distH = Math.min(Math.abs(localY - ROAD_START), Math.abs(localY - ROAD_END));
-    if (distV < distH) {
-      return Math.random() < 0.5 ? 0 : Math.PI;
-    }
-    return Math.random() < 0.5 ? Math.PI * 0.5 : -Math.PI * 0.5;
-  }
-
-  function steerAwayFromRoad(npc) {
-    const probes = [16, 28, 40, 56];
-    for (const dist of probes) {
-      for (const dir of cardinal) {
-        const tx = npc.x + Math.cos(dir) * dist;
-        const ty = npc.y + Math.sin(dir) * dist;
-        if (isPreferredPedGround(groundTypeAt(tx, ty))) {
-          npc.dir = dir + randRange(-0.22, 0.22);
-          npc.wanderTimer = Math.min(npc.wanderTimer, 0.3);
-          return;
-        }
-      }
-    }
-    npc.dir += randRange(1.1, 2.4);
-  }
-
   for (const npc of npcs.values()) {
     if (!npc.alive) {
+      removeNpcFromGroup(npc);
       if (npc.corpseState === 'down') {
         npc.corpseDownTimer = (npc.corpseDownTimer || 0) + dt;
         if (npc.corpseDownTimer >= NPC_HOSPITAL_FALLBACK_SECONDS) {
@@ -6908,7 +7476,19 @@ function stepNpcs(dt) {
       continue;
     }
 
-    const npcDt = lodStepDt(npc.id, npc.x, npc.y, dt);
+    if ((tickCount + idPhase(npc.id)) % 180 === 0) {
+      pruneNpcGroups();
+      if (!npc.groupId && !npc.reclaimCarId && !isQuestTargetNpcId(npc.id)) {
+        tryAssignNpcToGroup(npc);
+      }
+    }
+
+    if (isQuestTargetNpcId(npc.id) && npc.groupId) {
+      removeNpcFromGroup(npc);
+    }
+
+    const tier = OPT_ZONE_LOD ? zoneLevelForPosition(npc.x, npc.y) : 'active';
+    const npcDt = lodStepDt(npc.id, npc.x, npc.y, dt, 2, 4);
     stepQuestTargetTracking(npc);
     if (npcDt <= 0) {
       continue;
@@ -6919,51 +7499,104 @@ function stepNpcs(dt) {
       continue;
     }
 
+    const nowSec = Date.now() / 1000;
     if (npc.panicTimer > 0) {
-      npc.panicTimer -= npcDt;
+      npc.aiState = 'panic';
+      npc.panicUntil = Math.max(Number(npc.panicUntil) || 0, nowSec + npc.panicTimer);
+      npc.panicTimer = Math.max(0, npc.panicTimer - npcDt);
     }
-    if (npc.crossingTimer > 0) {
-      npc.crossingTimer -= npcDt;
-    }
-
-    npc.wanderTimer -= npcDt;
-    if (npc.wanderTimer <= 0) {
-      npc.wanderTimer = randRange(0.5, 2.1);
-      npc.dir += randRange(-1.2, 1.2);
-      npc.baseSpeed = randRange(28, 45);
-      if (npc.panicTimer <= 0 && Math.random() < 0.18) {
-        npc.crossingTimer = randRange(0.9, 1.5);
-        npc.dir = chooseCrossingDirection(npc);
-      }
+    if (npc.aiState === 'panic' && nowSec >= (Number(npc.panicUntil) || 0)) {
+      npc.aiState = 'return';
     }
 
-    const speed = npc.baseSpeed + (npc.panicTimer > 0 ? 46 : 0) + (npc.crossingTimer > 0 ? 8 : 0);
-    const nx = npc.x + Math.cos(npc.dir) * speed * npcDt;
-    const ny = npc.y + Math.sin(npc.dir) * speed * npcDt;
+    const allowDecisions = tier === 'active' || ((tickCount + idPhase(npc.id)) % 2 === 0);
 
-    const nextGround = groundTypeAt(nx, ny);
-    if (npc.panicTimer <= 0 && npc.crossingTimer <= 0 && nextGround === 'road') {
-      steerAwayFromRoad(npc);
+    if (tier === 'cold') {
+      stepNpcColdTier(npc, npcDt, nowSec, allowDecisions);
+      wrapWorldPosition(npc);
       continue;
     }
 
-    if (!isSolidForPed(nx, npc.y)) {
-      npc.x = nx;
-    } else {
-      npc.dir += randRange(0.8, 1.8);
-      npc.wanderTimer = Math.min(npc.wanderTimer, 0.2);
+    npc.wanderTimer = (Number(npc.wanderTimer) || 0) - npcDt;
+    if (npc.wanderTimer <= 0 && allowDecisions) {
+      npc.wanderTimer = randRange(0.8, 2.4);
+      npc.baseSpeed = randRange(28, 45);
     }
 
-    if (!isSolidForPed(npc.x, ny)) {
-      npc.y = ny;
-    } else {
-      npc.dir -= randRange(0.8, 1.8);
-      npc.wanderTimer = Math.min(npc.wanderTimer, 0.2);
+    if (npc.aiState !== 'panic' && stepNpcFollowerBehavior(npc, npcDt, tier)) {
+      wrapWorldPosition(npc);
+      continue;
     }
 
-    if (npc.panicTimer <= 0 && npc.crossingTimer <= 0 && groundTypeAt(npc.x, npc.y) === 'road') {
-      steerAwayFromRoad(npc);
+    const hasPath =
+      Array.isArray(npc.navPath) &&
+      npc.pathIndex > 0 &&
+      npc.pathIndex < npc.navPath.length;
+
+    if (npc.aiState === 'panic') {
+      if (!hasPath && allowDecisions) {
+        const away = wrappedVector(
+          Number.isFinite(npc.threatX) ? npc.threatX : npc.x,
+          Number.isFinite(npc.threatY) ? npc.threatY : npc.y,
+          npc.x,
+          npc.y
+        );
+        const awayDir = away.dist > 0.001 ? Math.atan2(away.dy, away.dx) : randRange(-Math.PI, Math.PI);
+        const panicDist = randRange(BLOCK_PX * 1.4, BLOCK_PX * 2.8);
+        const panicX = wrapWorldX(npc.x + Math.cos(awayDir) * panicDist);
+        const panicY = wrapWorldY(npc.y + Math.sin(awayDir) * panicDist);
+        const panicNode = nearestNavNode(panicX, panicY, 5);
+        chooseNpcPoiPath(npc, panicNode ? panicNode.id : null, {
+          sampleKind: 'intersection_corner',
+          maxAttempts: 6,
+        });
+      }
+      const reached = stepNpcPathMovement(npc, npcDt, nowSec, tier, NPC_PANIC_SPEED_BONUS);
+      if (reached) {
+        clearNpcPath(npc);
+      }
+      wrapWorldPosition(npc);
+      continue;
     }
+
+    if (npc.aiState === 'return') {
+      if (!hasPath && allowDecisions) {
+        const ok = chooseNpcPoiPath(npc, npc.returnPoiNodeId, { maxAttempts: 8 });
+        if (!ok) {
+          npc.aiState = 'calm';
+          npc.returnPoiNodeId = null;
+        }
+      }
+      const reached = stepNpcPathMovement(npc, npcDt, nowSec, tier, NPC_RETURN_SPEED_BONUS);
+      if (reached) {
+        clearNpcPath(npc);
+        npc.aiState = 'calm';
+        npc.returnPoiNodeId = null;
+        npc.idleUntil = nowSec + randRange(NPC_IDLE_MIN_SECONDS, NPC_IDLE_MAX_SECONDS);
+      }
+      wrapWorldPosition(npc);
+      continue;
+    }
+
+    if (Number(npc.idleUntil) > nowSec) {
+      wrapWorldPosition(npc);
+      continue;
+    }
+
+    if (!hasPath && allowDecisions) {
+      const ok = chooseNpcPoiPath(npc, null, { maxAttempts: 10 });
+      if (!ok) {
+        npc.idleUntil = nowSec + randRange(0.4, 1.1);
+      }
+    }
+
+    const reached = stepNpcPathMovement(npc, npcDt, nowSec, tier, 0);
+    if (reached) {
+      clearNpcPath(npc);
+      npc.idleUntil = nowSec + randRange(NPC_IDLE_MIN_SECONDS, NPC_IDLE_MAX_SECONDS);
+    }
+
+    recoverNpcFromRoad(npc, npcDt, 140);
 
     wrapWorldPosition(npc);
   }
@@ -7390,7 +8023,7 @@ function stepNpcHitsByCars(ctx = tickSpatialContext) {
       if (dx * dx + dy * dy > 13 * 13) continue;
 
       if (!car.driverId) {
-        npc.panicTimer = Math.max(npc.panicTimer, 1.8);
+        triggerNpcPanic(npc, car.x, car.y, 1.3, 2.4);
         npc.dir = Math.atan2(npc.y - car.y, npc.x - car.x);
         emitEvent('impact', { x: npc.x, y: npc.y });
         break;
@@ -8456,8 +9089,14 @@ server.listen(PORT, () => {
   console.log(`Pixel city server running on http://localhost:${PORT}`);
   // eslint-disable-next-line no-console
   console.log(
-    `flags AOI=${OPT_AOI ? 1 : 0} ZONE_LOD=${OPT_ZONE_LOD ? 1 : 0} CLIENT_VFX=${OPT_CLIENT_VFX ? 1 : 0}`
+    `flags AOI=${OPT_AOI ? 1 : 0} ZONE_LOD=${OPT_ZONE_LOD ? 1 : 0} CLIENT_VFX=${OPT_CLIENT_VFX ? 1 : 0} NAV_DEBUG_MAP=${OPT_NPC_NAV_DEBUG_MAP ? 1 : 0}`
   );
+  if (OPT_NPC_NAV_DEBUG_MAP) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[nav] map nodes=${STATIC_WORLD_PAYLOAD.npcNavNodes.length} stride=${NPC_NAV_DEBUG_MAP_STRIDE} max=${NPC_NAV_DEBUG_MAP_MAX_NODES}`
+    );
+  }
   if (ADMIN_USING_LOCAL_DEFAULTS) {
     // eslint-disable-next-line no-console
     console.log('[admin] local defaults active (ADMIN_USER=admin, ADMIN_PASS=change_me)');

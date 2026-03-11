@@ -442,6 +442,7 @@ function decodeServerFrame(raw) {
       shops: [],
       hospital: null,
       hospitals: [],
+      npcNavNodes: [],
       worldRev,
     };
     const shopCount = reader.u8();
@@ -532,6 +533,18 @@ function decodeServerFrame(raw) {
           gunShopUnlocked,
           quests,
         };
+      }
+    }
+    if (reader.offset < reader.buffer.byteLength) {
+      const hasNpcNavNodes = reader.u8() === 1;
+      if (hasNpcNavNodes && reader.offset < reader.buffer.byteLength) {
+        const nodeCount = reader.u16();
+        for (let i = 0; i < nodeCount; i += 1) {
+          world.npcNavNodes.push({
+            x: unpackCoord(reader.u16()),
+            y: unpackCoord(reader.u16()),
+          });
+        }
       }
     }
     return { type: 'joined', playerId, tickRate, worldRev, world, progressTicket, quest };

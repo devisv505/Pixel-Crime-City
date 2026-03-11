@@ -177,6 +177,7 @@ const WORLD = {
   garages: [],
   hospital: null,
   hospitals: [],
+  npcNavNodes: [],
 };
 const { wrapDelta, wrapCoord, wrapWorldX, wrapWorldY, wrappedLerp } = createWorldMath(WORLD);
 let hospitalPlotKeys = new Set();
@@ -292,6 +293,10 @@ const CAR_BUILDING_COLLISION_INSET_X_PX = 0;
 const CAR_BUILDING_COLLISION_INSET_Y_PX = 2;
 const BUILDING_COLLIDER_TOP_OFFSET_PX = 4;
 const BUILDING_OCCLUSION_BAND_PX = 34;
+const CROSSWALK_PARALLEL_LINES = 7;
+const CROSSWALK_MARK_THICKNESS_PX = 3;
+const CROSSWALK_MARK_GAP_PX = 2;
+const CROSSWALK_SIDEWALK_GAP_PX = 2;
 const INPUT_SEND_RATE = 72;
 const LOCAL_PREDICTION_RATE = 120;
 const REMOTE_INTERP_MIN_MS = 70;
@@ -2106,6 +2111,13 @@ function applyWorldFromServer(payload) {
   } else {
     WORLD.hospital = null;
   }
+  if (Array.isArray(payload.npcNavNodes)) {
+    WORLD.npcNavNodes = payload.npcNavNodes
+      .filter((node) => node && Number.isFinite(node.x) && Number.isFinite(node.y))
+      .map((node) => ({ x: node.x, y: node.y }));
+  } else {
+    WORLD.npcNavNodes = [];
+  }
   rebuildHospitalPlotKeys(WORLD);
   rebuildGaragePlotKeys(WORLD);
   if (typeof payload.worldRev === 'number' && Number.isFinite(payload.worldRev)) {
@@ -3351,6 +3363,92 @@ function drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants) {
   drawBuildingDropShadowOnGround(sx, sy, tile, worldX, worldY);
 }
 
+function drawRoadCrosswalks(worldLeft, worldTop, viewW, viewH) {
+  const tile = WORLD.tileSize;
+  const roadStart = WORLD.roadStart;
+  const roadEnd = WORLD.roadEnd;
+  const markSize = Math.max(1, CROSSWALK_MARK_THICKNESS_PX);
+  const edgeInset = Math.max(1, CROSSWALK_MARK_GAP_PX);
+  const markMin = roadStart + edgeInset;
+  const markMax = roadEnd - edgeInset - markSize;
+  let markCount = Math.max(1, CROSSWALK_PARALLEL_LINES);
+  const markOffsets = [];
+  if (markMax <= markMin || markCount <= 1) {
+    markOffsets.push(Math.floor((roadStart + roadEnd - markSize) * 0.5));
+  } else {
+    const maxCountByWidth = Math.max(2, Math.floor((markMax - markMin) / Math.max(1, markSize)) + 1);
+    markCount = Math.min(markCount, maxCountByWidth);
+    const step = (markMax - markMin) / Math.max(1, markCount - 1);
+    for (let i = 0; i < markCount; i += 1) {
+      markOffsets.push(Math.round(markMin + i * step));
+    }
+  }
+  const sidewalkGap = Math.max(1, CROSSWALK_SIDEWALK_GAP_PX);
+  const stripeExtent = Math.max(1, tile - 4);
+  const blocksX = Math.max(1, Math.floor(WORLD.width / WORLD.blockPx));
+  const blocksY = Math.max(1, Math.floor(WORLD.height / WORLD.blockPx));
+  const startBlockX = Math.max(0, Math.floor(worldLeft / WORLD.blockPx) - 1);
+  const endBlockX = Math.min(blocksX - 1, Math.floor((worldLeft + viewW) / WORLD.blockPx) + 1);
+  const startBlockY = Math.max(0, Math.floor(worldTop / WORLD.blockPx) - 1);
+  const endBlockY = Math.min(blocksY - 1, Math.floor((worldTop + viewH) / WORLD.blockPx) + 1);
+  const viewRight = worldLeft + viewW;
+  const viewBottom = worldTop + viewH;
+
+  ctx.fillStyle = '#e7e2d5';
+
+  for (let by = startBlockY; by <= endBlockY; by += 1) {
+    const baseY = by * WORLD.blockPx;
+    const topStripY = baseY + roadStart - tile;
+    const bottomStripY = baseY + roadEnd;
+
+    for (let bx = startBlockX; bx <= endBlockX; bx += 1) {
+      const baseX = bx * WORLD.blockPx;
+      const leftStripX = baseX + roadStart - tile;
+      const rightStripX = baseX + roadEnd;
+
+      // Top/bottom strips use vertical bars.
+      const verticalStrips = [
+        { y: topStripY, sidewalkSide: 'top' },
+        { y: bottomStripY, sidewalkSide: 'bottom' },
+      ];
+      for (const strip of verticalStrips) {
+        if (strip.y + tile < worldTop || strip.y > viewBottom) continue;
+        const sy = Math.floor(strip.y - worldTop);
+        const drawY =
+          strip.sidewalkSide === 'top'
+            ? sy + sidewalkGap
+            : sy + tile - sidewalkGap - stripeExtent;
+        for (const markOffset of markOffsets) {
+          const laneX = baseX + markOffset;
+          if (laneX + markSize < worldLeft || laneX > viewRight) continue;
+          const sx = Math.floor(laneX - worldLeft);
+          ctx.fillRect(sx, drawY, markSize, stripeExtent);
+        }
+      }
+
+      // Left/right strips use horizontal bars.
+      const horizontalStrips = [
+        { x: leftStripX, sidewalkSide: 'left' },
+        { x: rightStripX, sidewalkSide: 'right' },
+      ];
+      for (const strip of horizontalStrips) {
+        if (strip.x + tile < worldLeft || strip.x > viewRight) continue;
+        const sx = Math.floor(strip.x - worldLeft);
+        const drawX =
+          strip.sidewalkSide === 'left'
+            ? sx + sidewalkGap
+            : sx + tile - sidewalkGap - stripeExtent;
+        for (const markOffset of markOffsets) {
+          const laneY = baseY + markOffset;
+          if (laneY + markSize < worldTop || laneY > viewBottom) continue;
+          const sy = Math.floor(laneY - worldTop);
+          ctx.fillRect(drawX, sy, stripeExtent, markSize);
+        }
+      }
+    }
+  }
+}
+
 function drawWorld(state) {
   ensureBuildingTexturesLoaded();
   ensureBlockTexturesLoaded();
@@ -3381,6 +3479,8 @@ function drawWorld(state) {
       drawTile(type, sx, sy, tile, worldX, worldY, specialPlotVariants);
     }
   }
+
+  drawRoadCrosswalks(worldLeft, worldTop, viewW, viewH);
 }
 
 function drawBuildingsOverlay(state, worldLeft, worldTop) {
@@ -5132,6 +5232,8 @@ function drawMapOverlay(state) {
     : null;
 
   const world = state.world || WORLD;
+  const navDebugNodes = Array.isArray(world.npcNavNodes) ? world.npcNavNodes : [];
+  const showNavDebugNodes = navDebugNodes.length > 0;
   const mapSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.4), 130, 220);
   const mapW = mapSize;
   const mapH = Math.max(96, Math.round((world.height / Math.max(1, world.width)) * mapSize));
@@ -5139,7 +5241,7 @@ function drawMapOverlay(state) {
   const headerH = 10;
   const legendTopGap = 8;
   const legendRowH = 10;
-  const legendRows = activeTargetQuest ? 3 : 2;
+  const legendRows = activeTargetQuest || showNavDebugNodes ? 3 : 2;
   const legendH = legendTopGap + legendRows * legendRowH + 4;
   const panelW = mapW + panelPadding * 2;
   const panelH = mapH + panelPadding * 2 + headerH + legendH;
@@ -5180,6 +5282,16 @@ function drawMapOverlay(state) {
   for (let by = 0; by <= world.height; by += world.blockPx) {
     const ry = Math.round(mapY + (by + world.roadStart) * sy);
     ctx.fillRect(mapX, ry, mapW, roadW);
+  }
+
+  if (showNavDebugNodes) {
+    ctx.fillStyle = 'rgba(255, 196, 110, 0.72)';
+    for (const node of navDebugNodes) {
+      if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
+      const nx = Math.round(toMapX(node.x));
+      const ny = Math.round(toMapY(node.y));
+      ctx.fillRect(nx, ny, 1, 1);
+    }
   }
 
   const shops = world.shops || [];
@@ -5298,19 +5410,31 @@ function drawMapOverlay(state) {
   ctx.fillStyle = '#d7edf9';
   ctx.fillText('Player', col2X + 8, row2Y);
 
-  if (activeTargetQuest) {
+  if (activeTargetQuest || showNavDebugNodes) {
     const row3Y = row2Y + legendRowH;
-    const markerX = col1X + 2;
-    ctx.strokeStyle = 'rgba(255, 220, 122, 0.95)';
-    ctx.beginPath();
-    ctx.arc(markerX, row3Y, 2.6, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255, 208, 92, 0.2)';
-    ctx.beginPath();
-    ctx.arc(markerX, row3Y, 2.1, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#d7edf9';
-    ctx.fillText('Target Area', col1X + 8, row3Y);
+    if (activeTargetQuest) {
+      const markerX = col1X + 2;
+      ctx.strokeStyle = 'rgba(255, 220, 122, 0.95)';
+      ctx.beginPath();
+      ctx.arc(markerX, row3Y, 2.6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 208, 92, 0.2)';
+      ctx.beginPath();
+      ctx.arc(markerX, row3Y, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#d7edf9';
+      ctx.fillText('Target Area', col1X + 8, row3Y);
+    }
+    if (showNavDebugNodes) {
+      const navColX = activeTargetQuest ? col2X : col1X;
+      const navMarkerX = navColX + 2;
+      ctx.fillStyle = 'rgba(255, 196, 110, 0.85)';
+      ctx.beginPath();
+      ctx.arc(navMarkerX, row3Y, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#d7edf9';
+      ctx.fillText(`Nav Nodes (${navDebugNodes.length})`, navColX + 8, row3Y);
+    }
   }
   ctx.textBaseline = 'alphabetic';
 }

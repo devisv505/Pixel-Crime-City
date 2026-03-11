@@ -5,6 +5,11 @@ function createEncodeJoinedFrame(deps) {
     const writer = new Writer(1024);
     const world = payload?.world || {};
     const shops = Array.isArray(world.shops) ? world.shops : [];
+    const npcNavNodes = Array.isArray(world.npcNavNodes)
+      ? world.npcNavNodes.filter(
+          (node) => node && Number.isFinite(node.x) && Number.isFinite(node.y)
+        )
+      : [];
     const hospital = world.hospital && typeof world.hospital === 'object' ? world.hospital : null;
     const hospitalList = Array.isArray(world.hospitals)
       ? world.hospitals.filter((item) => item && typeof item === 'object')
@@ -79,6 +84,15 @@ function createEncodeJoinedFrame(deps) {
         writer.u16(packCoord(item?.targetZoneX || 0));
         writer.u16(packCoord(item?.targetZoneY || 0));
         writer.u16(clamp(Math.round(item?.targetZoneRadius || 0), 0, 65535));
+      }
+    }
+
+    writer.u8(npcNavNodes.length > 0 ? 1 : 0);
+    if (npcNavNodes.length > 0) {
+      writer.u16(clamp(npcNavNodes.length, 0, 65535));
+      for (const node of npcNavNodes) {
+        writer.u16(packCoord(node.x || 0));
+        writer.u16(packCoord(node.y || 0));
       }
     }
 
