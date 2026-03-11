@@ -423,6 +423,12 @@ const GARAGE_REPAINT_RANDOM_PRICE = 10;
 const GARAGE_REPAINT_SELECTED_PRICE = 100;
 const GARAGE_REPAINT_SELECTED_KEY = 'garage_repaint_selected';
 const GARAGE_REPAINT_SELECTED_PREFIX = 'garage_repaint_selected:';
+const GARAGE_REPAINT_SELECTED_PRESET_COLORS = Object.freeze({
+  garage_repaint_selected_yellow: '#f6cf3f',
+  garage_repaint_selected_blue: '#4f8dff',
+  garage_repaint_selected_black: '#1f232b',
+  garage_repaint_selected_red: '#d84e4e',
+});
 const SHOPS = [
   { id: 'shop_north', name: 'North Arms', x: BLOCK_PX * 8 + 228, y: BLOCK_PX * 2 + 236, radius: 34 },
   { id: 'shop_south', name: 'South Arms', x: BLOCK_PX * 4 + 236, y: BLOCK_PX * 9 + 234, radius: 34 },
@@ -3681,12 +3687,43 @@ function isGarageId(id) {
   return typeof id === 'string' && id.startsWith('garage_');
 }
 
+function interiorBuildingRectCenterAndHalfSize(interior) {
+  if (!interior || !Number.isFinite(interior.x) || !Number.isFinite(interior.y)) return null;
+  const worldX = wrapWorldX(interior.x);
+  const worldY = wrapWorldY(interior.y);
+  const blockX = Math.floor(worldX / BLOCK_PX);
+  const blockY = Math.floor(worldY / BLOCK_PX);
+  const localX = mod(worldX, BLOCK_PX);
+  const localY = mod(worldY, BLOCK_PX);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return null;
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  if (!rect) return null;
+  const halfW = Math.max(1, (rect.x1 - rect.x0) * 0.5);
+  const halfH = Math.max(1, (rect.y1 - rect.y0) * 0.5);
+  return {
+    centerX: blockX * BLOCK_PX + (rect.x0 + rect.x1) * 0.5,
+    centerY: blockY * BLOCK_PX + (rect.y0 + rect.y1) * 0.5,
+    halfW,
+    halfH,
+  };
+}
+
+function distanceSqToInteriorBuildingRect(x, y, interior) {
+  const rect = interiorBuildingRectCenterAndHalfSize(interior);
+  if (!rect) return Infinity;
+  const relX = wrapDelta(x - rect.centerX, WORLD.width);
+  const relY = wrapDelta(y - rect.centerY, WORLD.height);
+  const dx = Math.max(0, Math.abs(relX) - rect.halfW);
+  const dy = Math.max(0, Math.abs(relY) - rect.halfH);
+  return dx * dx + dy * dy;
+}
+
 function findNearbyShop(player, maxDistance) {
   const maxDistSq = maxDistance * maxDistance;
   for (const shop of SHOPS) {
-    const dx = player.x - shop.x;
-    const dy = player.y - shop.y;
-    if (dx * dx + dy * dy <= maxDistSq) {
+    const nearBuildingSq = distanceSqToInteriorBuildingRect(player.x, player.y, shop);
+    if (nearBuildingSq <= maxDistSq) {
       return shop;
     }
   }
@@ -4783,6 +4820,9 @@ function tryRepaintGarageCar(player, selectedColor = null) {
   if (!car || car.destroyed || car.driverId !== player.id) {
     return { ok: false, message: 'No valid car to repaint.' };
   }
+  if (car.type !== 'civilian') {
+    return { ok: false, message: 'Only civilian cars can be repainted. Sell this vehicle instead.' };
+  }
 
   const customColor = selectedColor ? sanitizeColor(selectedColor) : null;
   if (selectedColor && !customColor) {
@@ -4807,10 +4847,12 @@ function tryRepaintGarageCar(player, selectedColor = null) {
     y: player.y,
   });
 
+  // Repaint actions should finish the garage interaction immediately.
+  exitShop(player);
   if (selectedMode) {
-    return { ok: true, message: `Car repainted for $${price}.` };
+    return { ok: true, message: `Car repainted for $${price}. Leaving garage.` };
   }
-  return { ok: true, message: `Random repaint for $${price}.` };
+  return { ok: true, message: `Random repaint for $${price}. Leaving garage.` };
 }
 
 function buyItemForPlayer(player, item) {
@@ -4829,6 +4871,10 @@ function buyItemForPlayer(player, item) {
     }
     if (safeItem === GARAGE_REPAINT_SELECTED_KEY) {
       return tryRepaintGarageCar(player, player.color);
+    }
+    const presetColor = GARAGE_REPAINT_SELECTED_PRESET_COLORS[safeItem];
+    if (presetColor) {
+      return tryRepaintGarageCar(player, presetColor);
     }
     if (safeItem.startsWith(GARAGE_REPAINT_SELECTED_PREFIX)) {
       return tryRepaintGarageCar(player, safeItem.slice(GARAGE_REPAINT_SELECTED_PREFIX.length));

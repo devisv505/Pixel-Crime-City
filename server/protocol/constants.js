@@ -17,6 +17,10 @@ const ITEM_TO_CODE = Object.freeze({
   garage_sell: 4,
   garage_repaint_random: 5,
   garage_repaint_selected: 6,
+  garage_repaint_selected_yellow: 7,
+  garage_repaint_selected_blue: 8,
+  garage_repaint_selected_black: 9,
+  garage_repaint_selected_red: 10,
 });
 
 const CODE_TO_ITEM = Object.freeze({
@@ -26,6 +30,10 @@ const CODE_TO_ITEM = Object.freeze({
   4: 'garage_sell',
   5: 'garage_repaint_random',
   6: 'garage_repaint_selected',
+  7: 'garage_repaint_selected_yellow',
+  8: 'garage_repaint_selected_blue',
+  9: 'garage_repaint_selected_black',
+  10: 'garage_repaint_selected_red',
 });
 
 const WEAPON_TO_CODE = Object.freeze({

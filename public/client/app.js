@@ -104,6 +104,12 @@ const COLOR_CHOICES = [
   '#9be4ff',
   '#b4ff8d',
 ];
+const GARAGE_REPAINT_PRESETS = Object.freeze([
+  Object.freeze({ label: 'Yellow', color: '#f6cf3f', stripe: '#ffffff', item: 'garage_repaint_selected_yellow' }),
+  Object.freeze({ label: 'Blue', color: '#4f8dff', stripe: '#e7f1ff', item: 'garage_repaint_selected_blue' }),
+  Object.freeze({ label: 'Black', color: '#1f232b', stripe: '#a9b2bf', item: 'garage_repaint_selected_black' }),
+  Object.freeze({ label: 'Red', color: '#d84e4e', stripe: '#ffd9d9', item: 'garage_repaint_selected_red' }),
+]);
 
 const INPUT = {
   up: false,
@@ -199,6 +205,7 @@ let questGunShopUnlocked = false;
 let questEntries = [];
 let questPanelVisible = true;
 let interiorUiSuppressed = false;
+let garageRepaintPickerOpen = false;
 
 const hudFeature = createHudFeature({
   setLocalPlayerCache: (cache) => {
@@ -2327,6 +2334,7 @@ function resetSessionState() {
   questEntries = [];
   questPanelVisible = true;
   interiorUiSuppressed = false;
+  garageRepaintPickerOpen = false;
   renderQuestPanel();
   refreshMapToggleUi();
   if (chatBar) {
@@ -3391,13 +3399,44 @@ function isGarageInteriorId(id) {
   return typeof id === 'string' && id.startsWith('garage_');
 }
 
+function interiorBuildingRectCenterAndHalfSize(interior) {
+  if (!interior || !Number.isFinite(interior.x) || !Number.isFinite(interior.y)) return null;
+  const worldX = wrapWorldX(interior.x);
+  const worldY = wrapWorldY(interior.y);
+  const blockX = Math.floor(worldX / WORLD.blockPx);
+  const blockY = Math.floor(worldY / WORLD.blockPx);
+  const localX = mod(worldX, WORLD.blockPx);
+  const localY = mod(worldY, WORLD.blockPx);
+  const plotIndex = plotIndexForLocalCoord(localX, localY);
+  if (plotIndex === null) return null;
+  const rect = centeredBuildingRectForPlot(blockX, blockY, plotIndex);
+  if (!rect) return null;
+  const halfW = Math.max(1, (rect.x1 - rect.x0) * 0.5);
+  const halfH = Math.max(1, (rect.y1 - rect.y0) * 0.5);
+  return {
+    centerX: blockX * WORLD.blockPx + (rect.x0 + rect.x1) * 0.5,
+    centerY: blockY * WORLD.blockPx + (rect.y0 + rect.y1) * 0.5,
+    halfW,
+    halfH,
+  };
+}
+
+function distanceSqToInteriorBuildingRect(x, y, interior) {
+  const rect = interiorBuildingRectCenterAndHalfSize(interior);
+  if (!rect) return Infinity;
+  const relX = wrapDelta(x - rect.centerX, WORLD.width);
+  const relY = wrapDelta(y - rect.centerY, WORLD.height);
+  const dx = Math.max(0, Math.abs(relX) - rect.halfW);
+  const dy = Math.max(0, Math.abs(relY) - rect.halfH);
+  return dx * dx + dy * dy;
+}
+
 function nearbyShopForPlayer(state, player, maxDistance = 34) {
   const shops = state.world?.shops || [];
   const maxSq = maxDistance * maxDistance;
   for (const shop of shops) {
-    const dx = player.x - shop.x;
-    const dy = player.y - shop.y;
-    if (dx * dx + dy * dy <= maxSq) {
+    const nearBuildingSq = distanceSqToInteriorBuildingRect(player.x, player.y, shop);
+    if (nearBuildingSq <= maxSq) {
       return shop;
     }
   }
@@ -3632,10 +3671,95 @@ function drawShopInterior(state) {
   ctx.fillText('Press E to leave shop', panelX + 18, panelY + 172);
 }
 
+function drawGarageRepaintPreviewCar(x, y, bodyColor, stripeColor, scale = 2) {
+  const s = Math.max(1, Math.round(scale));
+  const wheelColor = '#07090d';
+  const trimColor = '#10141a';
+  const glassColor = '#bcdaf5';
+
+  ctx.fillStyle = wheelColor;
+  ctx.fillRect(x + 2 * s, y + 8 * s, 3 * s, 3 * s);
+  ctx.fillRect(x + 17 * s, y + 8 * s, 3 * s, 3 * s);
+
+  ctx.fillStyle = trimColor;
+  ctx.fillRect(x + 4 * s, y + 4 * s, 14 * s, 7 * s);
+  ctx.fillRect(x + 6 * s, y + 2 * s, 10 * s, 2 * s);
+
+  ctx.fillStyle = bodyColor;
+  ctx.fillRect(x + 5 * s, y + 4 * s, 12 * s, 6 * s);
+  ctx.fillRect(x + 7 * s, y + 2 * s, 8 * s, 2 * s);
+
+  // Two sport lines on the body.
+  ctx.fillStyle = stripeColor;
+  ctx.fillRect(x + 6 * s, y + 5 * s, 10 * s, 1 * s);
+  ctx.fillRect(x + 6 * s, y + 7 * s, 10 * s, 1 * s);
+
+  ctx.fillStyle = glassColor;
+  ctx.fillRect(x + 9 * s, y + 3 * s, 4 * s, 1 * s);
+}
+
+function drawGarageRepaintPicker(panelX, panelY, panelW, panelH, hasCar) {
+  const overlayX = panelX + 14;
+  const overlayY = panelY + 48;
+  const overlayW = panelW - 28;
+  const overlayH = panelH - 62;
+  const gap = 8;
+  const colW = Math.floor((overlayW - gap * 3) * 0.5);
+  const rowH = 48;
+
+  ctx.fillStyle = '#0b1118';
+  ctx.fillRect(overlayX, overlayY, overlayW, overlayH);
+  ctx.fillStyle = '#2a3a49';
+  ctx.fillRect(overlayX + 2, overlayY + 2, overlayW - 4, overlayH - 4);
+
+  ctx.font = '8px "Lucida Console", Monaco, monospace';
+  ctx.fillStyle = '#ffe3b0';
+  ctx.fillText('Select Repaint Color - $100', overlayX + 10, overlayY + 14);
+  ctx.fillStyle = hasCar ? '#a6ffaf' : '#ff9d9d';
+  ctx.fillText(hasCar ? 'Vehicle ready' : 'No vehicle inside', overlayX + 10, overlayY + 28);
+
+  for (let i = 0; i < GARAGE_REPAINT_PRESETS.length; i += 1) {
+    const preset = GARAGE_REPAINT_PRESETS[i];
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const cardX = overlayX + gap + col * (colW + gap);
+    const cardY = overlayY + 36 + row * (rowH + gap);
+
+    ctx.fillStyle = '#13202b';
+    ctx.fillRect(cardX, cardY, colW, rowH);
+    ctx.fillStyle = '#2c4357';
+    ctx.fillRect(cardX + 1, cardY + 1, colW - 2, rowH - 2);
+    ctx.fillStyle = '#d8e4ef';
+    ctx.fillText(`${i + 1}) ${preset.label}`, cardX + 8, cardY + 12);
+    drawGarageRepaintPreviewCar(cardX + 8, cardY + 20, preset.color, preset.stripe, 2);
+  }
+
+  ctx.fillStyle = '#d0dae5';
+  ctx.fillText('Press 1-4 to apply color', overlayX + 10, overlayY + overlayH - 18);
+  ctx.fillStyle = '#aebdce';
+  ctx.fillText('Press E or Esc to go back', overlayX + 10, overlayY + overlayH - 6);
+}
+
+function localGarageCar(state) {
+  const local = state?.localPlayer || null;
+  if (!local || !local.inCarId) return null;
+  if (!state?.carsById) return null;
+  return state.carsById.get(local.inCarId) || null;
+}
+
+function garageCarTypeLabel(type) {
+  if (type === 'cop') return 'Police';
+  if (type === 'ambulance') return 'Ambulance';
+  if (type === 'civilian') return 'Civilian';
+  return 'Unknown';
+}
+
 function drawGarageInterior(state) {
   const local = state.localPlayer;
   const garage = findShopByIdInWorld(state.world, local.insideShopId);
-  const hasCar = !!local.inCarId;
+  const garageCar = localGarageCar(state);
+  const hasCar = !!garageCar;
+  const canRepaint = !!garageCar && garageCar.type === 'civilian';
 
   ctx.fillStyle = '#111317';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -3664,17 +3788,31 @@ function drawGarageInterior(state) {
   ctx.fillStyle = '#d0d8e2';
   ctx.fillText(`Money: $${local.money || 0}`, panelX + 18, panelY + 44);
 
-  ctx.fillStyle = hasCar ? '#9dff99' : '#ff8d8d';
-  ctx.fillText(hasCar ? 'Vehicle detected: ready' : 'No vehicle inside', panelX + 18, panelY + 62);
+  if (!hasCar) {
+    ctx.fillStyle = '#ff8d8d';
+    ctx.fillText('No vehicle inside', panelX + 18, panelY + 62);
+  } else {
+    ctx.fillStyle = canRepaint ? '#9dff99' : '#ffd38f';
+    ctx.fillText(`Vehicle: ${garageCarTypeLabel(garageCar.type)}`, panelX + 18, panelY + 62);
+  }
 
   ctx.fillStyle = '#ffd6a1';
   ctx.fillText('1) Sell vehicle +$50', panelX + 18, panelY + 84);
+  ctx.fillStyle = canRepaint ? '#ffd6a1' : '#8f99a6';
   ctx.fillText('2) Repaint random -$10', panelX + 18, panelY + 102);
-  ctx.fillText('3) Repaint selected -$100', panelX + 18, panelY + 120);
-  ctx.fillStyle = '#c3d3e1';
-  ctx.fillText('Repaint removes active police pursuit', panelX + 18, panelY + 140);
+  ctx.fillText('3) Repaint selected -$100 (palette)', panelX + 18, panelY + 120);
+  ctx.fillStyle = canRepaint ? '#c3d3e1' : '#8f99a6';
+  ctx.fillText(
+    canRepaint ? 'Repaint removes active police pursuit' : 'Repaint available only for civilian cars',
+    panelX + 18,
+    panelY + 140
+  );
   ctx.fillStyle = '#e8e8e8';
   ctx.fillText('Press E to leave garage', panelX + 18, panelY + 160);
+
+  if (garageRepaintPickerOpen && canRepaint) {
+    drawGarageRepaintPicker(panelX, panelY, panelW, panelH, hasCar);
+  }
 }
 
 const CAR_SPRITE_TEMPLATE_FALLBACK = [
@@ -3894,6 +4032,13 @@ function getCarSpritePalette(type, bodyColor) {
   };
 }
 
+function sportStripeColorForCar(type, bodyColor) {
+  if (type === 'cop' || type === 'ambulance') return '';
+  const safeColor = normalizeHexColor(bodyColor, '#000000');
+  const preset = GARAGE_REPAINT_PRESETS.find((entry) => normalizeHexColor(entry.color, '#000000') === safeColor);
+  return preset ? normalizeHexColor(preset.stripe, '#ffffff') : '';
+}
+
 function buildCarSprite(type, bodyColor) {
   const template = customCarTemplateState === 'ready' && customCarTemplate ? customCarTemplate : CAR_SPRITE_TEMPLATE_FALLBACK;
   const width = template[0].length;
@@ -3915,6 +4060,18 @@ function buildCarSprite(type, bodyColor) {
       g.fillStyle = color;
       g.fillRect(x, y, 1, 1);
     }
+  }
+
+  const stripeColor = sportStripeColorForCar(type, bodyColor);
+  if (stripeColor) {
+    const stripeStartX = Math.max(4, Math.floor(width * 0.25));
+    const stripeEndX = Math.min(width - 4, Math.ceil(width * 0.75));
+    const stripeWidth = Math.max(2, stripeEndX - stripeStartX);
+    const stripeY1 = clamp(Math.floor(height * 0.5) - 2, 2, Math.max(2, height - 3));
+    const stripeY2 = clamp(stripeY1 + 2, 3, Math.max(3, height - 2));
+    g.fillStyle = stripeColor;
+    g.fillRect(stripeStartX, stripeY1, stripeWidth, 1);
+    g.fillRect(stripeStartX, stripeY2, stripeWidth, 1);
   }
 
   if (type === 'cop') {
@@ -4934,9 +5091,9 @@ function drawMapOverlay(state) {
   const mapH = Math.max(96, Math.round((world.height / Math.max(1, world.width)) * mapSize));
   const panelPadding = 6;
   const headerH = 10;
-  const legendTopGap = 10;
-  const legendRowH = 8;
-  const legendRows = activeTargetQuest ? 2 : 1;
+  const legendTopGap = 8;
+  const legendRowH = 10;
+  const legendRows = activeTargetQuest ? 3 : 2;
   const legendH = legendTopGap + legendRows * legendRowH + 4;
   const panelW = mapW + panelPadding * 2;
   const panelH = mapH + panelPadding * 2 + headerH + legendH;
@@ -5053,45 +5210,63 @@ function drawMapOverlay(state) {
   ctx.strokeRect(viewX, viewY, viewW, viewH);
 
   const legendY = mapY + mapH + legendTopGap;
-  ctx.font = '5px "Lucida Console", Monaco, monospace';
+  const legendPad = 4;
+  const legendBoxX = px + 6;
+  const legendBoxY = legendY - 2;
+  const legendBoxW = panelW - 12;
+  const legendBoxH = legendRows * legendRowH + 2;
+  const markerSize = 4;
+  const row1Y = legendY + legendRowH * 0.5;
+  const row2Y = row1Y + legendRowH;
+  const col1X = legendBoxX + legendPad + 2;
+  const col2X = legendBoxX + Math.floor(legendBoxW * 0.5) + 2;
+
+  ctx.fillStyle = 'rgba(8, 14, 22, 0.92)';
+  ctx.fillRect(legendBoxX, legendBoxY, legendBoxW, legendBoxH);
+  ctx.strokeStyle = 'rgba(124, 170, 196, 0.65)';
+  ctx.strokeRect(legendBoxX + 0.5, legendBoxY + 0.5, legendBoxW - 1, legendBoxH - 1);
+
+  ctx.font = '6px "Lucida Console", Monaco, monospace';
+  ctx.textBaseline = 'middle';
+
   ctx.fillStyle = '#58d979';
-  ctx.fillRect(px + 8, legendY, 4, 4);
+  ctx.fillRect(col1X, Math.round(row1Y - markerSize * 0.5), markerSize, markerSize);
   ctx.fillStyle = '#d7edf9';
-  ctx.fillText('Shop', px + 14, legendY + 4);
+  ctx.fillText('Shop', col1X + 8, row1Y);
 
   ctx.fillStyle = '#f6f6f6';
-  ctx.fillRect(px + 40, legendY + 1, 2, 4);
-  ctx.fillRect(px + 39, legendY + 2, 4, 2);
+  ctx.fillRect(col2X + 1, Math.round(row1Y - 3), 2, 6);
+  ctx.fillRect(col2X - 1, Math.round(row1Y - 1), 6, 2);
   ctx.fillStyle = '#d7edf9';
-  ctx.fillText('Hospital', px + 45, legendY + 4);
+  ctx.fillText('Hospital', col2X + 10, row1Y);
 
   ctx.fillStyle = '#ff4f4f';
-  ctx.fillRect(px + 72, legendY, 4, 4);
+  ctx.fillRect(col1X, Math.round(row2Y - markerSize * 0.5), markerSize, markerSize);
   ctx.fillStyle = '#d7edf9';
-  ctx.fillText('Garage', px + 79, legendY + 4);
+  ctx.fillText('Garage', col1X + 8, row2Y);
 
   ctx.fillStyle = '#7cc8ff';
-  ctx.fillRect(px + 110, legendY, 4, 4);
+  ctx.fillRect(col2X, Math.round(row2Y - markerSize * 0.5), markerSize, markerSize);
   ctx.fillStyle = '#020406';
-  ctx.fillRect(px + 111, legendY + 1, 2, 2);
+  ctx.fillRect(col2X + 1, Math.round(row2Y - 1), 2, 2);
   ctx.fillStyle = '#d7edf9';
-  ctx.fillText('Player', px + 116, legendY + 4);
+  ctx.fillText('Player', col2X + 8, row2Y);
 
   if (activeTargetQuest) {
-    const targetLegendY = legendY + legendRowH;
-    const markerX = px + 10;
-    const markerY = targetLegendY + 2;
-    ctx.strokeStyle = 'rgba(255, 220, 122, 0.92)';
+    const row3Y = row2Y + legendRowH;
+    const markerX = col1X + 2;
+    ctx.strokeStyle = 'rgba(255, 220, 122, 0.95)';
     ctx.beginPath();
-    ctx.arc(markerX, markerY, 2.5, 0, Math.PI * 2);
+    ctx.arc(markerX, row3Y, 2.6, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(255, 208, 92, 0.18)';
+    ctx.fillStyle = 'rgba(255, 208, 92, 0.2)';
     ctx.beginPath();
-    ctx.arc(markerX, markerY, 2, 0, Math.PI * 2);
+    ctx.arc(markerX, row3Y, 2.1, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#d7edf9';
-    ctx.fillText('Target', px + 16, targetLegendY + 4);
+    ctx.fillText('Target Area', col1X + 8, row3Y);
   }
+  ctx.textBaseline = 'alphabetic';
 }
 
 function renderState(state, dt) {
@@ -5137,6 +5312,7 @@ function renderState(state, dt) {
     if (isGarageInteriorId(state.localPlayer.insideShopId)) {
       drawGarageInterior(state);
     } else {
+      garageRepaintPickerOpen = false;
       drawShopInterior(state);
     }
     if (statusNotice && performance.now() < statusNoticeUntil) {
@@ -5147,6 +5323,7 @@ function renderState(state, dt) {
     }
     return;
   }
+  garageRepaintPickerOpen = false;
 
   drawWorld(state);
   drawCarTraces(worldLeft, worldTop);
@@ -5314,14 +5491,43 @@ function handleActionKey(event) {
 
   if (local.insideShopId) {
     if (isGarageInteriorId(local.insideShopId)) {
-      if (event.code === 'Digit1') {
+      const garageCar = latestState ? localGarageCar(latestState) : null;
+      const canRepaintGarageCar = !!garageCar && garageCar.type === 'civilian';
+      const repaintBlockedMessage = garageCar
+        ? 'Only civilian cars can be repainted. Sell this vehicle instead.'
+        : 'Drive a car into the garage first.';
+      if (garageRepaintPickerOpen) {
+        if (!canRepaintGarageCar) {
+          garageRepaintPickerOpen = false;
+          statusNotice = repaintBlockedMessage;
+          statusNoticeUntil = performance.now() + 2200;
+        } else {
+        const paletteIndex = Number.parseInt(event.code.replace('Digit', ''), 10) - 1;
+        const preset = GARAGE_REPAINT_PRESETS[paletteIndex];
+        if (preset) {
+          sendBuy(preset.item || 'garage_repaint_selected');
+          garageRepaintPickerOpen = false;
+        }
+        }
+      } else if (event.code === 'Digit1') {
         sendBuy('garage_sell');
       } else if (event.code === 'Digit2') {
-        sendBuy('garage_repaint_random');
+        if (!canRepaintGarageCar) {
+          statusNotice = repaintBlockedMessage;
+          statusNoticeUntil = performance.now() + 2200;
+        } else {
+          sendBuy('garage_repaint_random');
+        }
       } else if (event.code === 'Digit3') {
-        sendBuy('garage_repaint_selected');
+        if (!canRepaintGarageCar) {
+          statusNotice = repaintBlockedMessage;
+          statusNoticeUntil = performance.now() + 2200;
+        } else {
+          garageRepaintPickerOpen = true;
+        }
       }
     } else {
+      garageRepaintPickerOpen = false;
       if (event.code === 'Digit1') {
         sendBuy('shotgun');
       } else if (event.code === 'Digit2') {
@@ -5619,6 +5825,14 @@ function attachUiEvents() {
   });
 
   window.addEventListener('keydown', (event) => {
+    if (joined && garageRepaintPickerOpen && !event.repeat) {
+      if (event.code === 'Escape' || event.code === 'KeyE') {
+        garageRepaintPickerOpen = false;
+        event.preventDefault();
+        return;
+      }
+    }
+
     if (joined && event.code === 'KeyM' && !event.repeat) {
       if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) return;
       if (isSettingsOpen()) return;
