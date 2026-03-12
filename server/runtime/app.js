@@ -2695,15 +2695,10 @@ function resetQuestProgressOnDeath(player) {
   if (!hasActiveQuestsConfigured()) return;
   if (!sanitizeProfileId(player.profileId)) return;
 
-  if (!Array.isArray(player.questEntries) || player.questEntries.length === 0) {
-    syncQuestStateToPlayer(player);
-  }
+  // Always re-sync before reset so we evaluate the latest active quest state.
+  syncQuestStateToPlayer(player);
   const activeEntry = (player.questEntries || []).find((entry) => entry.status === 'active');
   if (!activeEntry || !activeEntry.resetOnDeath) return;
-
-  const targetCount = clamp(Math.round(activeEntry.targetCount || 0), 1, 65535);
-  const currentProgress = clampQuestProgress(activeEntry.progress, targetCount);
-  if (currentProgress <= 0) return;
 
   try {
     questSql.upsertProgress.run({
@@ -2715,7 +2710,9 @@ function resetQuestProgressOnDeath(player) {
     });
     syncQuestStateToPlayer(player);
     emitQuestSyncForPlayer(player);
-    sendNoticeToPlayer(player.id, false, `Quest reset on death: ${activeEntry.title}`);
+    if (Number(activeEntry.progress) > 0) {
+      sendNoticeToPlayer(player.id, false, `Quest reset on death: ${activeEntry.title}`);
+    }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn(`[quest] failed to reset quest progress on death: ${error.message}`);
@@ -5415,7 +5412,22 @@ function killNpc(npc, killerId = null) {
 
 function defeatPlayer(player) {
   if (player.respawnTimer > 0) return;
+  const clearPlayerCombatInputState = () => {
+    if (!player || !player.input) return;
+    const shootSeq = Number(player.input.shootSeq) >>> 0;
+    player.input.shootHeld = false;
+    player.input.shootSeq = shootSeq;
+    player.lastShootSeq = shootSeq;
+    player.shootCooldown = 0;
+    player.input.horn = false;
+    player.input.enter = false;
+    player.prevEnter = false;
+    player.requestStats = false;
+    player.input.requestStats = false;
+  };
+
   player.health = 0;
+  clearPlayerCombatInputState();
   removeCrimeRating(player, 50);
   resetQuestProgressOnDeath(player);
   player.respawnTimer = 2.6;
@@ -5431,8 +5443,7 @@ function defeatPlayer(player) {
     player.inCarId = null;
   }
 
-  player.starHeat = Math.max(0, player.starHeat - 2.2);
-  player.stars = clamp(Math.ceil(player.starHeat - 0.001), 0, 5);
+  clearPolicePursuitForPlayer(player);
   emitEvent('defeat', { playerId: player.id, x: player.x, y: player.y });
 }
 
@@ -5452,6 +5463,17 @@ function tryRespawn(player) {
   player.stars = 0;
   player.shootCooldown = 0;
   player.insideShopId = null;
+  if (player.input) {
+    const shootSeq = Number(player.input.shootSeq) >>> 0;
+    player.input.shootHeld = false;
+    player.input.shootSeq = shootSeq;
+    player.lastShootSeq = shootSeq;
+    player.input.enter = false;
+    player.prevEnter = false;
+    player.input.horn = false;
+    player.requestStats = false;
+    player.input.requestStats = false;
+  }
 }
 
 function findNearbyCarForPlayer(player, maxDistance) {
