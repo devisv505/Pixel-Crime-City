@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Quest Stats Admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0f1822;
+        color: #e8f2fb;
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 22px;
+      }
+      .topbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .topbar .logout-right {
+        margin-left: auto;
+      }
+      button,
+      .button-link {
+        border: 1px solid #4a6b84;
+        background: #1f3344;
+        color: #ebf5ff;
+        padding: 6px 10px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button.secondary,
+      .button-link.secondary {
+        background: #162531;
+      }
+      .button-link.active {
+        background: #2a4e66;
+        border-color: #76a7c6;
+        color: #f4fbff;
+        cursor: default;
+        pointer-events: none;
+      }
+      .status {
+        min-height: 18px;
+        color: #ffd08e;
+      }
+      .card {
+        border: 1px solid #355167;
+        background: #13222f;
+        padding: 12px;
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #284457;
+        text-align: left;
+        padding: 6px;
+        vertical-align: top;
+      }
+      th {
+        font-size: 12px;
+        color: #a8c0d3;
+      }
+      .mono {
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+      }
+      .muted {
+        color: #9cb5c8;
+        font-size: 12px;
+      }
+      .finished {
+        font-weight: 700;
+        color: #9dff99;
+      }
+      @media (max-width: 760px) {
+        .wrap {
+          padding: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Quest Stats Admin</h1>
+      <div class="topbar">
+        <a href="/admin/quests" class="button-link secondary">Quest Admin</a>
+        <a href="/admin/player-stats" class="button-link secondary">Player Stats</a>
+        <a href="/admin/quest-stats" class="button-link active" aria-current="page">Quest Stats</a>
+        <span id="status" class="status"></span>
+        <button id="logoutBtn" type="button" class="secondary logout-right">Logout</button>
+      </div>
+
+      <section class="card">
+        <div class="actions">
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Quest</th>
+              <th>Action</th>
+              <th>Target</th>
+              <th>State</th>
+              <th>Players Finished</th>
+            </tr>
+          </thead>
+          <tbody id="statsRows"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script>
+      const statusNode = document.getElementById('status');
+      const statsRows = document.getElementById('statsRows');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const logoutBtn = document.getElementById('logoutBtn');
+
+      function setStatus(text) {
+        statusNode.textContent = text || '';
+      }
+
+      async function api(path) {
+        const response = await fetch(path, {
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (response.status === 401) {
+          window.location.href = '/admin';
+          throw new Error('Authentication required');
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        return payload || {};
+      }
+
+      function renderRows(rows) {
+        statsRows.innerHTML = '';
+        if (!Array.isArray(rows) || rows.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 6;
+          td.textContent = 'No quest stats found.';
+          tr.appendChild(td);
+          statsRows.appendChild(tr);
+          return;
+        }
+
+        rows.forEach((row, index) => {
+          const tr = document.createElement('tr');
+
+          const rank = document.createElement('td');
+          rank.textContent = String(index + 1);
+          tr.appendChild(rank);
+
+          const quest = document.createElement('td');
+          const title = document.createElement('div');
+          title.textContent = row.title || `Quest #${row.id || index + 1}`;
+          const key = document.createElement('div');
+          key.className = 'mono muted';
+          key.textContent = row.questKey || '-';
+          quest.appendChild(title);
+          quest.appendChild(key);
+          tr.appendChild(quest);
+
+          const action = document.createElement('td');
+          action.className = 'mono';
+          action.textContent = row.actionType || '-';
+          tr.appendChild(action);
+
+          const target = document.createElement('td');
+          target.textContent = String(Math.max(1, Number(row.targetCount) || 1));
+          tr.appendChild(target);
+
+          const state = document.createElement('td');
+          state.textContent = row.isActive ? 'active' : 'inactive';
+          tr.appendChild(state);
+
+          const finished = document.createElement('td');
+          finished.className = 'finished';
+          finished.textContent = String(Math.max(0, Number(row.finishedPlayers) || 0));
+          tr.appendChild(finished);
+
+          statsRows.appendChild(tr);
+        });
+      }
+
+      async function loadStats() {
+        const payload = await api('/api/admin/quest-stats');
+        const rows = Array.isArray(payload.stats) ? payload.stats.slice() : [];
+        rows.sort((a, b) => (Number(a.sortOrder) - Number(b.sortOrder)) || (Number(a.id) - Number(b.id)));
+        renderRows(rows);
+        setStatus(`Loaded ${rows.length} quests.`);
+      }
+
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+          setStatus('Refreshing...');
+          try {
+            await loadStats();
+          } catch (error) {
+            setStatus(error.message || 'Load failed.');
+          }
+        });
+      }
+
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+          try {
+            await fetch('/api/admin/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch {}
+          window.location.href = '/admin';
+        });
+      }
+
+      (async () => {
+        setStatus('Loading...');
+        try {
+          await loadStats();
+        } catch (error) {
+          setStatus(error.message || 'Load failed.');
+        }
+      })();
+    </script>
+  </body>
+</html>

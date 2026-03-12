@@ -54,6 +54,13 @@
       .button-link.secondary {
         background: #162531;
       }
+      .button-link.active {
+        background: #2a4e66;
+        border-color: #76a7c6;
+        color: #f4fbff;
+        cursor: default;
+        pointer-events: none;
+      }
       button:disabled {
         opacity: 0.55;
         cursor: default;
@@ -141,7 +148,9 @@
     <div class="wrap">
       <h1>Quest Admin</h1>
       <div class="topbar">
+        <a href="/admin/quests" class="button-link active" aria-current="page">Quest Admin</a>
         <a href="/admin/player-stats" class="button-link secondary">Player Stats</a>
+        <a href="/admin/quest-stats" class="button-link secondary">Quest Stats</a>
         <span id="status" class="status"></span>
         <button id="logoutBtn" type="button" class="secondary logout-right">Logout</button>
       </div>

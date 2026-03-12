@@ -1316,6 +1316,22 @@ function ensureCrimeReputationDb() {
       FROM quests
       ORDER BY sort_order ASC, id ASC
     `);
+    questSql.listCompletionStats = crimeReputationDb.prepare(`
+      SELECT
+        q.id AS id,
+        q.quest_key AS questKey,
+        q.title AS title,
+        q.action_type AS actionType,
+        q.target_count AS targetCount,
+        q.sort_order AS sortOrder,
+        q.is_active AS isActive,
+        COALESCE(SUM(CASE WHEN p.completed_at IS NOT NULL AND p.completed_at > 0 THEN 1 ELSE 0 END), 0) AS finishedPlayers
+      FROM quests q
+      LEFT JOIN player_quest_progress p
+        ON p.quest_id = q.id
+      GROUP BY q.id
+      ORDER BY q.sort_order ASC, q.id ASC
+    `);
     questSql.getById = crimeReputationDb.prepare(`
       SELECT
         id,
@@ -3406,6 +3422,10 @@ app.get('/admin/player-stats', requireAdminPageAuth, (req, res) => {
   res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-player-stats.html'));
 });
 
+app.get('/admin/quest-stats', requireAdminPageAuth, (req, res) => {
+  res.sendFile(path.join(PROJECT_ROOT, 'public', 'admin-quest-stats.html'));
+});
+
 app.post('/api/admin/login', (req, res) => {
   if (!ADMIN_AUTH_ENABLED) {
     res.status(503).json({ ok: false, error: 'Admin panel disabled: set ADMIN_USER and ADMIN_PASS.' });
@@ -3502,6 +3522,39 @@ app.get('/api/admin/player-stats', requireAdminApiAuth, (req, res) => {
       query: searchQuery,
       players: [],
       error: 'Player stats query failed',
+    });
+  }
+});
+
+app.get('/api/admin/quest-stats', requireAdminApiAuth, (req, res) => {
+  if (!ensureCrimeReputationDb()) {
+    res.status(503).json({
+      stats: [],
+      error: 'Quest store unavailable',
+    });
+    return;
+  }
+
+  try {
+    const rawRows = questSql.listCompletionStats ? questSql.listCompletionStats.all() : [];
+    const rows = Array.isArray(rawRows) ? rawRows : [];
+    const stats = rows.map((row) => ({
+      id: Number(row?.id) >>> 0,
+      questKey: String(row?.questKey || ''),
+      title: String(row?.title || ''),
+      actionType: String(row?.actionType || ''),
+      targetCount: Math.max(1, Number(row?.targetCount) >>> 0),
+      sortOrder: Number(row?.sortOrder) | 0,
+      isActive: !!row?.isActive,
+      finishedPlayers: Math.max(0, Number(row?.finishedPlayers) || 0),
+    }));
+    res.json({ stats });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quest] failed to query admin quest stats: ${error.message}`);
+    res.status(500).json({
+      stats: [],
+      error: 'Quest stats query failed',
     });
   }
 });
