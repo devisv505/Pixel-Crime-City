@@ -254,6 +254,10 @@ const ADMIN_SESSION_COOKIE = 'pcc_admin_session';
 const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const ADMIN_PLAYER_STATS_DEFAULT_PAGE_SIZE = 100;
 const ADMIN_PLAYER_STATS_MAX_PAGE_SIZE = 500;
+const WORLD_IDLE_SUSPEND_MS = Math.max(
+  10_000,
+  Number.parseInt(String(process.env.WORLD_IDLE_SUSPEND_MS || '60000'), 10) || 60_000
+);
 const NPC_PLAYER_CAR_FEAR_MIN_SPEED = 14;
 const NPC_PLAYER_CAR_FEAR_RADIUS_BASE = 26;
 const NPC_PLAYER_CAR_FEAR_RADIUS_MAX = 76;
@@ -9522,7 +9526,39 @@ function reportServerMetricsIfNeeded(nowMs) {
 }
 
 let tickCount = 0;
+let worldIdleSinceAt = Date.now();
+let worldSuspended = false;
 setInterval(() => {
+  const nowMs = Date.now();
+  if (players.size > 0) {
+    worldIdleSinceAt = nowMs;
+    if (worldSuspended) {
+      worldSuspended = false;
+      snapshotAccumulator = 0;
+      presenceAccumulator = 0;
+      tickLodContext = null;
+      tickSpatialContext = null;
+      // eslint-disable-next-line no-console
+      console.log('[world] resumed simulation (players online)');
+    }
+  } else {
+    if (!worldSuspended && nowMs - worldIdleSinceAt >= WORLD_IDLE_SUSPEND_MS) {
+      worldSuspended = true;
+      snapshotAccumulator = 0;
+      presenceAccumulator = 0;
+      tickLodContext = null;
+      tickSpatialContext = null;
+      bytesSentSinceReport = 0;
+      tickMsWindow.length = 0;
+      snapshotBuildMsWindow.length = 0;
+      // eslint-disable-next-line no-console
+      console.log('[world] suspended simulation after idle timeout');
+    }
+    if (worldSuspended) {
+      return;
+    }
+  }
+
   const tickStart = performance.now();
   tickCount += 1;
   tickLodContext = buildTickLodContext();
@@ -9571,7 +9607,7 @@ setInterval(() => {
     presenceAccumulator = 0;
   }
   pushMetricSample(tickMsWindow, performance.now() - tickStart, 300);
-  reportServerMetricsIfNeeded(Date.now());
+  reportServerMetricsIfNeeded(nowMs);
 }, 1000 / TICK_RATE);
 
 server.listen(PORT, () => {
