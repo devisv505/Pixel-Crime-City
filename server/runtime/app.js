@@ -8973,8 +8973,6 @@ function shouldIncludeCarForPlayer(player, car) {
   if (car.destroyed) return false;
   if (!OPT_AOI) return true;
   if (car.id === player.inCarId || car.driverId === player.id) return true;
-  // Always include trucks for map/debug visibility (small fixed pool).
-  if (car.type === 'truck') return true;
   if (car.type === 'cop' && (car.dismountTargetPlayerId === player.id || car.huntTargetPlayerId === player.id)) {
     return true;
   }

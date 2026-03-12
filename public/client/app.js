@@ -5592,17 +5592,6 @@ function drawMapOverlay(state) {
   const activeTargetQuest = Array.isArray(questEntries)
     ? questEntries.find((entry) => entry.status === 'active' && isTargetAreaQuestAction(entry.actionType))
     : null;
-  const trucksForMap = Array.isArray(state.cars)
-    ? state.cars.filter(
-        (car) =>
-          car &&
-          car.type === 'truck' &&
-          Number.isFinite(car.x) &&
-          Number.isFinite(car.y) &&
-          !car.destroyed
-      )
-    : [];
-  const truckCount = trucksForMap.length;
 
   const world = state.world || WORLD;
   const navDebugNodes = Array.isArray(world.npcNavNodes) ? world.npcNavNodes : [];
@@ -5715,18 +5704,6 @@ function drawMapOverlay(state) {
     ctx.fillRect(hx - 2, hy - 1, 4, 2);
   }
 
-  for (const truck of trucksForMap) {
-    const tx = Math.round(toMapX(truck.x));
-    const ty = Math.round(toMapY(truck.y));
-    ctx.fillStyle = '#ffb45a';
-    ctx.fillRect(tx - 2, ty - 1, 5, 3);
-    ctx.fillStyle = '#3a2509';
-    ctx.fillRect(tx - 1, ty - 1, 1, 3);
-    ctx.fillRect(tx + 1, ty - 1, 1, 3);
-    ctx.fillStyle = 'rgba(255, 241, 214, 0.95)';
-    ctx.fillRect(tx, ty - 1, 1, 1);
-  }
-
   if (
     activeTargetQuest &&
     Number.isFinite(activeTargetQuest.targetZoneX) &&
@@ -5776,9 +5753,6 @@ function drawMapOverlay(state) {
   ctx.strokeStyle = mobileMapOverlay ? 'rgba(178, 216, 236, 0.42)' : 'rgba(178, 216, 236, 0.56)';
   ctx.lineWidth = 1;
   ctx.strokeRect(mapX + 0.5, mapY + 0.5, mapW - 1, mapH - 1);
-  ctx.font = '6px "Lucida Console", Monaco, monospace';
-  ctx.fillStyle = mobileMapOverlay ? 'rgba(255, 219, 161, 0.92)' : '#ffd59a';
-  ctx.fillText(`Trucks: ${truckCount}`, mapX + 4, mapY + 8);
 
   const legendPad = 4;
   const markerSize = 4;
