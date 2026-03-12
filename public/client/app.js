@@ -5030,9 +5030,11 @@ function applyQuestSyncEvent(event) {
       .filter((entry) => byId.has(entry.id))
       .map((entry) => {
         const update = byId.get(entry.id);
+        const rawProgress = Number(update.progress);
+        const resolvedProgress = Number.isFinite(rawProgress) ? Math.round(rawProgress) : Math.round(Number(entry.progress) || 0);
         const nextProgress = Math.max(
           0,
-          Math.min(entry.targetCount, Math.round(Number(update.progress) || entry.progress || 0))
+          Math.min(entry.targetCount, resolvedProgress)
         );
         return {
           ...entry,
