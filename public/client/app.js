@@ -3102,7 +3102,9 @@ async function connectAndJoin() {
         chatBar.classList.add('hidden');
       }
       setStep('color');
-      setJoinError('Connection lost. Press Join Shared World to reconnect.');
+      setJoinError(
+        "Oops, looks like we lost connection. Most likely we're updating the server. Don't worry, all your progress is saved. Press Join Shared World to reconnect."
+      );
     }
 
     joinBtn.disabled = false;
